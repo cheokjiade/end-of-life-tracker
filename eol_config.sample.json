@@ -29,14 +29,9 @@
 
   "products": [
     {
-      "product": "spring-boot",
-      "version": "3.4",
-      "label": "Spring Boot 3.4"
-    },
-    {
-      "product": "spring-framework",
-      "version": "6.2",
-      "label": "Spring Framework 6.2"
+      "product": "python",
+      "version": "3.13",
+      "label": "Python 3.13"
     },
     {
       "product": "nginx",
@@ -45,28 +40,38 @@
     },
     {
       "product": "alpine-linux",
-      "version": "3.21",
-      "label": "Alpine Linux 3.21"
+      "version": "3.22",
+      "label": "Alpine Linux 3.22"
     },
     {
-      "product": "amazon-corretto",
-      "version": "21",
-      "label": "Amazon Corretto (OpenJDK) 21"
-    },
-    {
-      "product": "react",
-      "version": "19",
-      "label": "ReactJS 19"
-    },
-    {
-      "product": "kotlin",
-      "version": "2.1",
-      "label": "Kotlin 2.1"
-    },
-    {
-      "product": "amazon-aurora-postgresql",
+      "product": "postgresql",
       "version": "16",
-      "label": "AWS Aurora PostgreSQL 16"
+      "label": "PostgreSQL 16"
+    },
+    {
+      "product": "redis",
+      "version": "7.2",
+      "label": "Redis 7.2"
+    },
+    {
+      "product": "ubuntu",
+      "version": "24.04",
+      "label": "Ubuntu 24.04 LTS"
+    },
+    {
+      "product": "go",
+      "version": "1.23",
+      "label": "Go 1.23"
+    },
+    {
+      "product": "terraform",
+      "version": "1.11",
+      "label": "Terraform 1.11"
+    },
+    {
+      "product": "docker-engine",
+      "version": "27",
+      "label": "Docker Engine 27"
     }
   ]
 }
