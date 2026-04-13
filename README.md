@@ -32,30 +32,17 @@ python lambda_function.py
 
 No AWS credentials or external dependencies are needed for local testing. The script reads from the local config file and outputs to the channels listed in `notifications` (defaults to console + HTML file).
 
-### Example output
+### Sample output
 
-```
-End-of-Life Status Report  -  2026-04-13
-====================================================
+#### Console (plain text)
 
-!! ALREADY END OF LIFE
-------------------------------------------
-  * Spring Boot 3.2
-    EOL since 2024-12-31 (468 days ago)
-    Latest patch: 3.2.12 (released 2025-03-20)
-    Latest cycle: 4.0 -> 4.0.5 (released 2025-11-30)
+![Console output](docs/sample_console_output.png)
 
--- No Immediate Concerns
-------------------------------------------
-  * Amazon Corretto (OpenJDK) 21  -  EOL on 2030-10-31 (1662 days remaining)
-    Latest patch: 21.0.10.7.1 (released 2026-01-20)
-    Latest cycle: 26 -> 26.0.0.35.2 (released 2026-03-17)
+#### HTML report
 
-====================================================
-Source: endoflife.date  |  Products checked: 2
-```
+The HTML report (`eol_report.html`) is generated alongside the console output if configured. It uses colour-coded rows and status badges, and is also the format sent via SES email.
 
-The HTML report (`eol_report.html`) is generated alongside the console output if configured, with colour-coded status badges and a table layout.
+![HTML report](docs/sample_html_report.png)
 
 ## Configuration
 
