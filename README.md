@@ -1,18 +1,20 @@
 # EOL Tracker
 
-A Python AWS Lambda that checks software end-of-life status using the [endoflife.date](https://endoflife.date) API and sends alerts via email (SNS/SES), HTML report, or console output.
+A Python AWS Lambda that checks software end-of-life status from multiple data sources and sends alerts via email (SNS/SES), HTML report, or console output.
 
-Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [300+ more products](https://endoflife.date/) — and get notified before anything falls out of support.
+Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [300+ more products](https://endoflife.date/) — and get notified before anything falls out of support. For AWS RDS / Aurora, the tracker can also scrape AWS's own release calendars for minor-version EOL dates that endoflife.date does not provide.
 
 ## Features
 
-- Checks EOL dates for any product tracked by endoflife.date
+- **Pluggable data sources.** Each product picks its provider — endoflife.date for the broad catalog, or the AWS-docs scraper for RDS/Aurora minor-version EOL.
 - Reports latest patch version and release date for each tracked product
 - Shows latest available major/minor cycle so you know when a newer version exists
 - Configurable alert thresholds (e.g. warn at 30, 60, 90 days before EOL)
 - Multiple output channels: console, HTML file, SNS (plain text email), SES (HTML email)
+- HTML reports include per-row source attribution and are written with a UTC timestamp in the filename (e.g. `eol_report_2026-05-04_1132.html`)
 - Product list is stored in S3 — update what you track without redeploying the Lambda
 - Runs daily via CloudWatch Events (schedule is configurable)
+- AWS-docs scraper has built-in defenses against page changes: header-name validation, row-count sanity check, and a runtime canary that fails loudly if the page structure drifts
 
 ## Quick Start — Run Locally
 
@@ -27,10 +29,34 @@ cd endoflife-tracker
 cp eol_config.sample.json eol_config.json
 
 # 3. Run it
-python lambda_function.py
+python lambda_function.py eol_config.json
 ```
 
 No AWS credentials or external dependencies are needed for local testing. The script reads from the local config file and outputs to the channels listed in `notifications` (defaults to console + HTML file).
+
+### Helper scripts
+
+Cross-platform wrappers pick the Python interpreter for you and let you choose which config to run. Use `run.sh` on macOS/Linux (or Git Bash / WSL) and `run.ps1` on native Windows PowerShell.
+
+```bash
+# macOS / Linux
+./run.sh                      # interactive menu of available configs
+./run.sh a                  # shorthand -> eol_config.a.json
+./run.sh eol_config.a.json  # explicit file name (a path also works)
+./run.sh --list               # list available configs and exit
+```
+
+```powershell
+# Windows (PowerShell)
+.\run.ps1                      # interactive menu of available configs
+.\run.ps1 a                  # shorthand -> eol_config.a.json
+.\run.ps1 eol_config.a.json  # explicit file name (a path also works)
+.\run.ps1 -List                # list available configs and exit
+```
+
+Passing a bare name like `a` resolves to `eol_config.a.json`; with no argument you get a numbered menu of every `eol_config.*.json` file in the repo:
+
+![Interactive config menu](docs/sample_interactive_menu.png)
 
 ### Sample output
 
@@ -50,10 +76,13 @@ The config file (`eol_config.json`) controls everything. In Lambda, it lives in 
 
 ### Products
 
-Each entry needs three fields:
+Each entry has a `source` field selecting which data provider to use. If `source` is omitted it defaults to `endoflife_date` (so existing configs keep working unchanged).
+
+#### Source: `endoflife_date` (default)
 
 | Field | Description | Example |
 |-------|-------------|---------|
+| `source` | Optional — defaults to `endoflife_date` | `"endoflife_date"` |
 | `product` | Product name as it appears in the endoflife.date API | `spring-boot` |
 | `version` | Release cycle identifier (usually `major.minor`) | `4.0` |
 | `label` | Display name in reports | `Spring Boot 4.0` |
@@ -69,6 +98,28 @@ curl https://endoflife.date/api/spring-boot.json | python -m json.tool
 ```
 
 Or browse [endoflife.date](https://endoflife.date/) directly.
+
+#### Source: `aws_rds_scrape`
+
+For RDS / Aurora PostgreSQL, endoflife.date only tracks the major version EOL (e.g. `17 → 2030-02-28`). AWS, however, also deprecates *minor* versions on a much shorter timeline (e.g. `17.5 → September 2026` for plain RDS, `17.5 → December 2026` for Aurora). This source scrapes AWS's release-calendar pages to surface those minor-version dates.
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `source` | `"aws_rds_scrape"` | `"aws_rds_scrape"` |
+| `engine` | `"aurora-postgresql"` or `"rds-postgresql"` | `"aurora-postgresql"` |
+| `version` | Minor version (`major.minor`) | `17.5` |
+| `label` | Display name in reports | `AWS RDS Aurora PostgreSQL 17.5` |
+
+```json
+{
+  "source": "aws_rds_scrape",
+  "engine": "aurora-postgresql",
+  "version": "17.5",
+  "label": "AWS RDS Aurora PostgreSQL 17.5"
+}
+```
+
+The scraper validates the page structure on every run. If AWS renames a column, removes the table, or changes the layout, every entry from this source is marked as `error` in the report — you get a loud alert via your existing notification channels rather than silently wrong dates.
 
 ### Alert thresholds
 
@@ -193,7 +244,9 @@ CloudWatch Events (daily cron)
   AWS Lambda (Python 3.12)
         |
         +-- reads config from S3
-        +-- calls endoflife.date API for each product
+        +-- per product, dispatches to a provider:
+        |     +-- endoflife_date  -> https://endoflife.date/api/{product}.json
+        |     +-- aws_rds_scrape  -> docs.aws.amazon.com release calendars
         +-- categorises: EOL / Approaching / OK
         |
         +---> SNS (plain-text email)
@@ -202,9 +255,27 @@ CloudWatch Events (daily cron)
         +---> Console (CloudWatch Logs)
 ```
 
-## Data source
+### Adding a new data source
 
-All EOL data comes from [endoflife.date](https://endoflife.date), a community-maintained, open-source project that tracks end-of-life dates for 450+ products. The API is free, requires no authentication, and is updated regularly.
+Providers are simple functions in `lambda_function.py`:
+
+```python
+def _provider_my_source(entry, today):
+    # ... fetch + transform ...
+    return {"label": ..., "status": "ok|approaching|eol|error|unknown",
+            "message": ..., "eol_date": ..., "source": "my_source", ...}
+
+PROVIDERS["my_source"] = _provider_my_source
+```
+
+Once registered, any product entry with `"source": "my_source"` is routed to it. The normalized result dict is consumed by the existing categorizer and report formatters — no other changes needed.
+
+## Data sources
+
+| Source | Coverage | Auth | Granularity |
+|--------|----------|------|-------------|
+| [endoflife.date](https://endoflife.date) | 450+ products (community-maintained, open-source) | None | Major/cycle |
+| AWS docs release calendars | RDS / Aurora PostgreSQL minor versions | None (public HTML pages) | Minor version |
 
 ## License
 

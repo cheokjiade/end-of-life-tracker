@@ -1,8 +1,8 @@
 # Real config (contains your actual products — use eol_config.sample.json as a starting point)
 eol_config.json
 
-# Generated reports
-eol_report.html
+# Generated reports (a UTC timestamp is inserted before the extension at runtime)
+eol_report*.html
 
 # Python
 __pycache__/

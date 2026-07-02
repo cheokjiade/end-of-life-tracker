@@ -2,19 +2,28 @@
   "_comment": [
     "Copy this file to eol_config.json and edit to match your stack.",
     "",
-    "Product names must match the endoflife.date API.",
-    "Browse https://endoflife.date/ to find valid product names,",
-    "or run:  curl https://endoflife.date/api/all.json",
+    "Each product entry has a 'source' field selecting the data provider.",
+    "If 'source' is omitted it defaults to 'endoflife_date'.",
     "",
-    "Version must match a release cycle (not the full patch version).",
-    "To see available cycles:  curl https://endoflife.date/api/{product}.json",
+    "Supported sources:",
+    "  endoflife_date   - community endoflife.date API (default)",
+    "                     fields: product, version, label",
+    "                     browse https://endoflife.date/ for product names",
+    "                     and run  curl https://endoflife.date/api/{product}.json",
+    "                     to see valid cycles.",
+    "",
+    "  aws_rds_scrape   - scrapes AWS release-calendar docs for RDS / Aurora",
+    "                     minor-version EOL (which endoflife.date doesn't track).",
+    "                     fields: engine, version, label",
+    "                     supported engines: 'aurora-postgresql', 'rds-postgresql'",
     "",
     "notify_when: 'always'      = daily report regardless of alerts",
     "             'alerts_only' = only when something is EOL or approaching",
     "",
     "notifications: list of output channels. Supported types:",
     "  console   - print plain-text report to stdout",
-    "  html_file - write HTML report to 'path' (default: eol_report.html)",
+    "  html_file - write HTML report to 'path' (a UTC timestamp is inserted",
+    "              before the extension; default base: eol_report.html)",
     "  sns       - publish plain-text to SNS topic (topic_arn or SNS_TOPIC_ARN env var)",
     "  ses       - send HTML email via SES (from_email, to_emails, or env vars)"
   ],
@@ -72,6 +81,18 @@
       "product": "docker-engine",
       "version": "27",
       "label": "Docker Engine 27"
+    },
+    {
+      "source": "aws_rds_scrape",
+      "engine": "aurora-postgresql",
+      "version": "17.5",
+      "label": "AWS RDS Aurora PostgreSQL 17.5"
+    },
+    {
+      "source": "aws_rds_scrape",
+      "engine": "rds-postgresql",
+      "version": "17.5",
+      "label": "AWS RDS for PostgreSQL 17.5"
     }
   ]
 }
