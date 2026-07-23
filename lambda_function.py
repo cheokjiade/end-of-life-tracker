@@ -1347,7 +1347,9 @@ def _parse_tyk_table(md_text):
             if cols:
                 break  # table block ended
             continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
+        # split on unescaped pipes only, then unescape — a literal '\|' inside a
+        # cell must not create a phantom column and shift the date read (re-review finding)
+        cells = [c.replace("\\|", "|").strip() for c in re.split(r"(?<!\\)\|", s.strip("|"))]
         if cols is None:
             if _TYK_REQUIRED_COLS.issubset(cells):
                 cols = cells
