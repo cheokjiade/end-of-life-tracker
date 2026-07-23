@@ -11,7 +11,7 @@ Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [3
 - Shows latest available major/minor cycle so you know when a newer version exists
 - Configurable alert thresholds (e.g. warn at 30, 60, 90 days before EOL)
 - Multiple output channels: console, HTML file, SNS (plain text email), SES (HTML email)
-- HTML reports include per-row source attribution and are written with a UTC timestamp in the filename (e.g. `eol_report_2026-05-04_1132.html`)
+- HTML reports include per-row source attribution and are written to `reports/<project>/<year>/<month>/<day>/` with a timestamp in the filename (e.g. `reports/a/2026/05/04/eol_report_a_2026-05-04_1132.html`)
 - Product list is stored in S3 — update what you track without redeploying the Lambda
 - Runs daily via CloudWatch Events (schedule is configurable)
 - AWS-docs scraper has built-in defenses against page changes: header-name validation, row-count sanity check, and a runtime canary that fails loudly if the page structure drifts
@@ -66,7 +66,7 @@ Passing a bare name like `a` resolves to `eol_config.a.json`; with no argument y
 
 #### HTML report
 
-The HTML report (`eol_report.html`) is generated alongside the console output if configured. It uses colour-coded rows and status badges, and is also the format sent via SES email.
+The HTML report is generated alongside the console output if configured, written under `reports/<project>/<year>/<month>/<day>/` (where `<project>` is derived from the configured `path` base name — `eol_report_a.html` → `a`, plain `eol_report.html` → `default`). It uses colour-coded rows and status badges, and is also the format sent via SES email.
 
 ![HTML report](docs/sample_html_report.png)
 
@@ -154,7 +154,7 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Type | Format | Notes |
 |------|--------|-------|
 | `console` | Plain text to stdout | No config needed |
-| `html_file` | HTML file | `path` defaults to `eol_report.html` |
+| `html_file` | HTML file | `path` defaults to `eol_report.html`; the file is written under `reports/<project>/<year>/<month>/<day>/` (`<project>` derived from the `path` base name) |
 | `sns` | Plain text email via SNS | `topic_arn` or `SNS_TOPIC_ARN` env var |
 | `ses` | HTML email via SES | `from_email`/`to_emails` or `SES_FROM_EMAIL`/`SES_TO_EMAILS` env vars. Sender must be [verified in SES](https://docs.aws.amazon.com/ses/latest/dg/creating-identities.html) |
 

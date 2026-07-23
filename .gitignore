@@ -1,7 +1,11 @@
-# Real config (contains your actual products — use eol_config.sample.json as a starting point)
+# Per-project configs (contain your actual products and routing — use eol_config.sample.json as a template)
 eol_config.json
+eol_config.*.json
+!eol_config.sample.json
 
-# Generated reports (a UTC timestamp is inserted before the extension at runtime)
+# Generated reports — written under reports/<project>/<year>/<month>/<day>/
+# (a timestamp is also inserted before the extension at runtime)
+reports/
 eol_report*.html
 
 # Python
