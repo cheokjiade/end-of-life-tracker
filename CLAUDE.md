@@ -5,9 +5,22 @@ Guidance for AI agents (Claude Code) working in this repository.
 ## What this is
 
 An AWS Lambda that checks software **end-of-life (EOL)** status across multiple data
-sources and reports via console / HTML file / SNS / SES. The entire runtime is one
-self-contained, **stdlib-only** file — `lambda_function.py` — deployed as a zip by
-Terraform.
+sources and reports via console / HTML file / SNS / SES. The runtime is a **stdlib-only**
+Python package — `eoltracker/` — with a thin `lambda_function.py` shim that re-exports the
+handler (preserving the `lambda_function.lambda_handler` entry point); Terraform packages
+both into the deployment zip.
+
+## Package layout
+
+```
+lambda_function.py        # shim: re-exports lambda_handler; __main__ runs run_local
+eoltracker/
+  core.py                 # logger, parse_date_field, _error_result, the two HTML table parsers
+  parsers/                # one file per provider + __init__.py (auto-registration + dispatch)
+  report.py               # _categorise + plain-text and HTML formatters
+  notify.py               # notification channels
+  handler.py              # config loading, lambda_handler, run_local
+```
 
 ## Architecture: providers (the "parsers")
 
@@ -25,37 +38,38 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
   `version`, `status`, `message`, `eol_date`, `days_remaining`, `latest_patch`, `source`,
   …) so both formatters (`format_report_text`, `format_report_html`) consume any provider
   unchanged.
-- **Shared contract helpers:** `_error_result(entry, msg)` (uniform error shape),
-  `parse_date_field` (date/bool/None), `_categorise` (bucket by status), and the reusable
-  HTML parsers `_HtmlTableExtractor` (single-table pages) and `_AWSCalendarParser`
-  (heading-anchored, multi-table pages).
+- **Shared contract helpers:** in `eoltracker/core.py` — `_error_result(entry, msg)`
+  (uniform error shape), `parse_date_field` (date/bool/None), and the reusable HTML parsers
+  `_HtmlTableExtractor` (single-table pages) and `_AWSCalendarParser` (heading-anchored,
+  multi-table pages). `_categorise` (bucket by status) lives in `eoltracker/report.py`.
 - **Status values:** `eol`, `approaching`, `ok`, `error`, `unknown`, `untracked`.
   `_categorise` buckets them; note `approaching` requires `days_remaining <=
   max(thresholds)`, else it falls to `ok` (so a far-future EOL is informational, not an
   alert).
 
-**Modularity:** providers are modular *by contract and registry* — adding one is localized
-and touches no other provider. They are **not** split into separate files; single-file is
-deliberate for Lambda packaging. Current providers (8): `endoflife_date`, `aws_rds_scrape`,
-`aws_sdk_lifecycle`, `jackson_lifecycle`, `maven_central`, `npm_registry`, `manual`,
-`tyk_lifecycle`.
+**Modularity:** each provider is its own file under `eoltracker/parsers/`, **auto-registered**
+at import time (`parsers/__init__.py` scans the package) — adding one is localized and touches
+no other provider: drop in a new file, no registry edits. Current providers (8):
+`endoflife_date`, `aws_rds_scrape`, `aws_sdk_lifecycle`, `jackson_lifecycle`, `maven_central`,
+`npm_registry`, `manual`, `tyk_lifecycle`.
 
 ## Adding a data-source provider (parser)
 
 The full how-to with a copy-paste skeleton is in **`docs/adding-a-provider.md`**. In brief:
 
-1. **Write the provider block** in `lambda_function.py` under a `# ---` banner near the
-   others: a cached fetch/scrape helper, a *pure* parse helper (so logic is testable
-   without network), and `def _provider_<name>(entry, today):` that returns the normalized
-   dict (or `_error_result(entry, msg)` with `result["source"] = "<name>"` on failure).
-2. **Register in three places:** `PROVIDERS`, `_SOURCE_LABELS`, and a branch in
-   `_source_url_for`.
+1. **Write the provider module** as a new file `eoltracker/parsers/<name>.py`: a cached
+   fetch/scrape helper, a *pure* parse helper (so logic is testable without network), and
+   `def _provider_<name>(entry, today):` that returns the normalized dict (or
+   `_error_result(entry, msg)` with `result["source"] = "<name>"` on failure). Import shared
+   helpers from `..core`.
+2. **Register via module attributes** (auto-discovered — no registry edits): set `SOURCE`,
+   `LABEL`, `provider = _provider_<name>`, and an optional `url_for(r)` for the upstream link.
 3. **Defensive parsing** (match `aws_rds_scrape` / `jackson_lifecycle`): required-header
    checks, a row-count floor, and/or a hardcoded canary — fail loudly on page drift rather
    than emit silently-wrong dates.
 4. **New status?** If you add one (as `untracked` was), update `_categorise` (bucket +
    return tuple) AND both formatters (unpack + rendering), plus `_STATUS_COLOURS` /
-   `_status_label` for HTML.
+   `_status_label` for HTML — all in `eoltracker/report.py`.
 5. **Test network-free**, then one live smoke run (`python lambda_function.py <config>`).
 6. **Document it** in `eol_config_generation_prompt.md` (providers table + entry shape +
    decision order) so config generation uses it.
@@ -79,8 +93,9 @@ The full how-to with a copy-paste skeleton is in **`docs/adding-a-provider.md`**
 
 ## Conventions & gotchas
 
-- **Stdlib only** in `lambda_function.py` (`boto3` is imported lazily inside the
-  S3/SNS/SES paths). No third-party dependencies.
+- **Stdlib only** across the `eoltracker/` package (`boto3` is imported lazily inside the
+  S3/SNS/SES paths in `eoltracker/notify.py` and `eoltracker/handler.py`). No third-party
+  dependencies.
 - **Keep configs ASCII.** `load_config_from_file` opens with no explicit encoding, so on
   cp1252 (Windows) systems non-ASCII characters break the read. `json.dump(...,
   ensure_ascii=True)` (the default) keeps generated configs safe.
@@ -90,7 +105,8 @@ The full how-to with a copy-paste skeleton is in **`docs/adding-a-provider.md`**
   the `html_file` `path` base name (`eol_report_a.html` → `a`, plain `eol_report.html`
   → `default`).
 - **Testing:** no framework — tests are standalone `python` assertion scripts that import
-  `lambda_function.py` and inject synthetic data to stay network-free.
+  the relevant `eoltracker` modules (e.g. `eoltracker.parsers.<name>`, `eoltracker.report`)
+  and inject synthetic data to stay network-free.
 - **Run locally:** `python lambda_function.py <config.json>`, or `./run.sh` / `.\run.ps1`
   (interactive config picker).
 
@@ -98,10 +114,15 @@ The full how-to with a copy-paste skeleton is in **`docs/adding-a-provider.md`**
 
 | Path | Purpose |
 |---|---|
-| `lambda_function.py` | The whole runtime: providers, categorizer, formatters, notifiers, handler |
+| `lambda_function.py` | Shim: re-exports `lambda_handler` (the Lambda entry point) + the local CLI (`run_local`) |
+| `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers |
+| `eoltracker/parsers/` | One file per provider + `__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
+| `eoltracker/report.py` | Categorizer + plain-text and HTML formatters |
+| `eoltracker/notify.py` | Notification channels (console / html_file / SNS / SES) |
+| `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |
 | `eol_config.<project>.json` | Per-project product lists (gitignored; `eol_config.sample.json` is the template) |
 | `eol_config_generation_prompt.md` | The config-generation prompt (8 providers, mapping rules, real-world patterns) |
 | `.claude/agents/eol-config-extractor.md` | The reusable extraction subagent |
 | `generate_config.py` | Static dependency-manifest → config generator (Maven/Gradle/npm) |
 | `docs/adding-a-provider.md` | Step-by-step guide to adding a provider |
-| `terraform/` | Deployment (packages `lambda_function.py` as a zip) |
+| `terraform/` | Deployment (packages `lambda_function.py` + `eoltracker/` as a zip) |

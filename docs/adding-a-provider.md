@@ -22,7 +22,7 @@ def _provider_<name>(entry, today) -> dict
 ```python
 {
     "label": label,               # display name (default it if entry has none)
-    "product": <handle>,          # what _source_url_for needs (slug / package / "g:a")
+    "product": <handle>,          # what url_for needs (slug / package / "g:a")
     "version": version,
     "status": "eol" | "approaching" | "ok" | "unknown" | "error" | "untracked",
     "message": "<human sentence>",
@@ -39,14 +39,16 @@ On any failure, return `_error_result(entry, "<why>")` and set `result["source"]
 
 ## Skeleton (copy, rename, fill in)
 
-Drop this under a `# ---` banner in `lambda_function.py`, next to the other providers.
+Create a new file `eoltracker/parsers/<name>.py`. Import shared helpers from `..core`; the
+module is auto-discovered at import time via the `SOURCE` / `provider` attributes at the
+bottom (no registry edits anywhere else).
 
 ```python
-# ---------------------------------------------------------------------------
-# <Name> provider
-#
-# <one line on the source and what it reports>
-# ---------------------------------------------------------------------------
+"""<Name> provider — <one line on the source and what it reports>."""
+
+import urllib.request
+
+from ..core import _error_result, logger
 
 _FOO_URL = "https://example.com/eol-data"
 _FOO_CACHE = {}          # cache the fetch — a run checks many products against one source
@@ -111,24 +113,20 @@ def _provider_foo(entry, today):
     return result
 ```
 
-## Register in three places
+## Register (module attributes — auto-discovered)
+
+At the **bottom of the same file**, declare the registration contract. `parsers/__init__.py`
+scans the package at import time and wires these into `PROVIDERS`, `SOURCE_LABELS`, and the
+`source_url_for` dispatch — no other file changes, no registry to edit.
 
 ```python
-PROVIDERS = {
-    ...
-    "foo": _provider_foo,                 # 1. dispatch
-}
+SOURCE = "foo"                 # entry["source"] value that routes here
+LABEL  = "Foo docs"            # human label shown in reports (defaults to SOURCE)
+provider = _provider_foo       # the (entry, today) -> dict function
 
-_SOURCE_LABELS = {
-    ...
-    "foo": "Foo docs",                    # 2. human label in reports
-}
 
-def _source_url_for(r):
-    ...
-    if src == "foo":
-        return _FOO_URL                   # 3. the clickable upstream link
-    return None
+def url_for(r):                # optional — the clickable upstream link for a result
+    return _FOO_URL
 ```
 
 ## Defensive parsing (required for scrapers)
@@ -151,10 +149,10 @@ to shift than a 1.6 MB rendered page.
 
 ## If you add a new status value
 
-`untracked` is the worked example (added for the `manual` provider). A new status needs:
-`_categorise` (new bucket + return tuple), **both** `format_report_text` and
-`format_report_html` (unpack line + a rendering block), and for HTML also
-`_STATUS_COLOURS["<status>"]` and a branch in `_status_label`.
+`untracked` is the worked example (added for the `manual` provider). A new status needs
+(all in `eoltracker/report.py`): `_categorise` (new bucket + return tuple), **both**
+`format_report_text` and `format_report_html` (unpack line + a rendering block), and for
+HTML also `_STATUS_COLOURS["<status>"]` and a branch in `_status_label`.
 
 ## Test it (network-free)
 
@@ -162,19 +160,20 @@ No test framework — write a scratch `python` script that imports the module an
 data so no network is hit:
 
 ```python
-import importlib.util, os
+import sys
 from datetime import date
-spec = importlib.util.spec_from_file_location("lf", r"E:\Git\endoflife\lambda_function.py")
-lf = importlib.util.module_from_spec(spec); spec.loader.exec_module(lf)   # __main__ guard prevents the CLI
+sys.path.insert(0, r"E:\Git\endoflife")   # so `import eoltracker` resolves
+
+from eoltracker.parsers import foo, PROVIDERS, SOURCE_LABELS, source_url_for
 
 # 1) parse helper against synthetic raw text
-assert lf._parse_foo(SAMPLE)["5.8"]["eol"] == date(2027, 6, 30)
+assert foo._parse_foo(SAMPLE)["5.8"]["eol"] == date(2027, 6, 30)
 # 2) provider against injected cache (no fetch)
-lf._FOO_CACHE["data"] = {"5.8": {"eol": date(2027, 6, 30)}}
-r = lf._provider_foo({"source": "foo", "version": "5.8"}, date(2026, 7, 24))
+foo._FOO_CACHE["data"] = {"5.8": {"eol": date(2027, 6, 30)}}
+r = foo._provider_foo({"source": "foo", "version": "5.8"}, date(2026, 7, 24))
 assert r["status"] == "approaching" and r["eol_date"] == "2027-06-30"
-# 3) registration wired
-assert "foo" in lf.PROVIDERS and lf._SOURCE_LABELS["foo"] and lf._source_url_for({"source": "foo"})
+# 3) registration wired (auto-discovered — no registry edits)
+assert "foo" in PROVIDERS and SOURCE_LABELS["foo"] and source_url_for({"source": "foo"})
 ```
 
 Then one live smoke run: `python lambda_function.py <a config using source: foo>`.
@@ -187,8 +186,8 @@ example, and a line in the mapping decision order.
 
 ## Worked example: `tyk_lifecycle`
 
-The Tyk provider (in `lambda_function.py`) is a complete reference for a bespoke-docs
-scraper: it fetches the Tyk LTS table from the tyk-docs GitHub markdown, parses
+The Tyk provider (in `eoltracker/parsers/tyk_lifecycle.py`) is a complete reference for a
+bespoke-docs scraper: it fetches the Tyk LTS table from the tyk-docs GitHub markdown, parses
 `Version | … | Completely Unsupported From` (deriving EOL = last day of the month *before*
 "Completely Unsupported From"), validates ≥2 dated rows, caches, and maps
 Dashboard/MDCB/Pump onto the Gateway LTS `major.minor`. See `_parse_tyk_table`,

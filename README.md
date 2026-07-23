@@ -257,18 +257,26 @@ CloudWatch Events (daily cron)
 
 ### Adding a new data source
 
-Providers are simple functions in `lambda_function.py`:
+Each provider is its own file under `eoltracker/parsers/` — drop one in and it is
+auto-registered at import time (no registry to edit):
 
 ```python
+# eoltracker/parsers/my_source.py
+from ..core import _error_result, logger
+
 def _provider_my_source(entry, today):
     # ... fetch + transform ...
     return {"label": ..., "status": "ok|approaching|eol|error|unknown",
             "message": ..., "eol_date": ..., "source": "my_source", ...}
 
-PROVIDERS["my_source"] = _provider_my_source
+SOURCE = "my_source"          # entry["source"] value that routes here
+LABEL  = "My source"          # human label shown in reports
+provider = _provider_my_source
+def url_for(r):               # optional — clickable upstream link
+    return "https://example.com/my_source"
 ```
 
-Once registered, any product entry with `"source": "my_source"` is routed to it. The normalized result dict is consumed by the existing categorizer and report formatters — no other changes needed.
+Once the file exists, any product entry with `"source": "my_source"` is routed to it. The normalized result dict is consumed by the existing categorizer and report formatters — no other changes needed. See `docs/adding-a-provider.md` for the full how-to.
 
 ## Data sources
 
