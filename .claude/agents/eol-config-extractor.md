@@ -79,6 +79,9 @@ UNTRACKED).
    `products` with `_section` dividers by category. Every real entry carries a provenance
    `_comment` citing the input row/file. Strictly valid JSON (no comments, no trailing
    commas — use `_comment`/`_section`).
+   For platform/infra entries with no EOL date (endoflife.date `eol:false`, `aws_sdk_lifecycle`
+   GA lines, `manual` UNTRACKED tools), add a verified ASCII `policy_note` (1-2 sentences) on
+   the real release/support policy; skip notes for ordinary libraries.
 
 4. **Validate + smoke-run.** `python -c "import json; json.load(open('eol_config.<project>.json'))"`
    then `python lambda_function.py eol_config.<project>.json` — confirm no unexpected
@@ -100,3 +103,6 @@ UNTRACKED).
   stay visible in the report.
 - **Never run git or commit.** Leave the written file in the working tree.
 - Do not add products the inputs don't mention; do not deduplicate away distinct majors.
+- **Annotate misleading "no EOL" rows.** Where a blank EOL date reads as false comfort
+  (nginx, Apache HTTP, Tomcat, Squid, ElastiCache, AWS SDK, React/Bootstrap/jQuery, Log4j,
+  PuTTY, Jenkins remoting), add a `policy_note`; verify the claim, keep it ASCII.

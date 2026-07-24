@@ -89,6 +89,14 @@ def _append_version_info(lines, r):
         lines.append(cycle_line)
 
 
+def _append_notes(lines, r):
+    """Append support-status and policy observation sub-lines (ASCII for console/SNS)."""
+    if r.get("support_message"):
+        lines.append(f"    {r['support_message']}")
+    if r.get("policy_note"):
+        lines.append(f"    Policy: {r['policy_note']}")
+
+
 def format_report_text(results, thresholds, today):
     """Format results into a readable plain-text report.
 
@@ -108,6 +116,7 @@ def format_report_text(results, thresholds, today):
         for r in eol_items:
             lines.append(f"  * {r['label']}  [{_source_label(r)}]")
             lines.append(f"    {r['message']}")
+            _append_notes(lines, r)
             _append_version_info(lines, r)
 
     if approaching_items:
@@ -115,14 +124,14 @@ def format_report_text(results, thresholds, today):
         for r in approaching_items:
             lines.append(f"  * {r['label']}  [{_source_label(r)}]")
             lines.append(f"    {r['message']}")
-            if r.get("support_message"):
-                lines.append(f"    {r['support_message']}")
+            _append_notes(lines, r)
             _append_version_info(lines, r)
 
     if ok_items:
         lines += ["", "-- No Immediate Concerns", "-" * 42]
         for r in ok_items:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            _append_notes(lines, r)
             _append_version_info(lines, r)
 
     if error_items:
@@ -134,6 +143,7 @@ def format_report_text(results, thresholds, today):
         lines += ["", "?? UNTRACKED (no EOL source)", "-" * 42]
         for r in untracked_items:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            _append_notes(lines, r)
             _append_version_info(lines, r)
 
     sources_used = sorted({_source_label(r) for r in results})
@@ -196,6 +206,26 @@ def _status_label(r, bucket):
     return _badge("error", "ERROR")
 
 
+def _details_html(r):
+    """Details cell: provider message plus muted observation sub-lines.
+
+    The provider-generated `message` is emitted as-is (consistent with prior
+    behaviour); the config-authored `policy_note` is HTML-escaped as untrusted
+    free text.
+    """
+    detail = r["message"]
+    if r.get("status") == "error":
+        return detail          # error rows carry no observation notes (matches the text report)
+    notes = []
+    if r.get("support_message"):
+        notes.append(html.escape(r["support_message"]))
+    if r.get("policy_note"):
+        notes.append("&#9432; " + html.escape(r["policy_note"]))
+    for n in notes:
+        detail += f'<br><span style="color:#888;font-size:12px">{n}</span>'
+    return detail
+
+
 def _html_table_rows(items, status_key):
     """Generate <tr> elements for a list of result items."""
     bg = _STATUS_COLOURS.get(status_key, _STATUS_COLOURS["error"])["bg"]
@@ -218,7 +248,7 @@ def _html_table_rows(items, status_key):
             f'<tr style="background-color:{bg}">'
             f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;font-weight:bold">{product_cell}</td>'
             f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_status_label(r, status_key)}</td>'
-            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{r["message"]}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_details_html(r)}</td>'
             f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{eol_display}</td>'
             f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{patch}</td>'
             f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_cycle_cell(r)}</td>'

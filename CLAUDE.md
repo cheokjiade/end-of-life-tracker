@@ -109,6 +109,10 @@ The full how-to with a copy-paste skeleton is in **`docs/adding-a-provider.md`**
   and inject synthetic data to stay network-free.
 - **Run locally:** `python lambda_function.py <config.json>`, or `./run.sh` / `.\run.ps1`
   (interactive config picker).
+- **`policy_note`** (optional, any config entry) is a short ASCII observation of a
+  product's release/support policy. `check_product` copies it onto the result and both
+  formatters render it as a muted sub-line (HTML: a `&#9432;` marker; text: `Policy:`).
+  Use it for no-EOL-date platform/infra items where a blank EOL date is misleading.
 
 ## Key files
 

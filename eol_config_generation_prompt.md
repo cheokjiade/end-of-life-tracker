@@ -219,6 +219,13 @@ provider scrapes automatically.
   `{"_section": "=== Java dependencies ==="}` — the tracker skips these.
 - Add provenance to each real entry so a human can trace it:
   `"_comment": "From pom.xml (org.springframework.boot:...:3.3.4)"`.
+- Add a `policy_note` to a **no-EOL-date platform/infra** entry (not plain libraries):
+  a 1-2 sentence, ASCII observation of its real release/support policy, shown as a muted
+  sub-line in the report. Use it where a blank EOL date is misleading - e.g. nginx
+  (`"New stable branch about yearly; older branches dropped once superseded."`), Apache
+  HTTP, Tomcat, Squid, ElastiCache, AWS SDK, React/Bootstrap/jQuery/Font Awesome/Groovy,
+  Log4j, and manual/UNTRACKED tools (PuTTY, Jenkins remoting). Skip it for ordinary
+  Maven/npm libraries, where "on latest, no formal EOL" already says everything.
 
 ## How to map inputs → entries
 
@@ -256,6 +263,10 @@ Apply this decision order per component you find:
    the product name + version, then apply steps 1–7. Tables like "Component | Version |
    Owner" map cleanly; when a cell is a range or "latest", record your interpretation in
    `_comment` and add it to the verification checklist.
+9. **After choosing a source, is the item platform/infra with no EOL date** (endoflife.date
+   `eol: false`, an `aws_sdk_lifecycle` GA line, or a `manual` UNTRACKED tool)? Research and
+   add an ASCII `policy_note` describing its release/support policy. Verify the claim before
+   writing. Do not add notes to ordinary libraries.
 
 ### Real-world document patterns
 

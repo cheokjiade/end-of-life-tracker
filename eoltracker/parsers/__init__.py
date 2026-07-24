@@ -46,5 +46,10 @@ def check_product(entry, today):
     source = entry.get("source", "endoflife_date")
     provider = PROVIDERS.get(source)
     if provider is None:
-        return _error_result(entry, f"Unknown source '{source}'. Known: {sorted(PROVIDERS)}")
-    return provider(entry, today)
+        result = _error_result(entry, f"Unknown source '{source}'. Known: {sorted(PROVIDERS)}")
+    else:
+        result = provider(entry, today)
+    note = entry.get("policy_note")
+    if note and result is not None:
+        result["policy_note"] = note
+    return result

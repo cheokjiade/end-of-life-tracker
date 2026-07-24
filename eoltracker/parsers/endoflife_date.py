@@ -92,7 +92,7 @@ def _provider_endoflife_date(entry, today):
         result["message"] = "Already end of life (no specific date)"
     elif eol is False:
         result["status"] = "ok"
-        result["message"] = "No EOL date announced — still supported"
+        result["message"] = "No EOL date announced - still supported"
     elif isinstance(eol, date):
         days = (eol - today).days
         result["days_remaining"] = days
