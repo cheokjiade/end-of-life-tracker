@@ -20,12 +20,19 @@
     "notify_when: 'always'      = daily report regardless of alerts",
     "             'alerts_only' = only when something is EOL or approaching",
     "",
+    "policy_note (optional, any entry): a short ASCII observation shown as a report",
+    "  sub-line -- use for no-EOL-date platform/infra (nginx, Tomcat, PuTTY, ...).",
+    "",
     "notifications: list of output channels. Supported types:",
     "  console   - print plain-text report to stdout",
     "  html_file - write HTML report to 'path' (a UTC timestamp is inserted",
     "              before the extension; default base: eol_report.html)",
-    "  sns       - publish plain-text to SNS topic (topic_arn or SNS_TOPIC_ARN env var)",
-    "  ses       - send HTML email via SES (from_email, to_emails, or env vars)"
+    "  sns       - publish plain-text to SNS topic. Resolution order:",
+    "              notif.topic_arn  >  event.sns_topic_arn  >  SNS_TOPIC_ARN env var.",
+    "              In multi-project deploys the topic ARN is supplied per-invocation",
+    "              by EventBridge so each project routes to its own topic.",
+    "  ses       - send HTML email via SES (from_email, to_emails, or env vars;",
+    "              to_emails / from_email can also come from event payload)"
   ],
 
   "alert_thresholds_days": [30, 60, 90],
@@ -45,7 +52,8 @@
     {
       "product": "nginx",
       "version": "1.29",
-      "label": "Nginx 1.29"
+      "label": "Nginx 1.29",
+      "policy_note": "nginx cuts a new stable branch about yearly; once a newer stable branch ships the previous one stops getting updates, so an old branch is effectively EOL with no published date."
     },
     {
       "product": "alpine-linux",

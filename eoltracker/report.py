@@ -1,0 +1,358 @@
+"""Report formatting — plain-text and HTML.
+
+Both formatters consume the uniform result dicts produced by any provider.
+Source labels and upstream links come from the parser registry
+(:mod:`eoltracker.parsers`), so a new provider surfaces in reports with no
+change here.
+"""
+
+import html
+
+from .parsers import SOURCE_LABELS, source_url_for
+
+
+# ---------------------------------------------------------------------------
+# Source labels (shared by both formatters)
+# ---------------------------------------------------------------------------
+
+def _source_label(r):
+    """Render a result's data-source key as a human-readable label."""
+    key = r.get("source", "endoflife_date")
+    return SOURCE_LABELS.get(key, key)
+
+
+def _source_html(r):
+    """Render the source as a clickable link in HTML reports (label-only fallback)."""
+    label = _source_label(r)
+    url = source_url_for(r)
+    if url and url.startswith(("https://", "http://")):
+        safe = html.escape(url, quote=True)
+        return (
+            f'<a href="{safe}" target="_blank" rel="noopener" '
+            f'style="color:#1565c0;text-decoration:none">{label}</a>'
+        )
+    return label
+
+
+# ---------------------------------------------------------------------------
+# Categorisation (shared by both formatters)
+# ---------------------------------------------------------------------------
+
+def _categorise(results, thresholds):
+    """Split results into eol / approaching / ok / error / untracked buckets."""
+    max_threshold = max(thresholds) if thresholds else 90
+    eol, approaching, ok, errors, untracked = [], [], [], [], []
+
+    for r in results:
+        status = r["status"]
+        if status == "error":
+            errors.append(r)
+        elif status == "untracked":
+            untracked.append(r)
+        elif status == "eol":
+            eol.append(r)
+        elif status == "approaching" and r["days_remaining"] is not None and r["days_remaining"] <= max_threshold:
+            approaching.append(r)
+        else:
+            ok.append(r)
+
+    approaching.sort(key=lambda x: x["days_remaining"])
+    return eol, approaching, ok, errors, untracked, max_threshold
+
+
+# ---------------------------------------------------------------------------
+# Plain-text report
+# ---------------------------------------------------------------------------
+
+def _append_version_info(lines, r):
+    """Append in-use, latest-patch, and latest-cycle lines to the report."""
+    if r.get("in_use_release_date"):
+        lines.append(f"    In use: {r['version']} (released {r['in_use_release_date']})")
+
+    if r.get("latest_patch"):
+        patch_line = f"    Latest patch: {r['latest_patch']}"
+        if r.get("latest_patch_date"):
+            patch_line += f" (released {r['latest_patch_date']})"
+        lines.append(patch_line)
+
+    if r.get("latest_cycle"):
+        cycle = r["latest_cycle"]
+        cycle_v = r.get("latest_cycle_version")
+        if r.get("on_latest_cycle"):
+            cycle_line = f"    Latest cycle: {cycle} (you are on the latest)"
+        elif cycle_v and cycle_v != cycle:
+            cycle_line = f"    Latest cycle: {cycle} -> {cycle_v}"
+            if r.get("latest_cycle_release_date"):
+                cycle_line += f" (released {r['latest_cycle_release_date']})"
+        else:
+            cycle_line = f"    Latest cycle: {cycle}"
+        lines.append(cycle_line)
+
+
+def _append_notes(lines, r):
+    """Append support-status and policy observation sub-lines (ASCII for console/SNS)."""
+    if r.get("support_message"):
+        lines.append(f"    {r['support_message']}")
+    if r.get("policy_note"):
+        lines.append(f"    Policy: {r['policy_note']}")
+
+
+def format_report_text(results, thresholds, today):
+    """Format results into a readable plain-text report.
+
+    Returns (report_text, has_alerts).
+    """
+    eol_items, approaching_items, ok_items, error_items, untracked_items, max_t = _categorise(results, thresholds)
+
+    lines = [
+        f"End-of-Life Status Report  -  {today}",
+        "=" * 52,
+    ]
+
+    has_alerts = bool(eol_items or approaching_items)
+
+    if eol_items:
+        lines += ["", "!! ALREADY END OF LIFE", "-" * 42]
+        for r in eol_items:
+            lines.append(f"  * {r['label']}  [{_source_label(r)}]")
+            lines.append(f"    {r['message']}")
+            _append_notes(lines, r)
+            _append_version_info(lines, r)
+
+    if approaching_items:
+        lines += ["", f">> APPROACHING END OF LIFE (within {max_t} days)", "-" * 42]
+        for r in approaching_items:
+            lines.append(f"  * {r['label']}  [{_source_label(r)}]")
+            lines.append(f"    {r['message']}")
+            _append_notes(lines, r)
+            _append_version_info(lines, r)
+
+    if ok_items:
+        lines += ["", "-- No Immediate Concerns", "-" * 42]
+        for r in ok_items:
+            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            _append_notes(lines, r)
+            _append_version_info(lines, r)
+
+    if error_items:
+        lines += ["", "?? Errors", "-" * 42]
+        for r in error_items:
+            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+
+    if untracked_items:
+        lines += ["", "?? UNTRACKED (no EOL source)", "-" * 42]
+        for r in untracked_items:
+            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            _append_notes(lines, r)
+            _append_version_info(lines, r)
+
+    sources_used = sorted({_source_label(r) for r in results})
+    lines += [
+        "",
+        "=" * 52,
+        f"Sources: {', '.join(sources_used)}  |  Products checked: {len(results)}",
+    ]
+
+    return "\n".join(lines), has_alerts
+
+
+# ---------------------------------------------------------------------------
+# HTML report
+# ---------------------------------------------------------------------------
+
+_STATUS_COLOURS = {
+    "eol":         {"bg": "#fce4e4", "badge_bg": "#d32f2f", "badge_text": "#fff"},
+    "approaching": {"bg": "#fff8e1", "badge_bg": "#f57c00", "badge_text": "#fff"},
+    "ok":          {"bg": "#e8f5e9", "badge_bg": "#388e3c", "badge_text": "#fff"},
+    "error":       {"bg": "#f5f5f5", "badge_bg": "#757575", "badge_text": "#fff"},
+    "untracked":   {"bg": "#eceff1", "badge_bg": "#607d8b", "badge_text": "#fff"},
+}
+
+
+def _badge(status_key, label):
+    c = _STATUS_COLOURS.get(status_key, _STATUS_COLOURS["error"])
+    return (
+        f'<span style="display:inline-block;padding:2px 8px;border-radius:3px;'
+        f'font-size:12px;font-weight:bold;color:{c["badge_text"]};'
+        f'background-color:{c["badge_bg"]}">{label}</span>'
+    )
+
+
+def _cycle_cell(r):
+    if not r.get("latest_cycle"):
+        return "-"
+    if r.get("on_latest_cycle"):
+        return f'{r["latest_cycle"]} (latest)'
+    text = f'{r["latest_cycle"]} &rarr; {r.get("latest_cycle_version", "?")}'
+    if r.get("latest_cycle_release_date"):
+        text += f'<br><span style="color:#888;font-size:12px">released {r["latest_cycle_release_date"]}</span>'
+    return text
+
+
+def _status_label(r, bucket):
+    """Render a coloured badge. *bucket* is the category the item was placed in
+    (eol / approaching / ok / error), which may differ from r['status'] when a
+    product is 'approaching' but beyond the configured threshold."""
+    if bucket == "eol":
+        return _badge("eol", "END OF LIFE")
+    if bucket == "approaching":
+        return _badge("approaching", f'{r["days_remaining"]}d remaining')
+    if bucket == "ok":
+        if r.get("days_remaining") is not None:
+            return _badge("ok", f'{r["days_remaining"]}d remaining')
+        return _badge("ok", "OK")
+    if bucket == "untracked":
+        return _badge("untracked", "UNTRACKED")
+    return _badge("error", "ERROR")
+
+
+def _details_html(r):
+    """Details cell: provider message plus muted observation sub-lines.
+
+    The provider-generated `message` is emitted as-is (consistent with prior
+    behaviour); the config-authored `policy_note` is HTML-escaped as untrusted
+    free text.
+    """
+    detail = r["message"]
+    if r.get("status") == "error":
+        return detail          # error rows carry no observation notes (matches the text report)
+    notes = []
+    if r.get("support_message"):
+        notes.append(html.escape(r["support_message"]))
+    if r.get("policy_note"):
+        notes.append("&#9432; " + html.escape(r["policy_note"]))
+    for n in notes:
+        detail += f'<br><span style="color:#888;font-size:12px">{n}</span>'
+    return detail
+
+
+def _html_table_rows(items, status_key):
+    """Generate <tr> elements for a list of result items."""
+    bg = _STATUS_COLOURS.get(status_key, _STATUS_COLOURS["error"])["bg"]
+    rows = []
+    for r in items:
+        patch = r.get("latest_patch") or "-"
+        if r.get("latest_patch_date"):
+            patch += f'<br><span style="color:#888;font-size:12px">released {r["latest_patch_date"]}</span>'
+
+        eol_display = r.get("eol_date") or "-"
+
+        product_cell = r["label"]
+        if r.get("in_use_release_date"):
+            product_cell += (
+                f'<br><span style="color:#888;font-weight:normal;font-size:12px">'
+                f'in-use {r["version"]} released {r["in_use_release_date"]}</span>'
+            )
+
+        rows.append(
+            f'<tr style="background-color:{bg}">'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;font-weight:bold">{product_cell}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_status_label(r, status_key)}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_details_html(r)}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{eol_display}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{patch}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0">{_cycle_cell(r)}</td>'
+            f'<td style="padding:10px 12px;border-bottom:1px solid #e0e0e0;color:#555;font-size:12px">{_source_html(r)}</td>'
+            f'</tr>'
+        )
+    return "\n".join(rows)
+
+
+def format_report_html(results, thresholds, today):
+    """Format results into an inline-styled HTML report.
+
+    Returns (html_string, has_alerts).
+    """
+    eol_items, approaching_items, ok_items, error_items, untracked_items, max_t = _categorise(results, thresholds)
+    has_alerts = bool(eol_items or approaching_items)
+
+    # Summary banner
+    if eol_items and approaching_items:
+        banner_text = f"{len(eol_items)} EOL + {len(approaching_items)} approaching"
+        banner_bg = "#d32f2f"
+    elif eol_items:
+        banner_text = f"{len(eol_items)} product(s) past end of life"
+        banner_bg = "#d32f2f"
+    elif approaching_items:
+        banner_text = f"{len(approaching_items)} product(s) approaching end of life"
+        banner_bg = "#f57c00"
+    else:
+        banner_text = "All products are within support"
+        banner_bg = "#388e3c"
+
+    # Build table rows in status order
+    all_rows = ""
+    if eol_items:
+        all_rows += _html_table_rows(eol_items, "eol")
+    if approaching_items:
+        all_rows += _html_table_rows(approaching_items, "approaching")
+    if ok_items:
+        all_rows += _html_table_rows(ok_items, "ok")
+    if error_items:
+        all_rows += _html_table_rows(error_items, "error")
+    if untracked_items:
+        all_rows += _html_table_rows(untracked_items, "untracked")
+
+    sources_used_html = ", ".join(sorted({_source_label(r) for r in results}))
+
+    html = f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,Helvetica,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f4">
+<tr><td align="center" style="padding:24px 12px">
+
+  <!-- Container -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+         style="max-width:900px;background-color:#ffffff;border-radius:8px;overflow:hidden">
+
+    <!-- Header -->
+    <tr>
+      <td style="background-color:#1a237e;color:#ffffff;padding:20px 24px">
+        <h1 style="margin:0;font-size:22px;font-weight:bold">End-of-Life Status Report</h1>
+        <p style="margin:6px 0 0;font-size:14px;color:#c5cae9">{today} &nbsp;|&nbsp; {len(results)} products checked</p>
+      </td>
+    </tr>
+
+    <!-- Banner -->
+    <tr>
+      <td style="background-color:{banner_bg};color:#ffffff;padding:12px 24px;font-size:15px;font-weight:bold">
+        {banner_text}
+      </td>
+    </tr>
+
+    <!-- Table -->
+    <tr>
+      <td style="padding:0">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
+          <tr style="background-color:#263238">
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Product</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Status</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Details</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">EOL Date</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Latest Patch</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Latest Cycle</th>
+            <th style="padding:10px 12px;text-align:left;color:#ffffff;font-size:13px">Source</th>
+          </tr>
+          {all_rows}
+        </table>
+      </td>
+    </tr>
+
+    <!-- Footer -->
+    <tr>
+      <td style="padding:16px 24px;font-size:12px;color:#888888;border-top:1px solid #e0e0e0">
+        Sources: {sources_used_html}
+        &nbsp;|&nbsp; Alert threshold: {max_t} days
+      </td>
+    </tr>
+
+  </table>
+
+</td></tr>
+</table>
+</body>
+</html>"""
+
+    return html, has_alerts
