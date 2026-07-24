@@ -1,4 +1,20 @@
 aws_region         = "eu-west-1"
-config_bucket_name = "my-company-eol-config"      # must be globally unique
-notification_email = "team@example.com"
-schedule_expression = "cron(0 8 * * ? *)"          # 8:00 AM UTC daily
+config_bucket_name = "my-company-eol-config" # must be globally unique
+ses_from_email     = ""                       # optional; verified SES sender for HTML emails
+
+projects = {
+  a = {
+    config_path         = "eol_config.a.json"
+    notification_email  = "a-team@example.com"
+    schedule_expression = "cron(0 8 * * ? *)" # 8:00 UTC daily
+    ses_to_emails       = ""                  # comma-separated; empty disables SES
+  }
+
+  # Add more projects as you onboard them, e.g.:
+  # frontend = {
+  #   config_path         = "eol_config.frontend.json"
+  #   notification_email  = "frontend@example.com"
+  #   schedule_expression = "cron(0 9 * * ? *)"
+  #   ses_to_emails       = ""
+  # }
+}

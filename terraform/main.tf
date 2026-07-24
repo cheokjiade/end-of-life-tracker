@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.3.0"
 
   required_providers {
     aws = {
@@ -14,7 +14,7 @@ provider "aws" {
 }
 
 # ──────────────────────────────────────────────
-# S3 — config bucket
+# S3 — config bucket (one bucket, one object per project)
 # ──────────────────────────────────────────────
 
 resource "aws_s3_bucket" "config" {
@@ -31,29 +31,34 @@ resource "aws_s3_bucket_public_access_block" "config" {
 }
 
 resource "aws_s3_object" "eol_config" {
+  for_each     = var.projects
   bucket       = aws_s3_bucket.config.id
-  key          = "eol_config.json"
-  source       = "${path.module}/../eol_config.json"
-  etag         = filemd5("${path.module}/../eol_config.json")
+  key          = "projects/${each.key}/eol_config.json"
+  source       = "${path.module}/../${each.value.config_path}"
+  etag         = filemd5("${path.module}/../${each.value.config_path}")
   content_type = "application/json"
 }
 
 # ──────────────────────────────────────────────
-# SNS — email notifications
+# SNS — one topic + email subscription per project so alerts route
+# to the right team.
 # ──────────────────────────────────────────────
 
 resource "aws_sns_topic" "eol_alerts" {
-  name = "${var.project_name}-alerts"
+  for_each = var.projects
+  name     = "${var.project_name}-${each.key}-alerts"
 }
 
 resource "aws_sns_topic_subscription" "email" {
-  topic_arn = aws_sns_topic.eol_alerts.arn
+  for_each  = var.projects
+  topic_arn = aws_sns_topic.eol_alerts[each.key].arn
   protocol  = "email"
-  endpoint  = var.notification_email
+  endpoint  = each.value.notification_email
 }
 
 # ──────────────────────────────────────────────
-# IAM — Lambda execution role
+# IAM — single Lambda execution role; resource lists are derived from
+# the projects map so every per-project S3 key and SNS topic is covered.
 # ──────────────────────────────────────────────
 
 resource "aws_iam_role" "lambda" {
@@ -89,21 +94,21 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = "arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/${var.project_name}:*"
       },
       {
-        Sid    = "S3ReadConfig"
-        Effect = "Allow"
-        Action = ["s3:GetObject"]
-        Resource = "${aws_s3_bucket.config.arn}/${aws_s3_object.eol_config.key}"
+        Sid      = "S3ReadConfig"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = [for o in aws_s3_object.eol_config : "${aws_s3_bucket.config.arn}/${o.key}"]
       },
       {
-        Sid    = "SNSPublish"
-        Effect = "Allow"
-        Action = ["sns:Publish"]
-        Resource = aws_sns_topic.eol_alerts.arn
+        Sid      = "SNSPublish"
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = [for t in aws_sns_topic.eol_alerts : t.arn]
       },
       {
-        Sid    = "SESSendEmail"
-        Effect = "Allow"
-        Action = ["ses:SendEmail"]
+        Sid      = "SESSendEmail"
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
         Resource = "*"
       },
     ]
@@ -111,13 +116,36 @@ resource "aws_iam_role_policy" "lambda" {
 }
 
 # ──────────────────────────────────────────────
-# Lambda function
+# Lambda function (single, multi-tenant)
+#
+# Per-project routing values arrive via the EventBridge invocation event,
+# not env vars — the env vars below are shared across every project.
 # ──────────────────────────────────────────────
 
 data "archive_file" "lambda" {
   type        = "zip"
-  source_file = "${path.module}/../lambda_function.py"
   output_path = "${path.module}/lambda.zip"
+  source_dir  = "${path.module}/.."
+
+  # Package the whole runtime: lambda_function.py (shim) + the eoltracker/
+  # package. Everything else in the repo root is excluded so the zip carries
+  # ONLY runtime code. Configs are loaded from S3 at runtime, not the zip.
+  excludes = [
+    # directories (whole subtrees)
+    ".git", ".claude", "__pycache__", "terraform", "docs", "inputs", "reports",
+    "project-b",
+    # non-runtime root files
+    ".gitignore", "CLAUDE.md", "README.md", "run.sh", "run.ps1",
+    "generate_config.py", "eol_config_generation_prompt.md",
+    "b_run.txt", "b_run2.txt",
+    # per-project configs + template (runtime loads config from S3, not the zip)
+    "eol_config.sample.json", "eol_config.c.json", "eol_config.d.json",
+    "eol_config.e.json", "eol_config.a.json",
+    "eol_config.b.json", "eol_config.b-auto.json",
+    # belt-and-suspenders globs (compiled artifacts / any future configs)
+    "eol_config.*.json", "**/__pycache__", "**/*.pyc",
+    # keep ONLY: lambda_function.py + eoltracker/**
+  ]
 }
 
 resource "aws_lambda_function" "eol_checker" {
@@ -133,34 +161,42 @@ resource "aws_lambda_function" "eol_checker" {
   environment {
     variables = {
       CONFIG_BUCKET  = aws_s3_bucket.config.id
-      CONFIG_KEY     = aws_s3_object.eol_config.key
-      SNS_TOPIC_ARN  = aws_sns_topic.eol_alerts.arn
       SES_FROM_EMAIL = var.ses_from_email
-      SES_TO_EMAILS  = var.ses_to_emails
     }
   }
 }
 
 # ──────────────────────────────────────────────
-# CloudWatch Events — daily schedule
+# CloudWatch Events — one schedule per project, each carrying the
+# project's config key and SNS topic in its input payload.
 # ──────────────────────────────────────────────
 
 resource "aws_cloudwatch_event_rule" "daily" {
-  name                = "${var.project_name}-daily"
-  description         = "Trigger EOL checker Lambda on a daily schedule"
-  schedule_expression = var.schedule_expression
+  for_each            = var.projects
+  name                = "${var.project_name}-${each.key}-daily"
+  description         = "Trigger EOL checker for project ${each.key}"
+  schedule_expression = each.value.schedule_expression
 }
 
 resource "aws_cloudwatch_event_target" "lambda" {
-  rule      = aws_cloudwatch_event_rule.daily.name
-  target_id = var.project_name
+  for_each  = var.projects
+  rule      = aws_cloudwatch_event_rule.daily[each.key].name
+  target_id = "${var.project_name}-${each.key}"
   arn       = aws_lambda_function.eol_checker.arn
+
+  input = jsonencode({
+    project       = each.key
+    config_key    = aws_s3_object.eol_config[each.key].key
+    sns_topic_arn = aws_sns_topic.eol_alerts[each.key].arn
+    ses_to_emails = each.value.ses_to_emails
+  })
 }
 
 resource "aws_lambda_permission" "cloudwatch" {
-  statement_id  = "AllowCloudWatchInvoke"
+  for_each      = var.projects
+  statement_id  = "AllowCloudWatchInvoke-${each.key}"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.eol_checker.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily.arn
+  source_arn    = aws_cloudwatch_event_rule.daily[each.key].arn
 }
