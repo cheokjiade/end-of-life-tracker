@@ -5,25 +5,14 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "Name prefix for all resources"
+  description = "Name prefix for shared resources (Lambda, IAM, S3 bucket)"
   type        = string
   default     = "eol-checker"
 }
 
 variable "config_bucket_name" {
-  description = "S3 bucket name for the EOL config file (must be globally unique)"
+  description = "S3 bucket name for the EOL config files (must be globally unique)"
   type        = string
-}
-
-variable "notification_email" {
-  description = "Email address to receive EOL alerts (must confirm the SNS subscription)"
-  type        = string
-}
-
-variable "schedule_expression" {
-  description = "CloudWatch Events schedule expression for the daily run"
-  type        = string
-  default     = "cron(0 8 * * ? *)" # 8:00 AM UTC daily
 }
 
 variable "lambda_timeout" {
@@ -39,13 +28,26 @@ variable "lambda_memory" {
 }
 
 variable "ses_from_email" {
-  description = "SES sender email address (must be verified in SES). Leave empty to skip SES."
+  description = "SES sender (must be verified in SES). Shared across all projects. Leave empty to skip SES."
   type        = string
   default     = ""
 }
 
-variable "ses_to_emails" {
-  description = "Comma-separated list of recipient emails for SES. Leave empty to skip SES."
-  type        = string
-  default     = ""
+# ──────────────────────────────────────────────
+# Per-project settings
+#
+# One Lambda services every project; each entry below produces its own
+# S3 config object, SNS topic + email subscription, and EventBridge
+# schedule. The schedule's input payload tells the Lambda which config
+# to load and which topic to publish to.
+# ──────────────────────────────────────────────
+
+variable "projects" {
+  description = "Map of project name to per-project EOL checker settings"
+  type = map(object({
+    config_path         = string                                # local file relative to repo root
+    notification_email  = string                                # SNS subscriber
+    schedule_expression = optional(string, "cron(0 8 * * ? *)") # daily 8:00 UTC default
+    ses_to_emails       = optional(string, "")                  # comma-separated; empty = skip SES
+  }))
 }
