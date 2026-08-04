@@ -17,7 +17,7 @@ deployment zip.
 
 | I want to... | Read / run |
 |---|---|
-| Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, `package.json`) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
+| Generate a config from dependency manifests (pom.xml, *.gradle*, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
 | Add a new data-source provider | `docs/adding-a-provider.md` |
@@ -161,7 +161,7 @@ drifts). In brief:
 | `CLAUDE.md` | Claude-specific entry points (subagent + skills) layered on this file |
 | `lambda_function.py` | Shim: re-exports `lambda_handler` (the Lambda entry point) + the local CLI (`run_local`) |
 | `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers |
-| `eoltracker/parsers/` | One file per provider + `__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
+| `eoltracker/parsers/` | One file per provider + __init__.py auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
 | `eoltracker/report.py` | Categorizer + plain-text and HTML formatters |
 | `eoltracker/notify.py` | Notification channels (console / html_file / SNS / SES) |
 | `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |

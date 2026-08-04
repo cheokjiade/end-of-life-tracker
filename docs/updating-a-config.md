@@ -13,7 +13,7 @@ Update = diff + patch.
 
 - The existing config: `eol_config.<project>.json` (the baseline).
 - Fresh evidence of what the project runs now — one of:
-  - **Dependency manifests** (`pom.xml`, `*.gradle*`, `package.json`): scan with
+  - **Dependency manifests** (pom.xml, *.gradle*, package.json): scan with
     `python generate_config.py <folder> --name <project>-scan --output <scratch-file>`
     and use the scratch output as the extracted inventory (do not overwrite the
     real config with it).

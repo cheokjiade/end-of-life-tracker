@@ -7,7 +7,7 @@ description: Generate an eol_config.<project>.json for the EOL tracker from inve
 
 Route by input type — do not extract by hand:
 
-1. **Only clean dependency manifests** (`pom.xml` / `*.gradle*` / `package.json`
+1. **Only clean dependency manifests** (pom.xml / *.gradle* / package.json
    in a folder): run the deterministic scanner, then verify:
 
    ```
