@@ -53,12 +53,14 @@ Update = diff + patch.
      no manifest will ever mention them, so an update never drops them. At most,
      refresh their `eol_date` against their `reference_url`.
 5. **Verify live — only the added and version-changed entries** (a pure
-   re-verification pass checks all entries). Use one batched stdlib script per
-   source, as shown in the "Verification Checklist" section of
-   `eol_config_generation_prompt.md`: confirm each endoflife.date slug + exact
-   `cycle`, each npm `package` (+ `version`) resolves on `registry.npmjs.org`,
-   each Maven `group:artifact` resolves on `search.maven.org`. Anything
-   unverifiable is flagged, not guessed.
+   re-verification pass checks all entries). Use one batched stdlib
+   `urllib.request` script per source: confirm each endoflife.date slug + exact
+   `cycle` at `https://endoflife.date/api/{slug}.json`, each npm `package`
+   (+ `version`) resolves on `registry.npmjs.org`, each Maven `group:artifact`
+   resolves via the `search.maven.org` solrsearch API. (The "Verification
+   Checklist" section of `eol_config_generation_prompt.md` shows the per-entry
+   curl form for endoflife.date.) Anything unverifiable is flagged, not
+   guessed.
 6. **Validate + smoke-run:**
    `python -c "import json; json.load(open('eol_config.<project>.json'))"`, then
    `python lambda_function.py eol_config.<project>.json` — confirm no new

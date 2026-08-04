@@ -4,7 +4,7 @@ This tracker maps each product to a **provider** — a function that fetches EOL
 data from one source and returns a normalized result. Providers follow a uniform contract
 and are wired together through a small registry, so adding a source is a localized change.
 
-See `CLAUDE.md` for the architecture overview. This is the step-by-step how-to.
+See `AGENTS.md` for the architecture overview. This is the step-by-step how-to.
 
 ## The contract
 
@@ -199,6 +199,10 @@ floor) instead of silently wrong dates. When that happens:
    from eoltracker.parsers import tyk_lifecycle as mod   # the broken module
    print(mod.provider({"source": mod.SOURCE, "version": "5.8"}, date.today()))
    ```
+
+   (A provider's module filename may differ from its `source` string — e.g.
+   source `aws_rds_scrape` lives in `eoltracker/parsers/aws_rds.py`; list
+   `eoltracker/parsers/` to find the right module.)
 
 2. **Fetch the raw source** the provider parses (the URL constant at the top of
    the module) and save it to a scratch file. Compare its structure against what
