@@ -115,7 +115,7 @@ def _provider_foo(entry, today):
 
 ## Register (module attributes — auto-discovered)
 
-At the **bottom of the same file**, declare the registration contract. `parsers/__init__.py`
+At the **bottom of the same file**, declare the registration contract. `eoltracker/parsers/__init__.py`
 scans the package at import time and wires these into `PROVIDERS`, `SOURCE_LABELS`, and the
 `source_url_for` dispatch — no other file changes, no registry to edit.
 
@@ -183,6 +183,43 @@ Then one live smoke run: `python lambda_function.py <a config using source: foo>
 Add it to `eol_config_generation_prompt.md` so config generation (and the
 `eol-config-extractor` agent) knows to use it: a row in the providers table, an entry-shape
 example, and a line in the mapping decision order.
+
+## Repairing a broken provider
+
+Scraper providers fail loudly by design: when an upstream page drifts, the report
+grows `error` rows ("source may have changed", a canary assertion, a row-count
+floor) instead of silently wrong dates. When that happens:
+
+1. **Reproduce.** Run the failing provider directly (network on) and read the
+   actual error — canary failure, row-count floor, missing header, HTTP error:
+
+   ```python
+   import sys; sys.path.insert(0, r"E:\Git\endoflife")
+   from datetime import date
+   from eoltracker.parsers import tyk_lifecycle as mod   # the broken module
+   print(mod.provider({"source": mod.SOURCE, "version": "5.8"}, date.today()))
+   ```
+
+2. **Fetch the raw source** the provider parses (the URL constant at the top of
+   the module) and save it to a scratch file. Compare its structure against what
+   the pure `_parse_*` helper expects: headers, column order, section headings,
+   markdown vs rendered HTML.
+3. **Fix the pure parse helper** against the saved raw text. Keep it pure — no
+   network — so the fix is testable offline.
+4. **Keep the defensive checks.** Never delete a canary or lower a row-count
+   floor just to silence the error. Update the canary only when the upstream
+   fact legitimately changed (e.g. a version's EOL date was revised upstream),
+   and say so in the commit message.
+5. **Re-run the module's network-free test script** (synthetic raw text +
+   injected cache, as in "Test it (network-free)" above), adding a regression
+   case built from the new page shape.
+6. **One live smoke run:** `python lambda_function.py <config using the source>`
+   — confirm the `error` rows are gone.
+
+If the upstream source is gone for good (page deleted, product discontinued),
+migrate the affected config entries to another provider or `manual`, and update
+`eol_config_generation_prompt.md` so config generation stops recommending the
+dead source.
 
 ## Worked example: `tyk_lifecycle`
 
