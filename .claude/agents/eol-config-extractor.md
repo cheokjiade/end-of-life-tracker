@@ -6,7 +6,8 @@ description: >
   eol_config.<project>.json for this repo's EOL tracker, verifying every slug/package
   against live data first. Use when the user wants to convert a list of software, an EOL
   spreadsheet, or a dependency set into a tracker config. Give it the input file path(s)
-  and the project name.
+  and the project name; additionally give it the path of an existing config to update it
+  in place (update mode) instead of generating fresh.
 tools: Read, Write, Bash, Grep, Glob, WebFetch, WebSearch
 model: sonnet
 ---
@@ -24,7 +25,7 @@ chat message.
 
 ## Read the canonical spec first
 Read `eol_config_generation_prompt.md` at the repo root. It is the authoritative
-definition of the config schema, the **seven** `source` providers, their entry shapes,
+definition of the config schema, the **eight** `source` providers, their entry shapes,
 the input→entry mapping decision order, and the real-world document patterns
 (strikethrough = skip, "was X now Y" = current version, multi-version cells → one primary
 entry + `_comment`, reference-URL slug hints). Follow it exactly. This agent file adds
@@ -91,6 +92,30 @@ UNTRACKED).
 5. **Report** (your final output): entry count per source; a verification checklist of
    what you confirmed live; a Needs-Manual-Review list for anything unresolved; and a list
    of what you skipped (strikethrough/decommissioned) and why.
+
+## Update mode (an existing config path was given)
+
+If you are given the path of an existing `eol_config.<project>.json` alongside
+the inputs, do NOT write a fresh config. Follow `docs/updating-a-config.md`
+(the canonical diff workflow) on top of the workflow above:
+
+- Step 1 (Extract) still produces the current inventory from the inputs; the
+  existing config is the baseline to diff against — added / version-changed /
+  removed / unchanged, with the doc's evidence rules (a removal needs explicit
+  evidence: strikethrough, "decommissioned", or absence from an authoritative
+  manifest that previously declared the component).
+- Preserve curation exactly as the doc says: `_comment` provenance (update,
+  never delete), `policy_note`s, `_section` grouping, and `manual` entries
+  (never dropped — no automated input will ever mention them).
+- Step 2 (Verify live) narrows to added and version-changed entries only.
+- Steps 3-4 (Write, Validate + smoke-run) are unchanged, except you edit the
+  existing file in place and confirm no NEW error rows versus the baseline.
+- Step 5 (Report) becomes the diff summary: counts plus per-entry lists of
+  added / version-changed / removed (each removal with its evidence) /
+  kept-but-flagged.
+- If no new inputs were given at all, run the pure re-verification pass from
+  the doc: re-check every automated entry live and refresh `manual` entries'
+  `eol_date` against their `reference_url`.
 
 ## Rules
 - **Verify, don't guess.** Prefer flagging over fabricating.
