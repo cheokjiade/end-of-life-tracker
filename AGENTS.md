@@ -23,6 +23,7 @@ deployment zip.
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
 | Add a new data-source provider | `docs/adding-a-provider.md` |
 | Repair a provider whose upstream page drifted | "Repairing a broken provider" in `docs/adding-a-provider.md` |
+| Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
 
 Universal norms, whichever workflow you are in:
 
@@ -133,6 +134,32 @@ drifts). In brief:
 - Claude Code additionally provides the optional extractor subagent at
   `.claude/agents/eol-config-extractor.md` — see `CLAUDE.md`.
 
+## Git workflow and commits
+
+AI agents are expected to leave completed work in reviewable commits, not as an
+ever-growing working-tree diff. Follow `docs/commit-conventions.md` for the
+canonical message format and detailed workflow.
+
+- Treat one logical user-requested change, or a tightly related group of
+  changes verified together, as a **batch**. Commit immediately after that
+  batch passes its relevant checks and before starting unrelated work.
+- A batch may use more than one commit when its changes are independently
+  reviewable. Do not combine unrelated changes merely to produce one commit.
+- At the start and end of a batch, inspect `git status --short`. Stage only the
+  paths or hunks changed for that batch; never use `git add -A` in a dirty
+  working tree.
+- Do not include pre-existing user edits, untracked files, generated reports,
+  ignored per-project configs, secrets, or another agent's work. If a file
+  mixes changes that cannot be safely separated, leave it uncommitted and
+  report the blocker.
+- Review the staged diff and run the relevant tests before committing. Do not
+  commit a knowingly failing or incomplete batch unless the user explicitly
+  asks for a checkpoint commit; label such a commit clearly in its body.
+- A direct user instruction such as "do not commit" or "leave this for review"
+  overrides the standing commit rule for that batch.
+- Committing does not authorize pushing, force-pushing, rebasing, or rewriting
+  history. Perform those actions only when the user explicitly requests them.
+
 ## Conventions & gotchas
 
 - **Stdlib only** across the `eoltracker/` package (`boto3` is imported lazily
@@ -176,4 +203,5 @@ drifts). In brief:
 | `generate_config.py` | Static dependency-manifest → config generator (Maven/Gradle/npm) |
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
+| `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
 | `terraform/` | Deployment (packages `lambda_function.py` + `eoltracker/` as a zip) |
