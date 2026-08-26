@@ -41,9 +41,9 @@ them.
    tokens, sensitive data, and local-only files before committing. If anything
    looks secret, unstage it and alert the user without reproducing its value.
 6. Commit using the format below.
-7. Review the committed batch using the post-commit process below.
-8. Run `git status --short` again and report the commit hash, review result,
-   and any changes deliberately left uncommitted.
+7. If the batch is a bug fix, run the adversarial subagent review below.
+8. Run `git status --short` again and report the commit hash, any required
+   bug-fix review result, and changes deliberately left uncommitted.
 
 If a file contains both pre-existing edits and batch edits, use safe hunk
 staging only when the changes can be separated confidently. Otherwise leave
@@ -53,6 +53,15 @@ commit unrelated work merely to obtain a clean tree.
 Ignored per-project `eol_config.*.json` files and generated reports are runtime
 artifacts, not repository changes. Do not force-add them. Never commit secrets
 or local agent settings.
+
+### If a secret is committed
+
+A committed credential, token, private key, or other live secret is not fixed
+by deleting it in a later commit because it remains in Git history. Stop the
+workflow, do not display or copy the value, do not push, and notify the user.
+Recommend promptly rotating or revoking the credential. Request explicit
+authorization before rewriting local history; if the commit was published,
+coordinate remote history cleanup and warn that existing clones may retain it.
 
 ## Commit message format
 
@@ -104,63 +113,46 @@ Do not add platform-specific generated-by text or AI co-author trailers unless
 the user explicitly requests attribution. The same history format should result
 regardless of which agent made the change.
 
-## Post-commit review
+## Adversarial review for bug fixes
 
-Review after committing so every finding refers to a stable diff. Capture the
-commit immediately before the batch as the immutable **batch base** and the
-hash of every commit created for the batch, including the final immutable
-**batch tip**. Before auditing, verify that `git log <batch-base>..<batch-tip>`
-contains exactly the recorded batch commits and no others. When it does, audit
-the exact range `<batch-base>..<batch-tip>`; never use a mutable `HEAD` as an
-audit boundary. If another agent's commits are interleaved, audit each recorded
-batch commit separately with `<commit>^..<commit>` and aggregate the results.
-Never include, attribute, or fix an interleaved commit. Review only the recorded
-commits for the batch, not unrelated pre-existing or concurrent changes.
+Do not run a routine audit after ordinary feature, refactor, documentation,
+test, build, CI, or maintenance batches. This review is required only when the
+batch fixes incorrect runtime or deployment behaviour: a bug, defect,
+regression, incident, or faulty provider result. Typo and documentation-only
+corrections do not trigger it.
 
-Use no more than two audit lenses:
+Commit the verified fix first so the review has a stable target. Record the
+immutable base commit and every commit created for the fix. In a shared
+worktree, verify the range contains only those commits; if another agent's
+commits are interleaved, review each owned commit against its first parent
+instead of including unrelated work.
 
-1. **Security (required).** Check the changed attack surface and trust
-   boundaries, including input validation, injection, unsafe parsing or command
-   execution, authentication and authorization, secrets, sensitive-data
-   exposure, network and TLS behaviour, filesystem paths, HTML escaping,
-   dependency or infrastructure permissions, and fail-open behaviour. Apply
-   the list proportionally; explicitly record when a category is not relevant.
-2. **One optional risk-based audit.** Select at most one additional lens that
-   best matches the batch. Prefer correctness/reliability for runtime code,
-   architecture/maintainability for structural refactors, performance for hot
-   paths, deployment safety for infrastructure, or documentation integrity for
-   docs-only changes. State which lens was selected and why. Skip it when no
-   second lens would add meaningful confidence.
+Dispatch exactly one fresh, read-only adversarial subagent. Give it:
 
-For each finding, report severity, file and line, evidence, impact, and a
-concrete remediation. Do not invent findings merely to fill both lenses.
+- the original symptom, reproduction, and expected behaviour;
+- the root-cause hypothesis and exact owned commit hashes or diff commands;
+- the relevant tests, standards, and constraints;
+- an explicit prohibition on editing, staging, committing, or pushing.
 
-Resolve actionable findings in a new follow-up commit; do not amend the already
-reviewed commit. Re-run relevant tests and only the audit lens or lenses affected
-by the fix. Repeat until no actionable findings remain or the user accepts a
-documented residual risk. A clean review creates no commit. This prevents an
-endless cycle of empty audit commits.
+Ask the subagent to attempt to disprove the fix, not to summarize it. It should
+look for counterexamples, unhandled inputs, boundary and error paths, incomplete
+root-cause treatment, regressions, unsafe failure modes, and missing tests. When
+practical, it should confirm that the regression test fails at the base and
+passes at the fixed commit. Findings must include severity, file and line,
+evidence, impact, and a concrete remediation.
 
-Before applying a review fix, confirm whether the current `HEAD` still equals
-the recorded batch tip. If another agent or the user has advanced it, keep the
-audit scoped to the immutable range, inspect the intervening changes, and stop
-for coordination when they overlap the files or assumptions needed by the fix.
-Never reset, rebase, or widen the audit range to absorb the new commits.
+The controlling agent evaluates the findings. Resolve actionable findings in a
+new follow-up commit; do not amend the reviewed commit. Re-run relevant tests
+and dispatch a fresh adversarial review of the updated fix. A clean review
+creates no commit. The bug fix is not complete until the review is clean, the
+user explicitly accepts a documented residual risk, or the review is blocked
+and the blocker is reported. If the harness cannot run subagents, report that
+the required review was not performed rather than silently substituting a
+self-review.
 
-### Committed secrets are an incident
-
-A committed credential, token, private key, or other live secret is not handled
-by the ordinary follow-up-commit rule: deleting it later does not remove it from
-Git history. Stop the workflow, do not display or copy the value, do not push,
-and notify the user. Recommend promptly rotating or revoking the credential.
-Request explicit authorization before rewriting local history; if the commit
-was published, coordinate remote history cleanup and warn that existing clones
-may still retain it. A follow-up deletion alone does not resolve the exposure.
-
-The post-commit review does not authorize reading secrets, accessing production
-systems, probing third-party services, installing scanners, or changing remote
-state. Ask for authorization when an audit requires capabilities beyond local,
-read-only repository inspection.
+The adversarial subagent is limited to local, read-only repository inspection.
+It may not read secrets, access production systems, probe third-party services,
+install scanners, or change remote state without separate authorization.
 
 ## Examples
 
@@ -186,7 +178,7 @@ BREAKING CHANGE: configs without a notifications list are no longer accepted.
 
 ## Actions that require separate authorization
 
-A request to change code authorizes the local completion and review-fix commits
-described above. It does not authorize pushing, force-pushing, rebasing,
-amending a published commit, rewriting history, deleting branches, or opening
-a pull request. Do those only when the user explicitly asks.
+A request to change code authorizes the local completion commits and bug-fix
+follow-up commits described above. It does not authorize pushing, force-pushing,
+rebasing, amending a published commit, rewriting history, deleting branches, or
+opening a pull request. Do those only when the user explicitly asks.

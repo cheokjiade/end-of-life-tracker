@@ -67,18 +67,17 @@ assert "## Workflows index" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 commit_text = (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
 assert "## Git workflow and commits" in agents_text
-assert "always run a security" in agents_text
-assert "at most one additional audit type" in agents_text
+assert "Do not run routine post-commit audits" in agents_text
+assert "For bug-fix batches only" in agents_text
+assert "fresh, read-only adversarial subagent" in agents_text
 assert "## Commit message format" in commit_text
-assert "## Post-commit review" in commit_text
-assert "Use no more than two audit lenses" in commit_text
-assert "A clean review creates no commit" in commit_text
-assert "never use a mutable `HEAD`" in commit_text
-assert "contains exactly the recorded batch commits" in commit_text
+assert "## Adversarial review for bug fixes" in commit_text
+assert "Dispatch exactly one fresh, read-only adversarial subagent" in commit_text
+assert "attempt to disprove the fix" in commit_text
 assert "new follow-up commit" in commit_text
-assert "do not amend the already" in commit_text
-assert "### Committed secrets are an incident" in commit_text
-assert "does not authorize reading secrets" in commit_text
+assert "do not amend the reviewed commit" in commit_text
+assert "the required review was not performed" in commit_text
+assert "### If a secret is committed" in commit_text
 assert "## Update mode" in (ROOT / ".claude" / "agents" / "eol-config-extractor.md").read_text(encoding="utf-8")
 assert ".agents/skills/manage-eol-config/SKILL.md" in (
     ROOT / ".claude" / "skills" / "eol-config" / "SKILL.md"

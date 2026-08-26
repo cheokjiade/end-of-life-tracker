@@ -23,7 +23,7 @@ deployment zip.
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
 | Add a new data-source provider | `docs/adding-a-provider.md` |
 | Repair a provider whose upstream page drifted | "Repairing a broken provider" in `docs/adding-a-provider.md` |
-| Make, commit, and review repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch, then audit it |
+| Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
 
 Universal norms, whichever workflow you are in:
 
@@ -155,13 +155,15 @@ canonical message format and detailed workflow.
 - Review the staged diff and run the relevant tests before committing. Do not
   commit a knowingly failing or incomplete batch unless the user explicitly
   asks for a checkpoint commit; label such a commit clearly in its body.
-- After committing the completed batch, review the committed diff using the
-  post-commit process in `docs/commit-conventions.md`: always run a security
-  audit and select at most one additional audit type based on the change's
-  highest non-security risk.
-- Fix actionable review findings in a follow-up commit, then re-run only the
-  affected audit lens or lenses. Do not amend the reviewed commit or create
-  empty "review" commits. Report a clean review without committing anything.
+- Do not run routine post-commit audits for feature, refactor, documentation,
+  test, build, CI, or maintenance batches.
+- For bug-fix batches only, after committing the verified fix, dispatch one
+  fresh, read-only adversarial subagent using the process in
+  `docs/commit-conventions.md`. The subagent attempts to disprove the fix and
+  must not edit, stage, commit, or push.
+- Resolve actionable adversarial findings in a follow-up commit and re-run the
+  adversarial review. A bug fix is not complete until the review is clean or
+  the user explicitly accepts a documented residual risk.
 - A direct user instruction such as "do not commit" or "leave this for review"
   overrides the standing commit rule for that batch.
 - Committing does not authorize pushing, force-pushing, rebasing, or rewriting
