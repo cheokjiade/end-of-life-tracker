@@ -133,11 +133,11 @@ data "archive_file" "lambda" {
   excludes = [
     # directories (whole subtrees)
     ".git", ".claude", "__pycache__", "terraform", "docs", "inputs", "reports",
-    "project-b",
+    "project-*",
     # non-runtime root files
     ".gitignore", "CLAUDE.md", "README.md", "run.sh", "run.ps1",
     "generate_config.py", "eol_config_generation_prompt.md",
-    "b_run.txt", "b_run2.txt",
+    "*_run*.txt",
     # per-project configs + template (runtime loads config from S3, not the zip)
     "eol_config.sample.json", "eol_config.c.json", "eol_config.d.json",
     "eol_config.e.json", "eol_config.a.json",

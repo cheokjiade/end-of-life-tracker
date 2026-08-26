@@ -20,7 +20,7 @@ def _notify_console(report_text, **_kwargs):
 def _project_from_base(base):
     """Derive the project segment from an html_file base name.
 
-    'eol_report_a'  -> 'a'
+    'eol_report_a'    -> 'a'
     'eol_report'      -> 'default'
     anything else     -> the base itself (best effort)
     """

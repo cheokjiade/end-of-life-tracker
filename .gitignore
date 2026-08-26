@@ -23,5 +23,5 @@ terraform/terraform.tfvars
 # Config-generation inputs (software inventories / dependency manifests — may be
 # internal) and scratch run logs. Generated eol_config.*.json are ignored above.
 inputs/
-project-b/
-b_run*.txt
+project-*/
+*_run*.txt
