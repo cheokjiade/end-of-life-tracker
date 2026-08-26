@@ -37,7 +37,9 @@ them.
    batch.
 4. Stage explicit paths or hunks. Do not use `git add -A` in a dirty tree.
 5. Inspect `git diff --cached` and confirm it contains the complete batch and
-   nothing else.
+   nothing else. Check the staged content for credentials, private keys,
+   tokens, sensitive data, and local-only files before committing. If anything
+   looks secret, unstage it and alert the user without reproducing its value.
 6. Commit using the format below.
 7. Review the committed batch using the post-commit process below.
 8. Run `git status --short` again and report the commit hash, review result,
@@ -105,10 +107,12 @@ regardless of which agent made the change.
 ## Post-commit review
 
 Review after committing so every finding refers to a stable diff. Capture the
-commit immediately before the batch as the **batch base**, then audit
-`<batch-base>...HEAD`. This may cover one commit or a short sequence of atomic
-commits belonging to the same batch. Review only the committed batch, not
-unrelated pre-existing working-tree changes.
+commit immediately before the batch as the immutable **batch base** and the
+final commit created for the batch as the immutable **batch tip**. Audit the
+exact range `<batch-base>..<batch-tip>`; never use a mutable `HEAD` as an audit
+boundary. The range may contain one commit or a short sequence of atomic commits
+belonging to the same batch. Review only that committed batch, not unrelated
+pre-existing working-tree changes.
 
 Use no more than two audit lenses:
 
@@ -133,6 +137,22 @@ reviewed commit. Re-run relevant tests and only the audit lens or lenses affecte
 by the fix. Repeat until no actionable findings remain or the user accepts a
 documented residual risk. A clean review creates no commit. This prevents an
 endless cycle of empty audit commits.
+
+Before applying a review fix, confirm whether the current `HEAD` still equals
+the recorded batch tip. If another agent or the user has advanced it, keep the
+audit scoped to the immutable range, inspect the intervening changes, and stop
+for coordination when they overlap the files or assumptions needed by the fix.
+Never reset, rebase, or widen the audit range to absorb the new commits.
+
+### Committed secrets are an incident
+
+A committed credential, token, private key, or other live secret is not handled
+by the ordinary follow-up-commit rule: deleting it later does not remove it from
+Git history. Stop the workflow, do not display or copy the value, do not push,
+and notify the user. Recommend promptly rotating or revoking the credential.
+Request explicit authorization before rewriting local history; if the commit
+was published, coordinate remote history cleanup and warn that existing clones
+may still retain it. A follow-up deletion alone does not resolve the exposure.
 
 The post-commit review does not authorize reading secrets, accessing production
 systems, probing third-party services, installing scanners, or changing remote

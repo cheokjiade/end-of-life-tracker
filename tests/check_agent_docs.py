@@ -64,9 +64,18 @@ for f in DOCS + SKILLS:
 # 5. Landmark sections exist
 assert "## Repairing a broken provider" in (ROOT / "docs" / "adding-a-provider.md").read_text(encoding="utf-8")
 assert "## Workflows index" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-assert "## Git workflow and commits" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-assert "## Commit message format" in (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
-assert "## Post-commit review" in (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
+agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+commit_text = (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
+assert "## Git workflow and commits" in agents_text
+assert "always run a security" in agents_text
+assert "at most one additional audit type" in agents_text
+assert "## Commit message format" in commit_text
+assert "## Post-commit review" in commit_text
+assert "Use no more than two audit lenses" in commit_text
+assert "A clean review creates no commit" in commit_text
+assert "never use a mutable `HEAD`" in commit_text
+assert "### Committed secrets are an incident" in commit_text
+assert "does not authorize reading secrets" in commit_text
 assert "## Update mode" in (ROOT / ".claude" / "agents" / "eol-config-extractor.md").read_text(encoding="utf-8")
 assert ".agents/skills/manage-eol-config/SKILL.md" in (
     ROOT / ".claude" / "skills" / "eol-config" / "SKILL.md"
