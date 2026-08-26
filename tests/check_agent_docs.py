@@ -66,6 +66,7 @@ assert "## Repairing a broken provider" in (ROOT / "docs" / "adding-a-provider.m
 assert "## Workflows index" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 assert "## Git workflow and commits" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 assert "## Commit message format" in (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
+assert "## Post-commit review" in (ROOT / "docs" / "commit-conventions.md").read_text(encoding="utf-8")
 assert "## Update mode" in (ROOT / ".claude" / "agents" / "eol-config-extractor.md").read_text(encoding="utf-8")
 assert ".agents/skills/manage-eol-config/SKILL.md" in (
     ROOT / ".claude" / "skills" / "eol-config" / "SKILL.md"

@@ -39,8 +39,9 @@ them.
 5. Inspect `git diff --cached` and confirm it contains the complete batch and
    nothing else.
 6. Commit using the format below.
-7. Run `git status --short` again and report the commit hash plus any changes
-   deliberately left uncommitted.
+7. Review the committed batch using the post-commit process below.
+8. Run `git status --short` again and report the commit hash, review result,
+   and any changes deliberately left uncommitted.
 
 If a file contains both pre-existing edits and batch edits, use safe hunk
 staging only when the changes can be separated confidently. Otherwise leave
@@ -101,6 +102,43 @@ Do not add platform-specific generated-by text or AI co-author trailers unless
 the user explicitly requests attribution. The same history format should result
 regardless of which agent made the change.
 
+## Post-commit review
+
+Review after committing so every finding refers to a stable diff. Capture the
+commit immediately before the batch as the **batch base**, then audit
+`<batch-base>...HEAD`. This may cover one commit or a short sequence of atomic
+commits belonging to the same batch. Review only the committed batch, not
+unrelated pre-existing working-tree changes.
+
+Use no more than two audit lenses:
+
+1. **Security (required).** Check the changed attack surface and trust
+   boundaries, including input validation, injection, unsafe parsing or command
+   execution, authentication and authorization, secrets, sensitive-data
+   exposure, network and TLS behaviour, filesystem paths, HTML escaping,
+   dependency or infrastructure permissions, and fail-open behaviour. Apply
+   the list proportionally; explicitly record when a category is not relevant.
+2. **One optional risk-based audit.** Select at most one additional lens that
+   best matches the batch. Prefer correctness/reliability for runtime code,
+   architecture/maintainability for structural refactors, performance for hot
+   paths, deployment safety for infrastructure, or documentation integrity for
+   docs-only changes. State which lens was selected and why. Skip it when no
+   second lens would add meaningful confidence.
+
+For each finding, report severity, file and line, evidence, impact, and a
+concrete remediation. Do not invent findings merely to fill both lenses.
+
+Resolve actionable findings in a new follow-up commit; do not amend the already
+reviewed commit. Re-run relevant tests and only the audit lens or lenses affected
+by the fix. Repeat until no actionable findings remain or the user accepts a
+documented residual risk. A clean review creates no commit. This prevents an
+endless cycle of empty audit commits.
+
+The post-commit review does not authorize reading secrets, accessing production
+systems, probing third-party services, installing scanners, or changing remote
+state. Ask for authorization when an audit requires capabilities beyond local,
+read-only repository inspection.
+
 ## Examples
 
 ```text
@@ -125,7 +163,7 @@ BREAKING CHANGE: configs without a notifications list are no longer accepted.
 
 ## Actions that require separate authorization
 
-A request to change code authorizes the local completion commits described
-above. It does not authorize pushing, force-pushing, rebasing, amending a
-published commit, rewriting history, deleting branches, or opening a pull
-request. Do those only when the user explicitly asks.
+A request to change code authorizes the local completion and review-fix commits
+described above. It does not authorize pushing, force-pushing, rebasing,
+amending a published commit, rewriting history, deleting branches, or opening
+a pull request. Do those only when the user explicitly asks.
