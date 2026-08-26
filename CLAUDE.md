@@ -16,10 +16,10 @@ on top of it.
 
 ## Skills (`.claude/skills/`)
 
-- `generate-eol-config` — routes config generation: clean manifests →
-  `generate_config.py`; messy/mixed inputs → the extractor subagent.
-- `update-eol-config` — refresh an existing config (wraps
-  `docs/updating-a-config.md`).
+- `eol-config` — generate or update a config from manifests,
+  Confluence/wiki inventories, spreadsheets, documents, or prose. It delegates
+  to the canonical cross-harness skill at
+  `.agents/skills/manage-eol-config/SKILL.md`.
 - `add-eol-provider` — add or repair a data-source provider (wraps
   `docs/adding-a-provider.md`).
 

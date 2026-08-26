@@ -17,14 +17,16 @@ DOCS = [
     ROOT / "docs" / "adding-a-provider.md",
     ROOT / "docs" / "updating-a-config.md",
 ]
-SKILLS = sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md"))
+CLAUDE_SKILLS = sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md"))
+PORTABLE_SKILLS = sorted((ROOT / ".agents" / "skills").glob("*/SKILL.md"))
+SKILLS = CLAUDE_SKILLS + PORTABLE_SKILLS
 AGENTS = sorted((ROOT / ".claude" / "agents").glob("*.md"))
 
 # 1. Required deliverables exist
 required = DOCS + [
     ROOT / ".claude" / "skills" / name / "SKILL.md"
-    for name in ("generate-eol-config", "update-eol-config", "add-eol-provider")
-]
+    for name in ("eol-config", "add-eol-provider")
+] + [ROOT / ".agents" / "skills" / "manage-eol-config" / "SKILL.md"]
 missing = [str(p) for p in required if not p.exists()]
 assert not missing, f"missing deliverables: {missing}"
 
@@ -34,6 +36,8 @@ dangling = []
 for doc in DOCS + SKILLS + AGENTS:
     text = doc.read_text(encoding="utf-8")
     for ref in sorted(set(path_re.findall(text))):
+        if ref in {"package.json", "pom.xml", "build.gradle"}:
+            continue
         if any(ch in ref for ch in "<>*"):
             continue
         if not (ROOT / ref).exists():
@@ -47,6 +51,9 @@ for f in SKILLS + AGENTS:
     assert m, f"{f}: missing frontmatter"
     assert re.search(r"^name:\s*\S", m.group(1), re.M), f"{f}: frontmatter lacks name"
     assert re.search(r"^description:\s*\S", m.group(1), re.M), f"{f}: frontmatter lacks description"
+    if f.name == "SKILL.md":
+        name_match = re.search(r"^name:\s*[\"']?([^\s\"']+)", m.group(1), re.M)
+        assert name_match.group(1) == f.parent.name, f"{f}: skill name must match directory"
 
 # 4. No placeholder text in the agent-facing docs/skills
 for f in DOCS + SKILLS:
@@ -57,5 +64,8 @@ for f in DOCS + SKILLS:
 assert "## Repairing a broken provider" in (ROOT / "docs" / "adding-a-provider.md").read_text(encoding="utf-8")
 assert "## Workflows index" in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 assert "## Update mode" in (ROOT / ".claude" / "agents" / "eol-config-extractor.md").read_text(encoding="utf-8")
+assert ".agents/skills/manage-eol-config/SKILL.md" in (
+    ROOT / ".claude" / "skills" / "eol-config" / "SKILL.md"
+).read_text(encoding="utf-8")
 
 print("check_agent_docs: OK")

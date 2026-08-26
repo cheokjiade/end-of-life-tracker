@@ -17,6 +17,7 @@ deployment zip.
 
 | I want to... | Read / run |
 |---|---|
+| Generate or update a config with an AI coding agent | Invoke `manage-eol-config` in Codex/OpenCode or `eol-config` in Claude Code; canonical instructions: `.agents/skills/manage-eol-config/SKILL.md` |
 | Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
@@ -114,6 +115,11 @@ drifts). In brief:
 
 ## Config generation & maintenance
 
+- `.agents/skills/manage-eol-config/SKILL.md` is the canonical cross-harness
+  agent workflow for both generation and updates. Codex and OpenCode discover
+  it directly. Claude Code uses the thin loader at
+  `.claude/skills/eol-config/SKILL.md`. The distinct loader name avoids a
+  duplicate skill ID when OpenCode scans both locations.
 - `eol_config_generation_prompt.md` is the **canonical extraction spec**: config
   schema, the 8 providers' entry shapes, the input-to-entry mapping decision
   order, and real-world document patterns (strikethrough = skip, "was X now Y" =
@@ -124,8 +130,8 @@ drifts). In brief:
 - `docs/updating-a-config.md` is the refresh workflow: diff new evidence against
   the existing config and patch it, preserving human curation. Never regenerate
   an existing config wholesale.
-- Claude Code additionally packages these as a subagent
-  (`.claude/agents/eol-config-extractor.md`) and skills — see `CLAUDE.md`.
+- Claude Code additionally provides the optional extractor subagent at
+  `.claude/agents/eol-config-extractor.md` — see `CLAUDE.md`.
 
 ## Conventions & gotchas
 
