@@ -108,11 +108,14 @@ regardless of which agent made the change.
 
 Review after committing so every finding refers to a stable diff. Capture the
 commit immediately before the batch as the immutable **batch base** and the
-final commit created for the batch as the immutable **batch tip**. Audit the
-exact range `<batch-base>..<batch-tip>`; never use a mutable `HEAD` as an audit
-boundary. The range may contain one commit or a short sequence of atomic commits
-belonging to the same batch. Review only that committed batch, not unrelated
-pre-existing working-tree changes.
+hash of every commit created for the batch, including the final immutable
+**batch tip**. Before auditing, verify that `git log <batch-base>..<batch-tip>`
+contains exactly the recorded batch commits and no others. When it does, audit
+the exact range `<batch-base>..<batch-tip>`; never use a mutable `HEAD` as an
+audit boundary. If another agent's commits are interleaved, audit each recorded
+batch commit separately with `<commit>^..<commit>` and aggregate the results.
+Never include, attribute, or fix an interleaved commit. Review only the recorded
+commits for the batch, not unrelated pre-existing or concurrent changes.
 
 Use no more than two audit lenses:
 

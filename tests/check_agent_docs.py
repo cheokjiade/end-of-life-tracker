@@ -74,6 +74,9 @@ assert "## Post-commit review" in commit_text
 assert "Use no more than two audit lenses" in commit_text
 assert "A clean review creates no commit" in commit_text
 assert "never use a mutable `HEAD`" in commit_text
+assert "contains exactly the recorded batch commits" in commit_text
+assert "new follow-up commit" in commit_text
+assert "do not amend the already" in commit_text
 assert "### Committed secrets are an incident" in commit_text
 assert "does not authorize reading secrets" in commit_text
 assert "## Update mode" in (ROOT / ".claude" / "agents" / "eol-config-extractor.md").read_text(encoding="utf-8")
