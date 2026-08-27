@@ -248,8 +248,11 @@ resource "aws_lambda_function" "eol_checker" {
 
   environment {
     variables = {
-      CONFIG_BUCKET  = aws_s3_bucket.config.id
-      SES_FROM_EMAIL = var.ses_from_email
+      CONFIG_BUCKET            = aws_s3_bucket.config.id
+      SES_FROM_EMAIL           = var.ses_from_email
+      EOL_MAX_WORKERS          = tostring(var.eol_max_workers)
+      EOL_TIME_RESERVE_MS      = tostring(var.eol_time_reserve_ms)
+      EOL_CHECK_START_GUARD_MS = tostring(var.eol_check_start_guard_ms)
     }
   }
 }

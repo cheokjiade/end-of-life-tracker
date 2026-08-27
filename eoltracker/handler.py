@@ -17,13 +17,18 @@ Environment variables:
     SNS_TOPIC_ARN   — SNS topic ARN for plain-text email notifications
     SES_FROM_EMAIL  — SES sender for HTML email notifications (optional)
     SES_TO_EMAILS   — Comma-separated SES recipients (optional)
+
+Time-budget variables (see :mod:`eoltracker.runner`):
+    EOL_MAX_WORKERS          — simultaneous provider checks (default: 4)
+    EOL_TIME_RESERVE_MS      — rendering/delivery reserve (default: 15000)
+    EOL_CHECK_START_GUARD_MS — extra time required to start a provider check
+                               (default: 18000)
 """
 
 import os
 from datetime import date
 
 from .core import logger
-from .parsers import check_product
 from .report import analyse_results, format_report_text, format_report_html
 from .notify import (
     DeliveryFailureError,
@@ -32,6 +37,7 @@ from .notify import (
     send_notifications,
     summarize_outcomes,
 )
+from .runner import run_checks
 from .validation import ConfigValidationError, load_validated_config_bytes
 
 
@@ -155,11 +161,13 @@ def lambda_handler(event, context):
 
     logger.info("Checking %d products for EOL status", len(products))
 
-    results = []
-    for i, entry in enumerate(products):
-        result = check_product(entry, today, index=i)
-        if result is not None:
-            results.append(result)
+    results, run_meta = run_checks(products, today, context=context)
+    if run_meta.get("degraded"):
+        logger.warning(
+            "Time budget reached before %d product(s) could be checked; "
+            "delivering a partial report",
+            run_meta["unfinished"],
+        )
 
     for r in results:
         logger.info("%s: %s", r["label"], r["message"])
@@ -213,6 +221,7 @@ def lambda_handler(event, context):
         # True only when at least one configured channel actually delivered.
         "notified": any(o["delivered"] for o in outcomes),
         "notification_outcomes": outcomes,
+        "unfinished": run_meta.get("unfinished", 0),
     }
 
 
@@ -220,12 +229,14 @@ def lambda_handler(event, context):
 # Local testing  (python lambda_function.py [config.json])
 # ---------------------------------------------------------------------------
 
-def run_local(config_path):
+def run_local(config_path, context=None):
     """Run a check against a local config file and dispatch notifications.
 
     Holds the body of the original ``__main__`` block so the shim's CLI and
     any caller can invoke it directly. Local runs never raise on delivery
-    failure; per-channel outcomes are printed instead.
+    failure; per-channel outcomes are printed instead. *context* is optional;
+    pass an object exposing ``get_remaining_time_in_millis()`` to exercise the
+    Lambda budget in a test.
     """
     config = load_config_from_file(config_path)
 
@@ -233,11 +244,7 @@ def run_local(config_path):
     products = config["products"]
     thresholds = config.get("alert_thresholds_days", [30, 60, 90])
 
-    results = []
-    for i, entry in enumerate(products):
-        result = check_product(entry, today, index=i)
-        if result is not None:
-            results.append(result)
+    results, _run_meta = run_checks(products, today, context=context)
     analysis = analyse_results(results, thresholds)
     report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)

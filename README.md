@@ -278,6 +278,23 @@ Or update it via the S3 console.
 | `SNS_TOPIC_ARN` | SNS topic ARN for plain-text alerts |
 | `SES_FROM_EMAIL` | SES sender (optional, can also be set in config) |
 | `SES_TO_EMAILS` | SES recipients (optional, can also be set in config) |
+| `EOL_MAX_WORKERS` | Concurrent provider checks (default `4`) |
+| `EOL_TIME_RESERVE_MS` | Time kept for rendering and delivery (default `15000`) |
+| `EOL_CHECK_START_GUARD_MS` | Extra time required before starting a check (default `18000`) |
+
+### Provider execution budget
+
+Provider checks use bounded concurrency and retain config-file order in the
+report. Work is submitted lazily and stops when the remaining Lambda time is
+less than the reporting reserve plus the provider start guard. A check that
+cannot finish safely becomes an `error` row, so `alerts_only` reports degraded
+tracker health instead of allowing the invocation to time out silently.
+
+The Terraform controls are `eol_max_workers`, `eol_time_reserve_ms`, and
+`eol_check_start_guard_ms`. Keep the start guard at least 15000 ms, the longest
+socket timeout used by a built-in provider. Increase the Lambda timeout or
+lower concurrency if CloudWatch shows repeated partial runs; do not consume
+the reporting reserve to squeeze in more lookups.
 
 ### Manual invocation
 
