@@ -108,7 +108,9 @@ def _provider_foo(entry, today):
             result["status"] = "eol"
             result["message"] = f"EOL {eol} ({abs(days)} days ago)" if days < 0 else f"EOL today ({eol})"
         else:
-            result["status"] = "approaching"      # _categorise demotes to 'ok' if beyond threshold
+            result["status"] = "approaching"
+            # _categorise demotes a *dated far-future* approaching to 'ok';
+            # an undated approaching (days_remaining None) always stays an alert
             result["message"] = f"EOL {eol} ({days} days remaining)"
     return result
 ```
@@ -128,6 +130,15 @@ provider = _provider_foo       # the (entry, today) -> dict function
 def url_for(r):                # optional — the clickable upstream link for a result
     return _FOO_URL
 ```
+
+Report rendering treats the return value of `url_for` and every result field
+as untrusted. A source link is rendered only when it **validates as an HTTPS
+URL** (exactly the `https` scheme, a host present, no whitespace or control
+characters); anything else degrades to plain escaped label text, so fixed
+HTTPS endpoints in module constants are preferred. Every dynamic value
+(labels, versions, dates, messages, notes) is HTML-escaped at the report
+boundary — providers must never embed markup in result strings, plain text
+only.
 
 ## Defensive parsing (required for scrapers)
 
@@ -150,8 +161,8 @@ to shift than a 1.6 MB rendered page.
 ## If you add a new status value
 
 `untracked` is the worked example (added for the `manual` provider). A new status needs
-(all in `eoltracker/report.py`): `_categorise` (new bucket + return tuple), **both**
-`format_report_text` and `format_report_html` (unpack line + a rendering block), and for
+(all in `eoltracker/report.py`): `_categorise` (new bucket in the returned dict), **both**
+`format_report_text` and `format_report_html` (a rendering block / banner decision), and for
 HTML also `_STATUS_COLOURS["<status>"]` and a branch in `_status_label`.
 
 ## Test it (network-free)
