@@ -48,6 +48,11 @@ resource "terraform_data" "validate_eol_config" {
 
   triggers_replace = [
     filesha256("${path.module}/../${each.value.config_path}"),
+    filesha256("${path.module}/../lambda_function.py"),
+    sha256(join("", [
+      for rel in sort(fileset("${path.module}/../eoltracker", "**/*.py")) :
+      filesha256("${path.module}/../eoltracker/${rel}")
+    ])),
   ]
 
   provisioner "local-exec" {

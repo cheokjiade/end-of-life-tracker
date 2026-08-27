@@ -22,8 +22,8 @@ aws_rds_scrape       version
 aws_sdk_lifecycle    sdk, major
 jackson_lifecycle    version
 maven_central        group, artifact, version
-npm_registry         package, version
-manual               (none)
+npm_registry         package (version optional for latest-release watch)
+manual               label
 tyk_lifecycle        version
 ===================  =========================
 
@@ -33,9 +33,10 @@ on usage problems.
 """
 
 import json
+import math
 
 from .parsers import SOURCE_LABELS
-from .parsers.aws_rds import _AWS_DOCS_URLS
+from .parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
 
 # Sources whose config entries this module knows how to field-check.
 # Entries routing to a registered source without rules here get a warning.
@@ -45,7 +46,7 @@ REQUIRED_FIELDS = {
     "aws_sdk_lifecycle": ("sdk", "major"),
     "jackson_lifecycle": ("version",),
     "maven_central": ("group", "artifact", "version"),
-    "npm_registry": ("package", "version"),
+    "npm_registry": ("package",),
     "manual": (),
     "tyk_lifecycle": ("version",),
 }
@@ -100,16 +101,23 @@ def _check_product_entry(entry, prefix, results):
                 "string"))
 
     if source == "aws_rds_scrape":
-        engine = entry.get("engine", VALID_ENGINES[0])
+        engine = entry.get("engine", DEFAULT_ENGINE)
         if not _is_scalar(engine) or str(engine) not in VALID_ENGINES:
             results.append(_finding(
                 f"{prefix}.engine", "error",
                 "engine must be one of: " + ", ".join(VALID_ENGINES)))
 
-    label = entry.get("label")
-    if label is not None and not isinstance(label, str):
+    for field in ("label", "policy_note", "reference_url"):
+        value = entry.get(field)
+        if value is not None and not _is_scalar(value):
+            results.append(_finding(
+                f"{prefix}.{field}", "error",
+                f"'{field}' must be a non-empty string when provided"))
+
+    if source == "manual" and not _is_scalar(entry.get("label")):
         results.append(_finding(
-            f"{prefix}.label", "warning", "label should be a string"))
+            f"{prefix}.label", "error",
+            "manual entries require a non-empty string label"))
 
 
 def validate_config(config):
@@ -156,6 +164,7 @@ def validate_config(config):
         valid = isinstance(thresholds, list) and len(thresholds) > 0 and all(
             isinstance(t, (int, float))
             and not isinstance(t, bool)
+            and math.isfinite(t)
             and t > 0
             for t in thresholds
         )
@@ -179,6 +188,10 @@ def validate_config(config):
             results.append(_finding(
                 "notifications", "error", "'notifications' must be a list"))
         else:
+            if not notifications:
+                results.append(_finding(
+                    "notifications", "warning",
+                    "empty list disables all report delivery channels"))
             _check_notifications(notifications, results)
 
     # -- stray keys ---------------------------------------------------------
@@ -306,7 +319,7 @@ def main(argv=None):
     Returns an exit code: 0 valid, 1 invalid, 2 usage error.
     """
     argv = list(argv if argv is not None else [])
-    if len(argv) != 1 or argv[0].startswith("-"):
+    if len(argv) != 1 or not argv[0] or argv[0].startswith("-"):
         print("usage: python lambda_function.py --validate <config.json>",
               file=__import__("sys").stderr)
         return 2

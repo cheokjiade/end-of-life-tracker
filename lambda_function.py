@@ -15,9 +15,12 @@ if __name__ == "__main__":
     import sys
 
     argv = sys.argv[1:]
-    if argv and argv[0] == "--validate":
+    if argv and (argv[0] == "--validate" or argv[0].startswith("--validate=")):
         # Network-free structural validation: python lambda_function.py
         # --validate eol_config.<project>.json   (exit 0 valid, 1 invalid)
         from eoltracker.validation import main as validate_main
-        sys.exit(validate_main(argv[1:]))
+        validate_args = argv[1:]
+        if argv[0].startswith("--validate="):
+            validate_args = [argv[0].split("=", 1)[1], *argv[1:]]
+        sys.exit(validate_main(validate_args))
     run_local(argv[0] if argv else "eol_config.a.json")

@@ -33,6 +33,9 @@ Rules of thumb:
 - The lock file **is committed** (only `.terraform/`, state, tfvars, and the
   built ZIP are ignored). Never commit `.terraform/` contents or provider
   binaries themselves.
+- A missing lock file is a test failure. Restore it or deliberately regenerate
+  it with the reviewed procedure below; do not let `terraform init` silently
+  select a new provider during deployment.
 - Version constraints change only through reviewed dependency updates (below).
 
 ### Generating / refreshing the lock file
@@ -136,6 +139,11 @@ Notes:
 - `VersionId` appears in `head-object` output only once versioning is on.
 - Use the Terraform `config_object_version_ids` output as the last-applied
   baseline, then correlate later manual uploads with the S3 versions listing.
+  That output is Terraform state, not a live pointer: after a manual rollback
+  it remains stale until the next apply. Record the `VersionId` returned by
+  `copy-object`, confirm it with `head-object`, and preserve it in the change
+  record. A later Terraform apply will upload the configured local file again,
+  so first update that file to the restored content if rollback must persist.
 - To trigger a manual re-check after restoring, invoke the Lambda with the
   EventBridge-shaped payload (`{"project": "<project>", "config_key":
   "projects/<project>/eol_config.json", "sns_topic_arn": "...",
