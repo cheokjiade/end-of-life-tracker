@@ -23,6 +23,7 @@ collection rules keep builds predictable while staying fail-closed:
 | Situation under `eoltracker/` | Behaviour |
 |---|---|
 | known compiled/junk artifacts (`__pycache__/`, `*.pyc`, `*.pyo`) | skipped silently (never runtime code) |
+| symlink, Windows junction, or other reparse point | **build refuses to run** (prevents out-of-repository code inclusion) |
 | any other non-`.py` file | **build refuses to run** (fail closed) |
 | missing `lambda_function.py` or `eoltracker/` | **build refuses to run** |
 

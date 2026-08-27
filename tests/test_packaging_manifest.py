@@ -7,12 +7,17 @@ tree: exact allowlist membership, byte-for-byte reproducibility, refusal of
 unexpected files, and detection of stale/tampered artifacts.
 """
 
-import os, sys, json, zipfile, tempfile
+import os, sys, json, zipfile, tempfile, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import build_lambda_package as pkg
+
+ROOT = Path(__file__).resolve().parent.parent
+main_tf = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
+assert '__pycache__' in main_tf and 'regexall("(^|/)__pycache__/", f)' in main_tf
+assert 'try(filebase64sha256(local.package_zip_path), "")' in main_tf
 
 
 def make_repo(root: Path) -> None:
@@ -145,6 +150,13 @@ with tempfile.TemporaryDirectory() as td:
     except pkg.PackagingError:
         pass
 
+    (repo / "lambda_function.py").write_text("# shim\n", encoding="utf-8")
+    try:
+        pkg.collect_runtime_sources(repo)
+        raise AssertionError("missing eoltracker package accepted")
+    except pkg.PackagingError:
+        pass
+
     make_repo(repo)
     # Stray non-Python junk under eoltracker/ is refused outright...
     (repo / "eoltracker" / "notes.dat").write_text("junk\n", encoding="utf-8")
@@ -158,6 +170,7 @@ with tempfile.TemporaryDirectory() as td:
     pycache = repo / "eoltracker" / "__pycache__"
     pycache.mkdir()
     (pycache / "core.cpython-312.pyc").write_bytes(b"\x00stale bytecode\x00")
+    (pycache / "stale.py").write_text("MUST_NOT_SHIP = True\n", encoding="utf-8")
     sources = pkg.collect_runtime_sources(repo)
     assert not any("__pycache__" in s or s.endswith(".pyc") for s in sources), sources
     build_dir = td / "build"
@@ -165,6 +178,29 @@ with tempfile.TemporaryDirectory() as td:
     assert pkg.verify(repo_root=repo, build_dir=build_dir) == [], "pycache build unverified"
     with zipfile.ZipFile(build_dir / "lambda.zip") as zf:
         assert all(n.endswith(".py") for n in zf.namelist()), zf.namelist()
+
+    # Filesystem aliases must never let runtime code outside the repository
+    # enter the package. On Windows a junction is not reported by is_symlink.
+    outside = td / "outside"
+    outside.mkdir()
+    (outside / "evil.py").write_text("SMUGGLED = True\n", encoding="utf-8")
+    linked = repo / "eoltracker" / "linked"
+    made_link = False
+    if os.name == "nt":
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linked), str(outside)],
+            capture_output=True, text=True,
+        )
+        made_link = proc.returncode == 0
+    else:
+        linked.symlink_to(outside, target_is_directory=True)
+        made_link = True
+    if made_link:
+        try:
+            pkg.collect_runtime_sources(repo)
+            raise AssertionError("linked runtime directory accepted")
+        except pkg.PackagingError as exc:
+            assert "linked/reparse-point" in str(exc), exc
 
 print("OK fail-closed collection rules")
 
