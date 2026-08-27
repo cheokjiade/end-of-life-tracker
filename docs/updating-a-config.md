@@ -57,10 +57,10 @@ Update = diff + patch.
    `urllib.request` script per source: confirm each endoflife.date slug + exact
    `cycle` at `https://endoflife.date/api/{slug}.json`, each npm `package`
    (+ `version`) resolves on `registry.npmjs.org`, each Maven `group:artifact`
-   resolves via the `search.maven.org` solrsearch API. (The "Verification
-   Checklist" section of `eol_config_generation_prompt.md` shows the per-entry
-   curl form for endoflife.date.) Anything unverifiable is flagged, not
-   guessed.
+   resolves via canonical Maven repository metadata and version POMs. (The
+   "Verification Checklist" section of `eol_config_generation_prompt.md` shows
+   the per-entry curl form for endoflife.date.) Anything unverifiable is
+   flagged, not guessed.
 6. **Validate + smoke-run:**
    `python -c "import json; json.load(open('eol_config.<project>.json'))"`, then
    `python lambda_function.py eol_config.<project>.json` — confirm no new

@@ -41,7 +41,7 @@ omitted it defaults to `endoflife_date`. The eight providers and what they need:
 | `aws_rds_scrape`    | AWS RDS/Aurora release-calendar docs (minor-version EOL)  | AWS support end    |
 | `aws_sdk_lifecycle` | AWS SDKs & Tools version-support matrix                   | lifecycle phase    |
 | `jackson_lifecycle` | FasterXML Jackson "Releases" wiki (open/closed branches)  | maintained or not  |
-| `maven_central`     | Maven Central search API (release recency only)           | staleness, not EOL |
+| `maven_central`     | Maven Central repository metadata/POMs (release recency)  | staleness, not EOL |
 | `npm_registry`      | npm registry `registry.npmjs.org` (recency + deprecation) | staleness; deprecated = alert |
 | `manual`            | none — hand-entered or untrackable component              | manual EOL date, else UNTRACKED |
 | `tyk_lifecycle`     | Tyk docs LTS support table (parsed from the tyk-docs repo) | Tyk LTS EOL date   |
