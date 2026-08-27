@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -69,6 +71,22 @@ class PackagingError(Exception):
     """A fail-closed condition detected while collecting runtime sources."""
 
 
+def _is_reparse_point(path: Path) -> bool:
+    """True for Windows junctions and other filesystem reparse points."""
+    try:
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError as exc:
+        raise PackagingError(f"cannot inspect runtime path {path}: {exc}") from exc
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(marker and attrs & marker)
+
+
+def _reject_link(path: Path, description: str) -> None:
+    """Reject symlinks plus Windows junction/reparse-point aliases."""
+    if path.is_symlink() or _is_reparse_point(path):
+        raise PackagingError(f"refusing linked/reparse-point {description}: {path}")
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -85,25 +103,26 @@ def collect_runtime_sources(repo_root: Path) -> List[str]:
     collected: List[str] = []
     for name in TOP_LEVEL_RUNTIME_FILES:
         path = repo_root / name
-        if path.is_symlink():
-            raise PackagingError(f"refusing symlinked runtime file: {name}")
+        _reject_link(path, "runtime file")
         if not path.is_file():
             raise PackagingError(f"required runtime file is missing: {name}")
         collected.append(name)
 
     pkg_dir = repo_root / RUNTIME_PACKAGE_DIR
-    if pkg_dir.is_symlink():
-        raise PackagingError(
-            f"refusing symlinked runtime package: {RUNTIME_PACKAGE_DIR}/"
-        )
+    _reject_link(pkg_dir, "runtime package")
     if not pkg_dir.is_dir():
         raise PackagingError(f"required runtime package is missing: {RUNTIME_PACKAGE_DIR}/")
 
-    for path in sorted(pkg_dir.rglob("*")):
+    try:
+        package_paths = sorted(pkg_dir.rglob("*"))
+    except OSError as exc:
+        raise PackagingError(
+            f"cannot traverse runtime package {RUNTIME_PACKAGE_DIR}/: {exc}"
+        ) from exc
+
+    for path in package_paths:
         rel_parts = path.relative_to(repo_root).parts
-        if path.is_symlink():
-            rel = path.relative_to(repo_root).as_posix()
-            raise PackagingError(f"refusing symlink under runtime package: {rel}")
+        _reject_link(path, "path under runtime package")
         if any(part in IGNORED_PARTS for part in rel_parts):
             continue
         if path.suffix.lower() in IGNORED_SUFFIXES:

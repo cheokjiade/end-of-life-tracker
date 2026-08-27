@@ -150,7 +150,10 @@ locals {
   # build_lambda_package.py; a drift between the two fails plan loudly here.
   expected_runtime_files = sort(concat(
     ["lambda_function.py"],
-    formatlist("eoltracker/%s", fileset("${path.module}/../eoltracker", "**/*.py")),
+    formatlist("eoltracker/%s", [
+      for f in fileset("${path.module}/../eoltracker", "**/*.py") : f
+      if length(regexall("(^|/)__pycache__/", f)) == 0
+    ]),
   ))
 }
 
@@ -162,7 +165,7 @@ resource "aws_lambda_function" "eol_checker" {
   timeout          = var.lambda_timeout
   memory_size      = var.lambda_memory
   filename         = local.package_zip_path
-  source_code_hash = filebase64sha256(local.package_zip_path)
+  source_code_hash = try(filebase64sha256(local.package_zip_path), "")
 
   lifecycle {
     precondition {
