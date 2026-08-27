@@ -209,6 +209,7 @@ BAD_URLS = [
     None,                                                # non-string types
     17,
     {"href": "https://evil.example"},
+    "https://example.com/bad\ud800path",                  # invalid Unicode
 ]
 for bad in BAD_URLS:
     r = check_product({"source": "manual", "label": "Nolink",
@@ -237,5 +238,30 @@ plain_r = check_product({"source": "manual", "label": "Plain Manual"}, TODAY)
 plain_out, _ = format_report_html([plain_r], TH, TODAY)
 assert "<a " not in plain_out
 assert ">Plain Manual</td>" in plain_out
+
+# Lone UTF-16 surrogates can enter through malformed JSON/provider data.
+# They are replaced at the rendering boundary so UTF-8 report delivery cannot
+# be taken down by one bad field. A surrogate-bearing URL is never linked.
+surrogate = "bad\ud800text"
+surrogate_out, _ = format_report_html([
+    poisioned(label=surrogate, message=surrogate, policy_note=surrogate)
+], TH, TODAY)
+encoded = surrogate_out.encode("utf-8")
+assert b"bad\xef\xbf\xbdtext" in encoded
+assert "\ud800" not in surrogate_out
+
+surrogate_url = "https://example.com/bad\udfffpath?token=do-not-log"
+stream = io.StringIO()
+handler = logging.StreamHandler(stream)
+logger.addHandler(handler)
+try:
+    result = check_product({"source": "manual", "label": "Surrogate URL",
+                            "reference_url": surrogate_url}, TODAY)
+    surrogate_url_out, _ = format_report_html([result], TH, TODAY)
+finally:
+    logger.removeHandler(handler)
+assert "<a " not in surrogate_url_out
+assert surrogate_url not in stream.getvalue()
+assert "do-not-log" not in stream.getvalue()
 
 print("OK test_report_html_escape")

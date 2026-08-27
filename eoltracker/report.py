@@ -30,11 +30,18 @@ from .parsers import SOURCE_LABELS, source_url_for
 # ---------------------------------------------------------------------------
 
 _UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_UTF16_SURROGATES = re.compile(r"[\ud800-\udfff]")
 
 
 def _esc(value):
     """Escape an untrusted dynamic value for interpolation anywhere in HTML."""
-    return html.escape(str(value), quote=True)
+    # Python strings can contain isolated UTF-16 surrogate code points after
+    # parsing malformed JSON or receiving provider data. ``html.escape``
+    # preserves them, but a later UTF-8 file write raises UnicodeEncodeError.
+    # Replace them at the rendering boundary so one bad upstream value cannot
+    # prevent delivery of the entire report.
+    safe_text = _UTF16_SURROGATES.sub("\ufffd", str(value))
+    return html.escape(safe_text, quote=True)
 
 
 def _safe_https_url(url):
@@ -47,7 +54,8 @@ def _safe_https_url(url):
     """
     if not isinstance(url, str):
         return None
-    if not url or url != url.strip() or _UNSAFE_URL_CHARS.search(url):
+    if (not url or url != url.strip() or _UNSAFE_URL_CHARS.search(url)
+            or _UTF16_SURROGATES.search(url)):
         return None
     try:
         parts = urllib.parse.urlsplit(url)
