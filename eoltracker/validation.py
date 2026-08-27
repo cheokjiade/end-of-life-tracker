@@ -148,7 +148,6 @@ def _check_product_entry(entry, prefix, results):
                 f"{prefix}.{field}", "error",
                 f"required field '{field}' is missing, empty, or not a "
                 "string"))
-
     for field in IDENTIFIER_FIELDS:
         if field in required or field not in entry:
             continue
@@ -325,6 +324,12 @@ def _check_notifications(notifications, results):
                 f"{prefix}.type", "error",
                 f"notification type {ntype!r} is not supported (valid: {valid})"))
             continue
+
+        required = notif.get("required")
+        if required is not None and not isinstance(required, bool):
+            results.append(_finding(
+                f"{prefix}.required", "error",
+                "'required' must be a boolean when present"))
 
         if ntype == "html_file":
             path = notif.get("path")

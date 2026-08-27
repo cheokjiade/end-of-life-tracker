@@ -33,6 +33,12 @@ variable "ses_from_email" {
   default     = ""
 }
 
+variable "ops_notification_email" {
+  description = "Email subscribed to operational alarms (Lambda failures, dead-letter queue). Leave empty to create the ops topic without a subscription."
+  type        = string
+  default     = ""
+}
+
 # ──────────────────────────────────────────────
 # Per-project settings
 #

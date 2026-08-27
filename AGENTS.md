@@ -10,8 +10,9 @@ An AWS Lambda that checks software **end-of-life (EOL)** status across multiple
 data sources and reports via console / HTML file / SNS / SES. The runtime is a
 **stdlib-only** Python package — `eoltracker/` — with a thin
 `lambda_function.py` shim that re-exports the handler (preserving the
-`lambda_function.lambda_handler` entry point); Terraform packages both into the
-deployment zip.
+`lambda_function.lambda_handler` entry point); `build_lambda_package.py`
+assembles both into an allowlisted deployment zip with a verified manifest
+(see `docs/packaging.md`).
 
 ## Workflows index
 
@@ -81,9 +82,13 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
   `_AWSCalendarParser` (heading-anchored, multi-table pages). `_categorise`
   (bucket by status) lives in `eoltracker/report.py`.
 - **Status values:** `eol`, `approaching`, `ok`, `error`, `unknown`,
-  `untracked`. `_categorise` buckets them; note `approaching` requires
-  `days_remaining <= max(thresholds)`, else it falls to `ok` (so a far-future
-  EOL is informational, not an alert).
+  `untracked`. `_categorise` buckets them along two independent dimensions:
+  *lifecycle* (`eol`; `approaching` alerts when `days_remaining <=
+  max(thresholds)` **or no date is published** — only a dated far-future
+  approaching falls to informational `ok`) and *tracker health* (`error` /
+  `unknown` never render as healthy and notify even under
+  `notify_when=alerts_only`, with a distinct `[TRACKER HEALTH]` subject and
+  banner). Deliberate `untracked` stays a distinct informational bucket.
 
 **Modularity:** each provider is its own file under `eoltracker/parsers/`,
 **auto-registered** at import time (`eoltracker/parsers/__init__.py` scans the
@@ -203,6 +208,16 @@ canonical message format and detailed workflow.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
+- **Delivery outcomes (R-03/R-12 contract).** Every notify channel returns an
+  attempted/delivered/skipped/error outcome record; the handler's `notified`
+  field reflects actual delivery, and in Lambda mode it raises
+  `DeliveryFailureError` when every required channel is undelivered (SNS/SES
+  required by default; console/html optional unless explicitly overridden;
+  Lambda
+  retries, function DLQ, and CloudWatch ops alarms are wired in
+  `terraform/main.tf`). `html_file` writes relative paths only locally; inside
+  Lambda it skips unless given an explicit absolute path under `/tmp`.
+  Recipient addresses must never appear in logs or outcome details.
 - **Testing:** no framework — tests are standalone `python` assertion scripts
   that import the relevant `eoltracker` modules and inject synthetic data to
   stay network-free.
@@ -233,4 +248,6 @@ canonical message format and detailed workflow.
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
 | `terraform/README.md` | Provider pinning + dependency-lock update workflow, S3 config rollback runbook |
-| `terraform/` | Deployment (packages `lambda_function.py` + `eoltracker/` as a zip) |
+| `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
+| `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
+| `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |
