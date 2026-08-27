@@ -206,6 +206,11 @@ resource "aws_lambda_function" "eol_checker" {
 
   lifecycle {
     precondition {
+      condition     = var.lambda_timeout * 1000 > var.eol_time_reserve_ms + var.eol_check_start_guard_ms
+      error_message = "lambda_timeout must exceed eol_time_reserve_ms plus eol_check_start_guard_ms so at least one provider check can start."
+    }
+
+    precondition {
       condition     = local.package_manifest != null
       error_message = "Missing ${local.package_manifest_path}: run 'python build_lambda_package.py build' from the repository root before applying Terraform."
     }
@@ -327,6 +332,26 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_description   = "The EOL checker invocation failed (runtime error, or every required notification channel failed to deliver and the handler raised). Check CloudWatch logs and the ${var.project_name}-lambda-failures dead-letter queue."
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.eol_checker.function_name
+  }
+
+  alarm_actions = [aws_sns_topic.ops_alerts.arn]
+  ok_actions    = [aws_sns_topic.ops_alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "partial_runs" {
+  alarm_name          = "${var.project_name}-partial-runs"
+  alarm_description   = "One or more EOL checks could not start or finish before the reporting reserve. Increase the Lambda timeout, lower concurrency, or split the project config."
+  namespace           = "EOLTracker"
+  metric_name         = "PartialRuns"
   statistic           = "Sum"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 1

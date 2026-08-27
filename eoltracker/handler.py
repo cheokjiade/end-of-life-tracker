@@ -25,7 +25,9 @@ Time-budget variables (see :mod:`eoltracker.runner`):
                                (default: 18000)
 """
 
+import json
 import os
+import time
 from datetime import date
 
 from .core import logger
@@ -63,6 +65,30 @@ def build_subject(analysis, project, today):
     prefix = "[" + "][".join(tags) + "]" if tags else "[EOL Report]"
     proj_tag = f" [{project}]" if project else ""
     return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
+
+
+def _emit_partial_run_metrics(unfinished):
+    """Emit CloudWatch Embedded Metric Format only inside AWS Lambda."""
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    if not function_name:
+        return
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "EOLTracker",
+                "Dimensions": [["FunctionName"]],
+                "Metrics": [
+                    {"Name": "PartialRuns", "Unit": "Count"},
+                    {"Name": "UnfinishedChecks", "Unit": "Count"},
+                ],
+            }],
+        },
+        "FunctionName": function_name,
+        "PartialRuns": 1,
+        "UnfinishedChecks": unfinished,
+    }
+    print(json.dumps(payload, separators=(",", ":")))
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +194,10 @@ def lambda_handler(event, context):
             "delivering a partial report",
             run_meta["unfinished"],
         )
+        # Emit a human-searchable marker plus an EMF metric that pages the
+        # operations topic. Keep both free of project/config data.
+        logger.warning("EOL_PARTIAL_RUN unfinished=%d", run_meta["unfinished"])
+        _emit_partial_run_metrics(run_meta["unfinished"])
 
     for r in results:
         logger.info("%s: %s", r["label"], r["message"])

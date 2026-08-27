@@ -361,7 +361,10 @@ The Terraform controls are `eol_max_workers`, `eol_time_reserve_ms`, and
 `eol_check_start_guard_ms`. Keep the start guard at least 15000 ms, the longest
 socket timeout used by a built-in provider. Increase the Lambda timeout or
 lower concurrency if CloudWatch shows repeated partial runs; do not consume
-the reporting reserve to squeeze in more lookups.
+the reporting reserve to squeeze in more lookups. Any partial run emits the
+`EOLTracker/PartialRuns` metric and activates the `<project>-partial-runs`
+CloudWatch alarm on the operations topic. Terraform also refuses a deployment
+whose Lambda timeout cannot fit the configured reserve plus start guard.
 
 ### Manual invocation
 

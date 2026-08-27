@@ -104,10 +104,10 @@ def _stamp_result(entry, base):
     result = dict(base)
     if isinstance(entry, dict):
         label = entry.get("label")
-        if isinstance(label, str) and label:
+        if label:
             result["label"] = label
         note = entry.get("policy_note")
-        if isinstance(note, str) and note:
+        if note:
             result["policy_note"] = note
         else:
             result.pop("policy_note", None)
