@@ -1,3 +1,5 @@
+import io
+import logging
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -5,6 +7,7 @@ import html as _html
 from datetime import date
 
 from eoltracker.parsers import check_product
+from eoltracker.core import logger
 from eoltracker.report import format_report_html
 
 TODAY = date(2026, 8, 27)
@@ -213,6 +216,21 @@ for bad in BAD_URLS:
     one_out, _ = format_report_html([r], TH, TODAY)
     assert "<a " not in one_out, f"invalid URL became a link: {bad!r}"
     assert ">manual</td>" in one_out, f"label-only fallback missing for {bad!r}"
+
+# Invalid links degrade observably without logging the rejected URL itself.
+stream = io.StringIO()
+handler = logging.StreamHandler(stream)
+logger.addHandler(handler)
+try:
+    secret_url = "https://good.example/invalid path?token=do-not-log"
+    r = check_product({"source": "manual", "label": "Logged omission",
+                       "reference_url": secret_url}, TODAY)
+    format_report_html([r], TH, TODAY)
+finally:
+    logger.removeHandler(handler)
+log_text = stream.getvalue()
+assert "failed HTTPS validation" in log_text
+assert secret_url not in log_text and "do-not-log" not in log_text
 
 # No reference_url at all -> plain label, no link.
 plain_r = check_product({"source": "manual", "label": "Plain Manual"}, TODAY)
