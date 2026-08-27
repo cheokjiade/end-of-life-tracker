@@ -178,19 +178,23 @@ cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars — set your bucket name and the projects map
 # (one entry per project: its config_path, notification email, schedule)
 
-# 2. Deploy
+# 2. Lint every project config you are about to distribute (network-free)
+python ../lambda_function.py --validate ../eol_config.a.json
+
+# 3. Deploy
 terraform init
 terraform apply
 ```
 
 After deployment:
-
 - **Confirm every SNS subscription** — AWS emails each project's `notification_email` a confirmation link; that topic stays silent until it is clicked.
 - Each project gets its own EventBridge rule running on its `schedule_expression` (default: daily at 8:00 AM UTC).
 - Terraform uploads each project's `config_path` file to `projects/<project>/eol_config.json` in the config bucket — one object per project. There is no root-level `eol_config.json` object and no global `CONFIG_KEY`.
 - Useful outputs for operating the deployment: `lambda_function_name`,
   `config_bucket`, `config_file_keys` (project → exact S3 key),
   `config_object_version_ids`, `sns_topic_arns`, and `schedule_rule_names`.
+- Config objects are **versioned**. See `terraform/README.md` for the provider
+  lockfile workflow and the point-in-time rollback runbook.
 
 ### Updating tracked products
 
