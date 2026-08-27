@@ -88,7 +88,8 @@ Top-level object:
 
 - `alert_thresholds_days`: keep `[30, 60, 90]` unless the inputs imply otherwise.
 - `notify_when`: `"always"` (daily report regardless) or `"alerts_only"` (only when
-  something is EOL/approaching). Default to `"always"`.
+  something is EOL/approaching — including undated at-risk phases — or the tracker
+  reports `error`/`unknown` health failures). Default to `"always"`.
 - `notifications`: default to console + a timestamped HTML file, and include a commented
   SNS entry for the real deploy:
 

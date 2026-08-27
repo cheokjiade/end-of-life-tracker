@@ -18,8 +18,32 @@ from datetime import date
 
 from .core import logger
 from .parsers import check_product
-from .report import format_report_text, format_report_html
+from .report import analyse_results, format_report_text, format_report_html
 from .notify import send_notifications
+
+
+# ---------------------------------------------------------------------------
+# Subjects and notification decisions
+# ---------------------------------------------------------------------------
+
+def build_subject(analysis, project, today):
+    """Compose the notification subject from a result analysis.
+
+    Lifecycle risk and tracker-health degradation get distinct tags so a
+    recipient can tell them apart at a glance:
+      - ``[EOL ALERT]``         - eol/approaching products;
+      - ``[TRACKER HEALTH]``    - error/unknown results (check failures);
+      - both may appear together as ``[EOL ALERT][TRACKER HEALTH]``.
+    A run with neither is an informational ``[EOL Report]``.
+    """
+    tags = []
+    if analysis.get("has_lifecycle_alerts"):
+        tags.append("EOL ALERT")
+    if analysis.get("has_health_failures"):
+        tags.append("TRACKER HEALTH")
+    prefix = "[" + "][".join(tags) + "]" if tags else "[EOL Report]"
+    proj_tag = f" [{project}]" if project else ""
+    return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +87,10 @@ def lambda_handler(event, context):
       - ses_to_emails   — comma-separated recipients for SES notifications
 
     All overrides fall back to the existing env vars when absent.
+
+    With ``notify_when: "alerts_only"`` a notification is sent for lifecycle
+    alerts (eol/approaching, including undated at-risk phases) and for
+    tracker-health failures (error/unknown results).
     """
     today = date.today()
     event = event or {}
@@ -92,15 +120,20 @@ def lambda_handler(event, context):
     for r in results:
         logger.info("%s: %s", r["label"], r["message"])
 
-    report_text, has_alerts = format_report_text(results, thresholds, today)
+    analysis = analyse_results(results, thresholds)
+    report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    should_notify = notify_when == "always" or has_alerts
+    # alerts_only must still fire on tracker-health failures (error/unknown):
+    # an unverifiable run is never a reason to stay silent.
+    should_notify = (
+        notify_when == "always"
+        or analysis["has_lifecycle_alerts"]
+        or analysis["has_health_failures"]
+    )
 
     if should_notify:
-        prefix = "EOL ALERT" if has_alerts else "EOL Report"
-        proj_tag = f" [{project}]" if project else ""
-        subject = f"[{prefix}]{proj_tag} Software End-of-Life Status - {today}"
+        subject = build_subject(analysis, project, today)
         send_notifications(config, report_text, report_html, subject,
                            runtime_overrides=runtime_overrides)
     else:
@@ -110,7 +143,8 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "project": project,
         "checked": len(results),
-        "has_alerts": has_alerts,
+        "has_alerts": analysis["has_lifecycle_alerts"],
+        "has_health_failures": analysis["has_health_failures"],
         "notified": should_notify,
     }
 
@@ -132,10 +166,10 @@ def run_local(config_path):
     thresholds = config.get("alert_thresholds_days", [30, 60, 90])
 
     results = [r for r in (check_product(entry, today) for entry in products) if r is not None]
-    report_text, has_alerts = format_report_text(results, thresholds, today)
+    analysis = analyse_results(results, thresholds)
+    report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    prefix = "EOL ALERT" if has_alerts else "EOL Report"
-    subject = f"[{prefix}] Software End-of-Life Status - {today}"
+    subject = build_subject(analysis, None, today)
 
     send_notifications(config, report_text, report_html, subject)

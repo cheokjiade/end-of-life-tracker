@@ -75,9 +75,13 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
   `_AWSCalendarParser` (heading-anchored, multi-table pages). `_categorise`
   (bucket by status) lives in `eoltracker/report.py`.
 - **Status values:** `eol`, `approaching`, `ok`, `error`, `unknown`,
-  `untracked`. `_categorise` buckets them; note `approaching` requires
-  `days_remaining <= max(thresholds)`, else it falls to `ok` (so a far-future
-  EOL is informational, not an alert).
+  `untracked`. `_categorise` buckets them along two independent dimensions:
+  *lifecycle* (`eol`; `approaching` alerts when `days_remaining <=
+  max(thresholds)` **or no date is published** — only a dated far-future
+  approaching falls to informational `ok`) and *tracker health* (`error` /
+  `unknown` never render as healthy and notify even under
+  `notify_when=alerts_only`, with a distinct `[TRACKER HEALTH]` subject and
+  banner). Deliberate `untracked` stays a distinct informational bucket.
 
 **Modularity:** each provider is its own file under `eoltracker/parsers/`,
 **auto-registered** at import time (`eoltracker/parsers/__init__.py` scans the

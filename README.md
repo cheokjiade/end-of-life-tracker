@@ -127,7 +127,9 @@ The scraper validates the page structure on every run. If AWS renames a column, 
 "alert_thresholds_days": [30, 60, 90]
 ```
 
-Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life".
+Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life". At-risk lifecycle phases that publish **no date** (for example an AWS SDK in *Maintenance*) are always treated as approaching — they cannot be thresholded away.
+
+Results the tracker could not verify are reported separately as **tracker health** failures: `error` (the check itself failed) and `unknown` (present but unverifiable, e.g. a version missing from npm/Maven Central). They never render as healthy and trigger notifications even under `alerts_only`, with a distinct `[TRACKER HEALTH]` subject/banner. Products deliberately marked `untracked` stay informational.
 
 ### Notification frequency
 
@@ -138,7 +140,7 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Value | Behaviour |
 |-------|-----------|
 | `always` | Send a report every run, even if nothing needs attention |
-| `alerts_only` | Only send when at least one product is EOL or approaching |
+| `alerts_only` | Send when something needs attention: a product is EOL/approaching (including undated at-risk phases), or any product reports an `error`/`unknown` tracker-health failure |
 
 ### Notification channels
 
