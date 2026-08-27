@@ -82,9 +82,15 @@ def _is_reparse_point(path: Path) -> bool:
 
 
 def _reject_link(path: Path, description: str) -> None:
-    """Reject symlinks plus Windows junction/reparse-point aliases."""
+    """Reject symlinks, reparse-point aliases, and hard-link aliases."""
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise PackagingError(f"cannot inspect runtime path {path}: {exc}") from exc
     if path.is_symlink() or _is_reparse_point(path):
         raise PackagingError(f"refusing linked/reparse-point {description}: {path}")
+    if metadata.st_nlink > 1:
+        raise PackagingError(f"refusing hard-linked {description}: {path}")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -123,8 +129,14 @@ def collect_runtime_sources(repo_root: Path) -> List[str]:
     for path in package_paths:
         rel_parts = path.relative_to(repo_root).parts
         _reject_link(path, "path under runtime package")
-        if any(part in IGNORED_PARTS for part in rel_parts):
+        if any(part.casefold() in IGNORED_PARTS for part in rel_parts):
             continue
+        package_parts = path.relative_to(pkg_dir).parts
+        if any(part.startswith(".") for part in package_parts):
+            rel = path.relative_to(repo_root).as_posix()
+            raise PackagingError(
+                f"refusing hidden path under {RUNTIME_PACKAGE_DIR}/: {rel}"
+            )
         if path.suffix.lower() in IGNORED_SUFFIXES:
             continue
         if not path.is_file():

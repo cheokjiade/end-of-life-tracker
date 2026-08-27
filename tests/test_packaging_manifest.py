@@ -16,7 +16,8 @@ import build_lambda_package as pkg
 
 ROOT = Path(__file__).resolve().parent.parent
 main_tf = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
-assert '__pycache__' in main_tf and 'regexall("(^|/)__pycache__/", f)' in main_tf
+assert '__pycache__' in main_tf and 'regexall("(?i)(^|/)__pycache__/", f)' in main_tf
+assert 'regexall("(^|/)\\\\.", f)' in main_tf
 assert 'try(filebase64sha256(local.package_zip_path), "")' in main_tf
 
 
@@ -167,7 +168,7 @@ with tempfile.TemporaryDirectory() as td:
         pass
     # ...while known compiled artifacts are skipped silently.
     (repo / "eoltracker" / "notes.dat").unlink()
-    pycache = repo / "eoltracker" / "__pycache__"
+    pycache = repo / "eoltracker" / "__PYCACHE__"
     pycache.mkdir()
     (pycache / "core.cpython-312.pyc").write_bytes(b"\x00stale bytecode\x00")
     (pycache / "stale.py").write_text("MUST_NOT_SHIP = True\n", encoding="utf-8")
@@ -178,6 +179,32 @@ with tempfile.TemporaryDirectory() as td:
     assert pkg.verify(repo_root=repo, build_dir=build_dir) == [], "pycache build unverified"
     with zipfile.ZipFile(build_dir / "lambda.zip") as zf:
         assert all(n.endswith(".py") for n in zf.namelist()), zf.namelist()
+
+    hidden = repo / "eoltracker" / ".venv_backup"
+    hidden.mkdir()
+    (hidden / "shadow.py").write_text("SHOULD_NOT_SHIP = True\n", encoding="utf-8")
+    try:
+        pkg.collect_runtime_sources(repo)
+        raise AssertionError("hidden Python directory accepted")
+    except pkg.PackagingError as exc:
+        assert "hidden path" in str(exc), exc
+    (hidden / "shadow.py").unlink()
+    hidden.rmdir()
+
+    outside_hard = td / "outside-hard.py"
+    outside_hard.write_text("ALIASED = True\n", encoding="utf-8")
+    hard_alias = repo / "eoltracker" / "alias_hard.py"
+    try:
+        os.link(outside_hard, hard_alias)
+    except OSError:
+        hard_alias = None
+    if hard_alias is not None:
+        try:
+            pkg.collect_runtime_sources(repo)
+            raise AssertionError("hard-linked runtime file accepted")
+        except pkg.PackagingError as exc:
+            assert "hard-linked" in str(exc), exc
+        hard_alias.unlink()
 
     # Filesystem aliases must never let runtime code outside the repository
     # enter the package. On Windows a junction is not reported by is_symlink.
