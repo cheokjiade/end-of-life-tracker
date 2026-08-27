@@ -18,6 +18,7 @@ import html
 import re
 import urllib.parse
 
+from .core import logger
 from .parsers import SOURCE_LABELS, source_url_for
 
 
@@ -78,12 +79,17 @@ def _source_html(r):
     label-only text.
     """
     label = _esc(_source_label(r))
-    url = _safe_https_url(source_url_for(r))
+    raw_url = source_url_for(r)
+    url = _safe_https_url(raw_url)
     if url:
         return (
             f'<a href="{_esc(url)}" target="_blank" rel="noopener" '
             f'style="color:#1565c0;text-decoration:none">{label}</a>'
         )
+    if raw_url:
+        # Deliberately omit the URL itself: query strings may carry sensitive
+        # data. The message still distinguishes an invalid link from no link.
+        logger.info("Source link omitted because it failed HTTPS validation")
     return label
 
 
