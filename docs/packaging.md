@@ -23,13 +23,18 @@ collection rules keep builds predictable while staying fail-closed:
 | Situation under `eoltracker/` | Behaviour |
 |---|---|
 | known compiled/junk artifacts (`__pycache__/`, `*.pyc`, `*.pyo`) | skipped silently (never runtime code) |
-| symlink, Windows junction, or other reparse point | **build refuses to run** (prevents out-of-repository code inclusion) |
+| symlink, hard link, Windows junction, or other reparse point | **build refuses to run** (prevents aliased/out-of-repository code inclusion) |
+| hidden directory/file (a path component beginning with `.`) | **build refuses to run** (requires deliberate source placement) |
 | any other non-`.py` file | **build refuses to run** (fail closed) |
 | missing `lambda_function.py` or `eoltracker/` | **build refuses to run** |
 
 A new non-Python runtime file therefore cannot enter the artifact unnoticed:
 adding one requires a deliberate change to the allowlist in
 `build_lambda_package.py`.
+
+The reparse-point rule is intentionally fail-closed. Checkouts backed by
+OneDrive placeholders, filesystem deduplication, or another projected-file
+system may need to be moved to a normal local Git worktree before packaging.
 
 ## Build
 

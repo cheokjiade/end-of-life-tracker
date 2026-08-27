@@ -188,7 +188,8 @@ locals {
     ["lambda_function.py"],
     formatlist("eoltracker/%s", [
       for f in fileset("${path.module}/../eoltracker", "**/*.py") : f
-      if length(regexall("(^|/)__pycache__/", f)) == 0
+      if length(regexall("(?i)(^|/)__pycache__/", f)) == 0 &&
+      length(regexall("(^|/)\\.", f)) == 0
     ]),
   ))
 }
