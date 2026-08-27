@@ -28,7 +28,7 @@ from .parsers import SOURCE_LABELS, source_url_for
 # into HTML produced here.
 # ---------------------------------------------------------------------------
 
-_UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+_UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
 
 
 def _esc(value):

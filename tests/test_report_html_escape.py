@@ -198,6 +198,7 @@ BAD_URLS = [
     "https://example.com/trailing ",                    # trailing whitespace
     "https://good.com/\t?q=1",                           # embedded tab
     "https://good.com/\nq",                              # embedded newline
+    "https://evil.com\\@example.com/",                  # browser treats \\ as /
     "\x01https://control.char.example",                  # control char
     "",                                                  # empty
     "   ",                                               # whitespace-only
