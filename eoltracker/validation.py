@@ -35,6 +35,7 @@ on usage problems.
 import json
 
 from .parsers import SOURCE_LABELS
+from .parsers.aws_rds import _AWS_DOCS_URLS
 
 # Sources whose config entries this module knows how to field-check.
 # Entries routing to a registered source without rules here get a warning.
@@ -52,7 +53,7 @@ REQUIRED_FIELDS = {
 DEFAULT_SOURCE = "endoflife_date"
 
 # Engines accepted by aws_rds_scrape (keys of its release-calendar scrape map).
-VALID_ENGINES = ("aurora-postgresql", "rds-postgresql")
+VALID_ENGINES = tuple(sorted(_AWS_DOCS_URLS))
 
 NOTIFY_WHEN_VALUES = ("always", "alerts_only")
 NOTIFICATION_TYPES = ("console", "html_file", "sns", "ses")
@@ -69,12 +70,8 @@ def _finding(path, severity, message):
 
 
 def _is_scalar(value):
-    """A filled string/number (bools excluded even though bools are ints)."""
-    return (
-        isinstance(value, (str, int, float))
-        and not isinstance(value, bool)
-        and str(value).strip() != ""
-    )
+    """A non-empty string identifier (JSON numbers lose version precision)."""
+    return isinstance(value, str) and value.strip() != ""
 
 
 def _check_product_entry(entry, prefix, results):
@@ -100,7 +97,7 @@ def _check_product_entry(entry, prefix, results):
             results.append(_finding(
                 f"{prefix}.{field}", "error",
                 f"required field '{field}' is missing, empty, or not a "
-                "string/number"))
+                "string"))
 
     if source == "aws_rds_scrape":
         engine = entry.get("engine", VALID_ENGINES[0])

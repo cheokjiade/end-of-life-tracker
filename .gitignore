@@ -23,6 +23,7 @@ terraform/terraform.tfstate.backup
 terraform/build/
 terraform/lambda.zip
 terraform/terraform.tfvars
+terraform/candidate*.json
 
 # Config-generation inputs (software inventories / dependency manifests — may be
 # internal) and scratch run logs. Generated eol_config.*.json are ignored above.
