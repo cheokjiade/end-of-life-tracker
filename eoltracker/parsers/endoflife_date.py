@@ -13,23 +13,35 @@ from ..core import parse_date_field, _error_result, logger
 
 EOL_API_BASE = "https://endoflife.date/api"
 
+# Process-lifetime memo of product -> cycles list, so one long-lived runner
+# process checking several configs that track the same product (or the same
+# product in several version rows) issues a single API call. Failed lookups
+# are not cached — a transient failure must not poison the whole run.
+_CYCLES_CACHE = {}
+
 
 def fetch_all_cycles(product):
     """Fetch all release cycles for a product from endoflife.date.
 
-    Returns the list sorted newest-first (as the API provides), or None on error.
+    Returns the list sorted newest-first (as the API provides), or None on
+    error. Successful responses are memoized for the life of the process.
     """
+    key = str(product)
+    if key in _CYCLES_CACHE:
+        return _CYCLES_CACHE[key]
     url = f"{EOL_API_BASE}/{product}.json"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            cycles = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         logger.error("API error for %s: %s %s", product, exc.code, exc.reason)
         return None
     except Exception as exc:
         logger.error("Failed to fetch %s: %s", product, exc)
         return None
+    _CYCLES_CACHE[key] = cycles
+    return cycles
 
 
 def _provider_endoflife_date(entry, today):

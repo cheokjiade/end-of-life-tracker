@@ -39,6 +39,8 @@ def _notify_html_file(report_html, notif_config, **_kwargs):
     so the folder path and filename always agree. Each run produces a uniquely
     named file, e.g.
     reports/a/2026/05/03/eol_report_a_2026-05-03_1430.html.
+
+    Returns the full path of the written report (callers may ignore it).
     """
     path = notif_config.get("path", "eol_report.html")
     base, ext = os.path.splitext(os.path.basename(path))
@@ -52,6 +54,7 @@ def _notify_html_file(report_html, notif_config, **_kwargs):
     with open(path, "w", encoding="utf-8") as f:
         f.write(report_html)
     logger.info("HTML report written to %s", path)
+    return path
 
 
 def _notify_sns(report_text, subject, notif_config, runtime_overrides=None, **_kwargs):
@@ -125,9 +128,16 @@ def send_notifications(config, report_text, report_html, subject, runtime_overri
 
     *runtime_overrides* carries per-invocation routing values (e.g. SNS topic ARN
     supplied by EventBridge so each project routes to its own topic).
+
+    Returns a dict of the successful channel outputs, keyed by channel type
+    (currently only ``html_file``, mapped to the written file's path). Channels
+    that produce nothing reportable — or that fail — contribute no key, so a
+    caller wanting "where did the HTML land?" reads ``result.get("html_file")``.
+    Existing callers may ignore this return value.
     """
     notifications = config.get("notifications", [{"type": "sns"}])
 
+    delivered = {}
     for notif in notifications:
         ntype = notif.get("type")
         handler = _NOTIFIERS.get(ntype)
@@ -135,12 +145,15 @@ def send_notifications(config, report_text, report_html, subject, runtime_overri
             logger.warning("Unknown notification type: %s — skipping", ntype)
             continue
         try:
-            handler(
+            output = handler(
                 report_text=report_text,
                 report_html=report_html,
                 subject=subject,
                 notif_config=notif,
                 runtime_overrides=runtime_overrides,
             )
+            if output is not None:
+                delivered[ntype] = output
         except Exception as exc:
             logger.error("Notification '%s' failed: %s", ntype, exc)
+    return delivered
