@@ -3,8 +3,10 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+      source = "hashicorp/aws"
+      # Narrow minor-line constraint; the committed .terraform.lock.hcl pins
+      # the exact build. See README.md before changing either.
+      version = "~> 5.100.0"
     }
   }
 }
@@ -30,6 +32,29 @@ resource "aws_s3_bucket_public_access_block" "config" {
   restrict_public_buckets = true
 }
 
+# Versioning gives every config object point-in-time recovery. It is the
+# rollback mechanism documented in README.md — do not add lifecycle rules
+# that expire noncurrent versions of this bucket.
+resource "aws_s3_bucket_versioning" "config" {
+  bucket = aws_s3_bucket.config.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "terraform_data" "validate_eol_config" {
+  for_each = var.projects
+
+  triggers_replace = [
+    filesha256("${path.module}/../${each.value.config_path}"),
+  ]
+
+  provisioner "local-exec" {
+    command = "python \"${path.module}/../lambda_function.py\" --validate \"${path.module}/../${each.value.config_path}\""
+  }
+}
+
 resource "aws_s3_object" "eol_config" {
   for_each     = var.projects
   bucket       = aws_s3_bucket.config.id
@@ -37,6 +62,11 @@ resource "aws_s3_object" "eol_config" {
   source       = "${path.module}/../${each.value.config_path}"
   etag         = filemd5("${path.module}/../${each.value.config_path}")
   content_type = "application/json"
+
+  depends_on = [
+    aws_s3_bucket_versioning.config,
+    terraform_data.validate_eol_config,
+  ]
 }
 
 # ──────────────────────────────────────────────
@@ -126,32 +156,41 @@ resource "aws_iam_role_policy" "lambda" {
 #
 # Per-project routing values arrive via the EventBridge invocation event,
 # not env vars — the env vars below are shared across every project.
+#
+# The deployment artifact is built OUTSIDE Terraform by
+# build_lambda_package.py from a strict allowlist (lambda_function.py +
+# eoltracker/**.py), so untracked secrets or unrelated repository files can
+# never enter the deployed ZIP (audit finding S-01). Configs are loaded from
+# S3 at runtime, not the zip.
+#
+# Rebuild before deploying whenever runtime code changes:
+#
+#   python build_lambda_package.py build
+#
+# The lifecycle preconditions below fail plan/apply unless the on-disk ZIP is
+# byte-for-byte the one recorded by the manifest AND that manifest reflects
+# the currently checked-out runtime sources. See docs/packaging.md.
 # ──────────────────────────────────────────────
 
-data "archive_file" "lambda" {
-  type        = "zip"
-  output_path = "${path.module}/lambda.zip"
-  source_dir  = "${path.module}/.."
+locals {
+  package_zip_path      = "${path.module}/build/lambda.zip"
+  package_manifest_path = "${path.module}/build/manifest.json"
 
-  # Package the whole runtime: lambda_function.py (shim) + the eoltracker/
-  # package. Everything else in the repo root is excluded so the zip carries
-  # ONLY runtime code. Configs are loaded from S3 at runtime, not the zip.
-  excludes = [
-    # directories (whole subtrees)
-    ".git", ".claude", "__pycache__", "terraform", "docs", "inputs", "reports",
-    "project-*",
-    # non-runtime root files
-    ".gitignore", "CLAUDE.md", "README.md", "run.sh", "run.ps1",
-    "generate_config.py", "eol_config_generation_prompt.md",
-    "*_run*.txt",
-    # per-project configs + template (runtime loads config from S3, not the zip)
-    "eol_config.sample.json", "eol_config.c.json", "eol_config.d.json",
-    "eol_config.e.json", "eol_config.a.json",
-    "eol_config.b.json", "eol_config.b-auto.json",
-    # belt-and-suspenders globs (compiled artifacts / any future configs)
-    "eol_config.*.json", "**/__pycache__", "**/*.pyc",
-    # keep ONLY: lambda_function.py + eoltracker/**
-  ]
+  package_manifest        = try(jsondecode(file(local.package_manifest_path)), null)
+  package_manifest_schema = try(local.package_manifest.schema, 0)
+  package_manifest_inputs = try(local.package_manifest.inputs, {})
+  package_manifest_sha256 = try(local.package_manifest.artifact.sha256, "")
+
+  # Allowlist expectations derived from the working tree itself: the shim plus
+  # every *.py under eoltracker/. Must stay in lockstep with the allowlist in
+  # build_lambda_package.py; a drift between the two fails plan loudly here.
+  expected_runtime_files = sort(concat(
+    ["lambda_function.py"],
+    formatlist("eoltracker/%s", [
+      for f in fileset("${path.module}/../eoltracker", "**/*.py") : f
+      if length(regexall("(^|/)__pycache__/", f)) == 0
+    ]),
+  ))
 }
 
 resource "aws_lambda_function" "eol_checker" {
@@ -161,8 +200,38 @@ resource "aws_lambda_function" "eol_checker" {
   runtime          = "python3.12"
   timeout          = var.lambda_timeout
   memory_size      = var.lambda_memory
-  filename         = data.archive_file.lambda.output_path
-  source_code_hash = data.archive_file.lambda.output_base64sha256
+  filename         = local.package_zip_path
+  source_code_hash = try(filebase64sha256(local.package_zip_path), "")
+
+  lifecycle {
+    precondition {
+      condition     = local.package_manifest != null
+      error_message = "Missing ${local.package_manifest_path}: run 'python build_lambda_package.py build' from the repository root before applying Terraform."
+    }
+
+    precondition {
+      condition     = local.package_manifest_schema == 1
+      error_message = "Unrecognized manifest schema in ${local.package_manifest_path}: rebuild the artifact with 'python build_lambda_package.py build'."
+    }
+
+    precondition {
+      condition     = sort(keys(local.package_manifest_inputs)) == local.expected_runtime_files
+      error_message = "Runtime file set differs from the built manifest: sources were added or removed since 'python build_lambda_package.py build' last ran. Rebuild the artifact."
+    }
+
+    precondition {
+      condition = alltrue([
+        for rel in local.expected_runtime_files :
+        try(filesha256("${path.module}/../${rel}") == local.package_manifest_inputs[rel], false)
+      ])
+      error_message = "Runtime source contents changed since ${local.package_manifest_path} was written: rebuild the artifact with 'python build_lambda_package.py build'."
+    }
+
+    precondition {
+      condition     = fileexists(local.package_zip_path) && try(filesha256(local.package_zip_path) == local.package_manifest_sha256, false)
+      error_message = "${local.package_zip_path} is missing or does not match the verified manifest: rebuild with 'python build_lambda_package.py build' (or run 'python build_lambda_package.py verify' to diagnose)."
+    }
+  }
 
   # Asynchronous failure handling (audit R-03): when the handler raises --
   # including the deliberate "all required delivery channels failed" error --

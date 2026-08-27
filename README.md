@@ -214,21 +214,32 @@ destinations.
 ### Steps
 
 ```bash
+# 0. Build the Lambda artifact from the runtime allowlist
+python build_lambda_package.py build
+
 cd terraform
 
 # 1. Create your variables file
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars — set your bucket name and notification email
 
-# 2. Deploy
+# 2. Lint every project config you are about to distribute (network-free)
+python ../lambda_function.py --validate ../eol_config.a.json
+
+# 3. Deploy
 terraform init
 terraform apply
 ```
 
+The ZIP contains only `lambda_function.py` and the `eoltracker/` package.
+Terraform fails plan/apply unless that artifact is byte-for-byte current, so
+rerun step 0 after any change under `eoltracker/`. See
+[docs/packaging.md](docs/packaging.md) for how packaging and verification work.
+
 After deployment:
 - **Confirm the SNS subscription** — check your email for a confirmation link from AWS
 - The Lambda runs daily at 8:00 AM UTC by default (configurable via `schedule_expression`)
-- The config file is uploaded to S3 automatically from `eol_config.json`
+- The config file is uploaded to S3 automatically and is **versioned** — see `terraform/README.md` for provider pinning/lockfile updates and the point-in-time config rollback runbook
 
 ### Updating tracked products
 
