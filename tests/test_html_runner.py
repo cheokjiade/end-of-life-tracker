@@ -150,7 +150,11 @@ def recording_notifier(config, report_text, report_html, subject):
         "report_html": report_html,
         "subject": subject,
     })
-    return {"html_file": "reports/sentinel/report.html"}
+    return [{
+        "channel": "html_file", "required": False, "attempted": True,
+        "delivered": True, "skipped": False, "error": None,
+        "detail": "written", "output": "reports/sentinel/report.html",
+    }]
 
 
 today_cfg = {
@@ -191,6 +195,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s["errors"] == 1, s      # unknown source -> error row
     assert s["unknown"] == 0, s
     assert s["has_alerts"] is True  # Legacy Tool is past its EOL date
+    assert s["has_health_failures"] is True  # unknown source -> error row
+    assert s["unfinished"] == 0
 
     with open(cfg_path, "rb") as f:
         assert f.read() == before_bytes, "config file on disk must be unchanged"

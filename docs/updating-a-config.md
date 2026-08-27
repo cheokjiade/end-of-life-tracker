@@ -71,8 +71,10 @@ Update = diff + patch.
 
 ## Rules
 
-- ASCII only — `load_config_from_file` reads with the platform default encoding,
-  so non-ASCII breaks on cp1252 systems.
+- ASCII only — `load_config_from_file` reads bytes and requires ASCII-only JSON,
+  so non-ASCII fails on cp1252 systems; every load also enforces the schema,
+  and one malformed product entry surfaces as an `error` row instead of
+  aborting the run.
 - Strictly valid JSON: no comments, no trailing commas; use `_comment` /
   `_section` fields instead.
 - Do not deduplicate distinct majors (Java 8 and Java 17 stay two entries).

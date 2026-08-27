@@ -18,6 +18,11 @@ output "config_file_keys" {
   value       = { for k, o in aws_s3_object.eol_config : k => o.key }
 }
 
+output "config_object_version_ids" {
+  description = "Per-project version ID of the config object uploaded by the last apply — the known-good baseline for S3 rollback (see README.md)"
+  value       = { for k, o in aws_s3_object.eol_config : k => o.version_id }
+}
+
 output "sns_topic_arns" {
   description = "Per-project SNS topic ARNs (subscribers must confirm via email)"
   value       = { for k, t in aws_sns_topic.eol_alerts : k => t.arn }

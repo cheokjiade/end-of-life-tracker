@@ -7,8 +7,8 @@ per-project configs in a single Python process:
   product fetches, Maven Central lookups, ...) are reused across configs
   instead of being paid once per invocation.
 * Configs are loaded unchanged (:func:`eoltracker.handler.load_config_from_file`)
-  and are never mutated; checks always go live through
-  :func:`eoltracker.parsers.check_product`.
+  and are never mutated; checks always go live through the same bounded runner
+  used by the Lambda handler.
 * Console, SNS and SES are suppressed no matter what the config says — reports
   are delivered through the public ``send_notifications`` with a temporary
   html_file-only notification view of each config (never private helpers), so
@@ -29,18 +29,15 @@ import os
 from datetime import date
 
 from .core import logger
-from .handler import load_config_from_file
-from .parsers import check_product
-from .report import format_report_html
+from .handler import build_subject, load_config_from_file
 from .notify import send_notifications
+from .report import analyse_results, format_report_html
+from .runner import run_checks
 
 
 DEFAULT_HTML_PATH = "eol_report.html"
 CONFIG_GLOB = "eol_config.*.json"
 SAMPLE_CONFIG_NAME = "eol_config.sample.json"
-
-PROBLEM_STATUSES = ("error", "unknown")
-
 
 # ---------------------------------------------------------------------------
 # Discovery and argument resolution
@@ -137,8 +134,9 @@ def run_config(path, today=None, notifier=send_notifications):
     Loads the config unchanged, performs live provider checks, renders the
     HTML report, and hands it to the public notification dispatcher with an
     html_file-only view (so console/SNS/SES stay silent even if configured).
-    Returns a summary dict: config, output (written path or None), checked,
-    errors, unknown, has_alerts. Raises on unreadable/invalid configs.
+    Returns a summary dict with the written path, status counts, lifecycle and
+    tracker-health flags, and unfinished count. Raises on unreadable/invalid
+    configs.
     """
     today = today or date.today()
     config = load_config_from_file(path)
@@ -148,26 +146,31 @@ def run_config(path, today=None, notifier=send_notifications):
         raise ValueError("config must contain a 'products' array")
 
     thresholds = config.get("alert_thresholds_days", [30, 60, 90])
-    results = [r for r in (check_product(e, today) for e in products) if r is not None]
+    results, run_meta = run_checks(products, today)
 
-    report_html, has_alerts = format_report_html(results, thresholds, today)
+    analysis = analyse_results(results, thresholds)
+    report_html, _has_alerts = format_report_html(results, thresholds, today)
 
-    subject = (
-        f"[{'EOL ALERT' if has_alerts else 'EOL Report'}] "
-        f"Software End-of-Life Status - {today}"
-    )
-    delivered = notifier(
+    subject = build_subject(analysis, None, today)
+    outcomes = notifier(
         build_html_only_config(config, fallback_output_for(path)),
         "", report_html, subject,
-    ) or {}
+    ) or []
+    output = next((
+        outcome.get("output")
+        for outcome in outcomes
+        if outcome.get("channel") == "html_file" and outcome.get("delivered")
+    ), None)
 
     return {
         "config": path,
-        "output": delivered.get("html_file"),
+        "output": output,
         "checked": len(results),
         "errors": sum(1 for r in results if r.get("status") == "error"),
         "unknown": sum(1 for r in results if r.get("status") == "unknown"),
-        "has_alerts": has_alerts,
+        "has_alerts": analysis["has_lifecycle_alerts"],
+        "has_health_failures": analysis["has_health_failures"],
+        "unfinished": run_meta["unfinished"],
     }
 
 
