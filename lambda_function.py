@@ -3,13 +3,28 @@
 The runtime lives in the :mod:`eoltracker` package (one file per parser, with
 auto-registration). This module preserves the Lambda handler path
 ``lambda_function.lambda_handler`` by re-exporting it, and provides the local
-CLI (``python lambda_function.py <config.json>``).
+CLI (``python lambda_function.py <config.json>``) plus a network-free config
+lint (``python lambda_function.py --validate <config.json>``).
 
 See ``docs/adding-a-provider.md`` and ``CLAUDE.md`` for the architecture.
 """
 
 from eoltracker.handler import lambda_handler, run_local  # noqa: F401  (Lambda handler entry)
+from eoltracker.validation import ConfigValidationError  # noqa: F401
 
 if __name__ == "__main__":
     import sys
-    run_local(sys.argv[1] if len(sys.argv) > 1 else "eol_config.a.json")
+
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--validate":
+        # Network-free structural validation: python lambda_function.py
+        # --validate eol_config.<project>.json   (exit 0 valid, 1 invalid)
+        from eoltracker.validation import main as validate_main
+        sys.exit(validate_main(argv[1:]))
+    try:
+        run_local(argv[0] if argv else "eol_config.a.json")
+    except ConfigValidationError as exc:
+        # Same field-path diagnostics as --validate; exit 1 instead of a traceback.
+        from eoltracker.validation import print_results
+        print_results(exc.findings, label="config")
+        sys.exit(1)

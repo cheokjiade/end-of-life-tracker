@@ -34,15 +34,32 @@ def parse_date_field(value):
 
 
 def _error_result(entry, message):
-    """Build an error-shaped result for a config entry."""
+    """Build an error-shaped result for a config entry.
+
+    Tolerates non-dict entries (e.g. a JSON array element that is not an
+    object) so one unusable product row can never break the normalization
+    contract the formatters rely on.
+    """
+    if isinstance(entry, dict):
+        label = entry.get(
+            "label", f'{entry.get("product", "?")} {entry.get("version", "?")}')
+        return {
+            "label": label,
+            "product": entry.get("product"),
+            "version": entry.get("version"),
+            "status": "error",
+            "message": message,
+            "days_remaining": None,
+            "source": entry.get("source", "endoflife_date"),
+        }
     return {
-        "label": entry.get("label", f'{entry.get("product", "?")} {entry.get("version", "?")}'),
-        "product": entry.get("product"),
-        "version": entry.get("version"),
+        "label": f"<unusable product entry ({type(entry).__name__})>",
+        "product": None,
+        "version": None,
         "status": "error",
         "message": message,
         "days_remaining": None,
-        "source": entry.get("source", "endoflife_date"),
+        "source": "unknown",
     }
 
 

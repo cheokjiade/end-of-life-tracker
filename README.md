@@ -127,7 +127,9 @@ The scraper validates the page structure on every run. If AWS renames a column, 
 "alert_thresholds_days": [30, 60, 90]
 ```
 
-Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life".
+Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life". At-risk lifecycle phases that publish **no date** (for example an AWS SDK in *Maintenance*) are always treated as approaching — they cannot be thresholded away.
+
+Results the tracker could not verify are reported separately as **tracker health** failures: `error` (the check itself failed) and `unknown` (present but unverifiable, e.g. a version missing from npm/Maven Central). They never render as healthy and trigger notifications even under `alerts_only`, with a distinct `[TRACKER HEALTH]` subject/banner. Products deliberately marked `untracked` stay informational.
 
 ### Notification frequency
 
@@ -138,7 +140,7 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Value | Behaviour |
 |-------|-----------|
 | `always` | Send a report every run, even if nothing needs attention |
-| `alerts_only` | Only send when at least one product is EOL or approaching |
+| `alerts_only` | Send when something needs attention: a product is EOL/approaching (including undated at-risk phases), or any product reports an `error`/`unknown` tracker-health failure |
 
 ### Notification channels
 
@@ -154,11 +156,52 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Type | Format | Notes |
 |------|--------|-------|
 | `console` | Plain text to stdout | No config needed |
-| `html_file` | HTML file | `path` defaults to `eol_report.html`; the file is written under `reports/<project>/<year>/<month>/<day>/` (`<project>` derived from the `path` base name) |
+| `html_file` | HTML file | `path` defaults to `eol_report.html`; the file is written under `reports/<project>/<year>/<month>/<day>/` (`<project>` derived from the `path` base name). **Lambda deployments:** this channel is local-only by default — inside Lambda a relative path (or any absolute path outside `/tmp`) skips with a warning instead of failing. To write in Lambda, set `path` to an explicit absolute destination under `/tmp` (e.g. `/tmp/reports/eol_report.html`); note `/tmp` is ephemeral scratch space — use S3 for durable AWS-hosted reports |
 | `sns` | Plain text email via SNS | `topic_arn` or `SNS_TOPIC_ARN` env var |
 | `ses` | HTML email via SES | `from_email`/`to_emails` or `SES_FROM_EMAIL`/`SES_TO_EMAILS` env vars. Sender must be [verified in SES](https://docs.aws.amazon.com/ses/latest/dg/creating-identities.html) |
 
 You can enable multiple channels simultaneously.
+
+SNS and SES are **required delivery channels by default**; console and
+`html_file` are optional by default. Set a boolean `"required": true` or
+`false` on any channel to override that default. A successful optional console
+or file delivery never masks failure of every required durable route.
+
+### Delivery outcomes and failure handling
+
+Every channel invocation produces an outcome record — returned in the Lambda
+response as `notification_outcomes`, logged per run, and printed by local runs:
+
+- `delivered` — the channel confirmed the send/write.
+- `skipped` — never attempted: unknown channel type, missing routing config
+  (no topic ARN / no sender or recipients), or html_file not writable in Lambda.
+- `failed` (error) — attempted but the delivery raised.
+
+Outcome records also identify whether the channel was `required`; a delivered
+`html_file` outcome includes its local output path.
+
+Behaviour on failure:
+
+1. Channels are attempted in configuration order; one failing channel never
+   prevents a later independent channel from being attempted. Delivery succeeds
+   when at least one required channel delivers (or when no channel is required).
+2. The handler's `notified` response field reflects **actual delivery** — it is
+   true only when at least one configured channel delivered, not merely that a
+   notification was attempted. A run suppressed by `alerts_only` also reports
+   `notified: false`.
+3. If required channels exist and **every required channel** ends up
+   undelivered, the handler raises a failure while running on AWS Lambda. This
+   makes the invocation fail so
+   Lambda's asynchronous retry policy engages, and after all retries the event
+   lands in the function's dead-letter queue (`<project>-lambda-failures`). Two
+   CloudWatch alarms (`<project>-function-errors`,
+   `<project>-failure-dlq-not-empty`) page the ops topic configured via
+   `ops_notification_email`. Local runs never raise — they print the per-channel
+   outcomes instead.
+
+Logs never contain recipient addresses: SES messages log a recipient count
+only, and outcome details describe routing qualitatively rather than naming
+destinations.
 
 ## Deploy to AWS Lambda
 
@@ -171,21 +214,32 @@ You can enable multiple channels simultaneously.
 ### Steps
 
 ```bash
+# 0. Build the Lambda artifact from the runtime allowlist
+python build_lambda_package.py build
+
 cd terraform
 
 # 1. Create your variables file
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars — set your bucket name and notification email
 
-# 2. Deploy
+# 2. Lint every project config you are about to distribute (network-free)
+python ../lambda_function.py --validate ../eol_config.a.json
+
+# 3. Deploy
 terraform init
 terraform apply
 ```
 
+The ZIP contains only `lambda_function.py` and the `eoltracker/` package.
+Terraform fails plan/apply unless that artifact is byte-for-byte current, so
+rerun step 0 after any change under `eoltracker/`. See
+[docs/packaging.md](docs/packaging.md) for how packaging and verification work.
+
 After deployment:
 - **Confirm the SNS subscription** — check your email for a confirmation link from AWS
 - The Lambda runs daily at 8:00 AM UTC by default (configurable via `schedule_expression`)
-- The config file is uploaded to S3 automatically from `eol_config.json`
+- The config file is uploaded to S3 automatically and is **versioned** — see `terraform/README.md` for provider pinning/lockfile updates and the point-in-time config rollback runbook
 
 ### Updating tracked products
 
@@ -213,6 +267,7 @@ Or update it via the S3 console.
 | `schedule_expression` | No | `cron(0 8 * * ? *)` | CloudWatch cron schedule |
 | `ses_from_email` | No | `""` | SES sender address (if using SES) |
 | `ses_to_emails` | No | `""` | Comma-separated SES recipients |
+| `ops_notification_email` | No | `""` | Email subscribed to operational alarms (Lambda failures / dead-letter queue); empty = ops topic without a subscription |
 
 ### Environment variables (set by Terraform)
 
@@ -251,7 +306,7 @@ CloudWatch Events (daily cron)
         |
         +---> SNS (plain-text email)
         +---> SES (HTML email)
-        +---> HTML file (to /tmp or S3)
+        +---> HTML file (reports/ locally; explicit /tmp path in Lambda)
         +---> Console (CloudWatch Logs)
 ```
 

@@ -14,11 +14,16 @@ __pycache__/
 
 # Terraform
 terraform/.terraform/
-terraform/.terraform.lock.hcl
+# The dependency lock file pins provider builds and SHOULD be committed
+# (see terraform/README.md); only the download cache, state, and tfvars are ignored.
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
+
+# Allowlisted Lambda artifact + manifest (build_lambda_package.py; rebuildable)
+terraform/build/
 terraform/lambda.zip
 terraform/terraform.tfvars
+terraform/candidate*.json
 
 # Config-generation inputs (software inventories / dependency manifests — may be
 # internal) and scratch run logs. Generated eol_config.*.json are ignored above.

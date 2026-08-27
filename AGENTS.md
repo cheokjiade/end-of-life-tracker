@@ -10,14 +10,17 @@ An AWS Lambda that checks software **end-of-life (EOL)** status across multiple
 data sources and reports via console / HTML file / SNS / SES. The runtime is a
 **stdlib-only** Python package — `eoltracker/` — with a thin
 `lambda_function.py` shim that re-exports the handler (preserving the
-`lambda_function.lambda_handler` entry point); Terraform packages both into the
-deployment zip.
+`lambda_function.lambda_handler` entry point); `build_lambda_package.py`
+assembles both into an allowlisted deployment zip with a verified manifest
+(see `docs/packaging.md`).
 
 ## Workflows index
 
 | I want to... | Read / run |
 |---|---|
 | Generate or update a config with an AI coding agent | Invoke `manage-eol-config` in Codex/OpenCode or `eol-config` in Claude Code; canonical instructions: `.agents/skills/manage-eol-config/SKILL.md` |
+| Validate a config structurally (network-free) | `python lambda_function.py --validate <config.json>` |
+| Update Terraform providers, handle the lockfile, or roll back an S3 config | `terraform/README.md` |
 | Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
@@ -64,7 +67,11 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
 - **Dispatch:** `check_product(entry, today)` reads `entry["source"]`, looks it
   up in the `PROVIDERS` registry (defaults to `endoflife_date`), and calls it.
   Entries carrying a `_section` marker return `None` (they are config-file
-  dividers, not products).
+  dividers, not products). `check_product` is also the per-entry isolation
+  boundary: non-dict entries and entries failing the `eoltracker.validation`
+  field checks return an error result *before* the provider runs, and an
+  unexpected provider exception is converted into the normalized error shape
+  (details logged) so one broken entry cannot abort the run.
 - **Uniform result shape:** every provider returns the same dict keys (`label`,
   `product`, `version`, `status`, `message`, `eol_date`, `days_remaining`,
   `latest_patch`, `source`, ...) so both formatters (`format_report_text`,
@@ -75,9 +82,13 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
   `_AWSCalendarParser` (heading-anchored, multi-table pages). `_categorise`
   (bucket by status) lives in `eoltracker/report.py`.
 - **Status values:** `eol`, `approaching`, `ok`, `error`, `unknown`,
-  `untracked`. `_categorise` buckets them; note `approaching` requires
-  `days_remaining <= max(thresholds)`, else it falls to `ok` (so a far-future
-  EOL is informational, not an alert).
+  `untracked`. `_categorise` buckets them along two independent dimensions:
+  *lifecycle* (`eol`; `approaching` alerts when `days_remaining <=
+  max(thresholds)` **or no date is published** — only a dated far-future
+  approaching falls to informational `ok`) and *tracker health* (`error` /
+  `unknown` never render as healthy and notify even under
+  `notify_when=alerts_only`, with a distinct `[TRACKER HEALTH]` subject and
+  banner). Deliberate `untracked` stays a distinct informational bucket.
 
 **Modularity:** each provider is its own file under `eoltracker/parsers/`,
 **auto-registered** at import time (`eoltracker/parsers/__init__.py` scans the
@@ -182,8 +193,13 @@ canonical message format and detailed workflow.
 - **Stdlib only** across the `eoltracker/` package (`boto3` is imported lazily
   inside the S3/SNS/SES paths in `eoltracker/notify.py` and
   `eoltracker/handler.py`). No third-party dependencies.
-- **Keep configs ASCII.** `load_config_from_file` opens with no explicit
-  encoding, so on cp1252 (Windows) systems non-ASCII characters break the read.
+- **Keep configs ASCII.** `load_config_from_file` reads bytes and requires
+  ASCII-only JSON (cp1252 (Windows) locale-safety), and **every load — local
+  or S3 — enforces the `eoltracker.validation` schema**: invalid top-level or
+  runtime shapes (`products` container, `alert_thresholds_days`,
+  `notify_when`, notification channels) are rejected before any provider
+  call. Malformed individual product entries do not abort the run; they
+  become `error` rows while valid products continue.
   `json.dump(..., ensure_ascii=True)` (the default) keeps generated configs
   safe.
 - **`eol_config.*.json` and `reports/` are gitignored** (except
@@ -192,6 +208,16 @@ canonical message format and detailed workflow.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
+- **Delivery outcomes (R-03/R-12 contract).** Every notify channel returns an
+  attempted/delivered/skipped/error outcome record; the handler's `notified`
+  field reflects actual delivery, and in Lambda mode it raises
+  `DeliveryFailureError` when every required channel is undelivered (SNS/SES
+  required by default; console/html optional unless explicitly overridden;
+  Lambda
+  retries, function DLQ, and CloudWatch ops alarms are wired in
+  `terraform/main.tf`). `html_file` writes relative paths only locally; inside
+  Lambda it skips unless given an explicit absolute path under `/tmp`.
+  Recipient addresses must never appear in logs or outcome details.
 - **Testing:** no framework — tests are standalone `python` assertion scripts
   that import the relevant `eoltracker` modules and inject synthetic data to
   stay network-free.
@@ -221,4 +247,7 @@ canonical message format and detailed workflow.
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
-| `terraform/` | Deployment (packages `lambda_function.py` + `eoltracker/` as a zip) |
+| `terraform/README.md` | Provider pinning + dependency-lock update workflow, S3 config rollback runbook |
+| `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
+| `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
+| `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |
