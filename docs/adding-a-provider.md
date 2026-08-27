@@ -129,6 +129,15 @@ def url_for(r):                # optional — the clickable upstream link for a 
     return _FOO_URL
 ```
 
+Report rendering treats the return value of `url_for` and every result field
+as untrusted. A source link is rendered only when it **validates as an HTTPS
+URL** (exactly the `https` scheme, a host present, no whitespace or control
+characters); anything else degrades to plain escaped label text, so fixed
+HTTPS endpoints in module constants are preferred. Every dynamic value
+(labels, versions, dates, messages, notes) is HTML-escaped at the report
+boundary — providers must never embed markup in result strings, plain text
+only.
+
 ## Defensive parsing (required for scrapers)
 
 Web sources drift silently. Match the bar set by `_scrape_aws_rds_calendar` and
