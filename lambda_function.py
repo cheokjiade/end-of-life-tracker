@@ -10,6 +10,7 @@ See ``docs/adding-a-provider.md`` and ``CLAUDE.md`` for the architecture.
 """
 
 from eoltracker.handler import lambda_handler, run_local  # noqa: F401  (Lambda handler entry)
+from eoltracker.validation import ConfigValidationError  # noqa: F401
 
 if __name__ == "__main__":
     import sys
@@ -20,4 +21,10 @@ if __name__ == "__main__":
         # --validate eol_config.<project>.json   (exit 0 valid, 1 invalid)
         from eoltracker.validation import main as validate_main
         sys.exit(validate_main(argv[1:]))
-    run_local(argv[0] if argv else "eol_config.a.json")
+    try:
+        run_local(argv[0] if argv else "eol_config.a.json")
+    except ConfigValidationError as exc:
+        # Same field-path diagnostics as --validate; exit 1 instead of a traceback.
+        from eoltracker.validation import print_results
+        print_results(exc.findings, label="config")
+        sys.exit(1)

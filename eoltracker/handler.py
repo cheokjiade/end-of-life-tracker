@@ -4,27 +4,77 @@ Configuration is loaded from an S3 JSON file so products can be updated
 without redeploying the Lambda. Alerts are sent via SNS, SES, console, or
 HTML file (multiple channels can be enabled at once).
 
+On AWS Lambda a failed delivery is an invocation failure: when every required
+channel ends up undelivered (all errored or skipped), the handler
+raises ``DeliveryFailureError`` so Lambda's asynchronous retries, dead-letter
+queue, and CloudWatch alarms engage. Locally, runs print the per-channel
+outcomes and never raise. See README ("Delivery outcomes and failure
+handling") and ``eoltracker/notify.py`` for the outcome contract.
+
 Environment variables:
     CONFIG_BUCKET   — S3 bucket containing the config file
     CONFIG_KEY      — S3 key for the config file (default: eol_config.json)
     SNS_TOPIC_ARN   — SNS topic ARN for plain-text email notifications
     SES_FROM_EMAIL  — SES sender for HTML email notifications (optional)
     SES_TO_EMAILS   — Comma-separated SES recipients (optional)
+
+Time-budget variables (see :mod:`eoltracker.runner`):
+    EOL_MAX_WORKERS          — simultaneous provider checks (default: 4)
+    EOL_TIME_RESERVE_MS      — rendering/delivery reserve (default: 15000)
+    EOL_CHECK_START_GUARD_MS — extra time required to start a provider check
+                               (default: 18000)
 """
 
-import json
 import os
 from datetime import date
 
 from .core import logger
-from .parsers import check_product
-from .report import format_report_text, format_report_html
-from .notify import send_notifications
+from .report import analyse_results, format_report_text, format_report_html
+from .notify import (
+    DeliveryFailureError,
+    delivery_failed,
+    running_in_lambda,
+    send_notifications,
+    summarize_outcomes,
+)
+from .runner import run_checks
+from .validation import ConfigValidationError, load_validated_config_bytes
+
+
+# ---------------------------------------------------------------------------
+# Subjects and notification decisions
+# ---------------------------------------------------------------------------
+
+def build_subject(analysis, project, today):
+    """Compose the notification subject from a result analysis.
+
+    Lifecycle risk and tracker-health degradation get distinct tags so a
+    recipient can tell them apart at a glance:
+      - ``[EOL ALERT]``         - eol/approaching products;
+      - ``[TRACKER HEALTH]``    - error/unknown results (check failures);
+      - both may appear together as ``[EOL ALERT][TRACKER HEALTH]``.
+    A run with neither is an informational ``[EOL Report]``.
+    """
+    tags = []
+    if analysis.get("has_lifecycle_alerts"):
+        tags.append("EOL ALERT")
+    if analysis.get("has_health_failures"):
+        tags.append("TRACKER HEALTH")
+    prefix = "[" + "][".join(tags) + "]" if tags else "[EOL Report]"
+    proj_tag = f" [{project}]" if project else ""
+    return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
+def _log_product_findings(findings, origin):
+    """Warn about per-product findings that did not reject the config."""
+    for f in findings:
+        logger.warning("%s: %s (%s): %s", origin, f["path"], f["severity"],
+                       f["message"])
+
 
 def load_config_from_s3(key=None):
     """Load product configuration from S3.
@@ -32,6 +82,11 @@ def load_config_from_s3(key=None):
     *key* overrides the CONFIG_KEY env var when supplied. EventBridge rules
     pass it via the invocation event so a single Lambda can fan out across
     many per-project config files.
+
+    Raises :class:`~eoltracker.validation.ConfigValidationError` for
+    structurally unusable configs (bad root/products/thresholds/notifications)
+    before any provider runs; malformed individual product entries are logged
+    and later surface as error rows instead of aborting the run.
     """
     import boto3
 
@@ -39,13 +94,28 @@ def load_config_from_s3(key=None):
     key = key or os.environ.get("CONFIG_KEY", "eol_config.a.json")
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    origin = f"s3://{bucket}/{key}"
+    config, product_findings = load_validated_config_bytes(
+        obj["Body"].read(), origin=origin)
+    _log_product_findings(product_findings, origin)
+    return config
 
 
 def load_config_from_file(path):
-    """Load product configuration from a local file (for testing)."""
-    with open(path) as f:
-        return json.load(f)
+    """Load product configuration from a local file (for testing).
+
+    Reads bytes and enforces the same ASCII-only + JSON rules as the
+    ``--validate`` linter (see :mod:`eoltracker.validation`), then applies
+    :func:`enforce_valid_config` exactly like S3 loading — invalid top-level
+    or runtime shapes raise :class:`ConfigValidationError` before providers
+    run.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    config, product_findings = load_validated_config_bytes(raw, origin=path)
+    _log_product_findings(product_findings, path)
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +133,10 @@ def lambda_handler(event, context):
       - ses_to_emails   — comma-separated recipients for SES notifications
 
     All overrides fall back to the existing env vars when absent.
+
+    With ``notify_when: "alerts_only"`` a notification is sent for lifecycle
+    alerts (eol/approaching, including undated at-risk phases) and for
+    tracker-health failures (error/unknown results).
     """
     today = date.today()
     event = event or {}
@@ -87,22 +161,54 @@ def lambda_handler(event, context):
 
     logger.info("Checking %d products for EOL status", len(products))
 
-    results = [r for r in (check_product(entry, today) for entry in products) if r is not None]
+    results, run_meta = run_checks(products, today, context=context)
+    if run_meta.get("degraded"):
+        logger.warning(
+            "Time budget reached before %d product(s) could be checked; "
+            "delivering a partial report",
+            run_meta["unfinished"],
+        )
 
     for r in results:
         logger.info("%s: %s", r["label"], r["message"])
 
-    report_text, has_alerts = format_report_text(results, thresholds, today)
+    analysis = analyse_results(results, thresholds)
+    report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    should_notify = notify_when == "always" or has_alerts
+    # alerts_only must still fire on tracker-health failures (error/unknown):
+    # an unverifiable run is never a reason to stay silent.
+    should_notify = (
+        notify_when == "always"
+        or analysis["has_lifecycle_alerts"]
+        or analysis["has_health_failures"]
+    )
 
+    outcomes = []
     if should_notify:
-        prefix = "EOL ALERT" if has_alerts else "EOL Report"
-        proj_tag = f" [{project}]" if project else ""
-        subject = f"[{prefix}]{proj_tag} Software End-of-Life Status - {today}"
-        send_notifications(config, report_text, report_html, subject,
-                           runtime_overrides=runtime_overrides)
+        subject = build_subject(analysis, project, today)
+        outcomes = send_notifications(
+            config, report_text, report_html, subject,
+            runtime_overrides=runtime_overrides,
+        ) or []
+        for line in summarize_outcomes(outcomes).splitlines():
+            logger.info("Delivery %s", line)
+        if delivery_failed(outcomes):
+            # No required channel delivered. In Lambda mode this must be an
+            # invocation failure so retries/DLQ/alarms engage (R-03); local
+            # runs just surface the summary and continue.
+            if running_in_lambda():
+                required_failures = [o for o in outcomes if o.get("required")]
+                raise DeliveryFailureError(
+                    "all required notification channels failed to deliver: "
+                    + "; ".join(
+                        "{}: {}".format(o["channel"],
+                                        "skipped: " + o["detail"] if o["skipped"]
+                                        else o["error"] or o["detail"])
+                        for o in required_failures
+                    )
+                )
+            logger.error("All required notification channels failed to deliver")
     else:
         logger.info("No alerts and notify_when=alerts_only — skipping notification")
 
@@ -110,8 +216,12 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "project": project,
         "checked": len(results),
-        "has_alerts": has_alerts,
-        "notified": should_notify,
+        "has_alerts": analysis["has_lifecycle_alerts"],
+        "has_health_failures": analysis["has_health_failures"],
+        # True only when at least one configured channel actually delivered.
+        "notified": any(o["delivered"] for o in outcomes),
+        "notification_outcomes": outcomes,
+        "unfinished": run_meta.get("unfinished", 0),
     }
 
 
@@ -119,11 +229,14 @@ def lambda_handler(event, context):
 # Local testing  (python lambda_function.py [config.json])
 # ---------------------------------------------------------------------------
 
-def run_local(config_path):
+def run_local(config_path, context=None):
     """Run a check against a local config file and dispatch notifications.
 
     Holds the body of the original ``__main__`` block so the shim's CLI and
-    any caller can invoke it directly.
+    any caller can invoke it directly. Local runs never raise on delivery
+    failure; per-channel outcomes are printed instead. *context* is optional;
+    pass an object exposing ``get_remaining_time_in_millis()`` to exercise the
+    Lambda budget in a test.
     """
     config = load_config_from_file(config_path)
 
@@ -131,11 +244,17 @@ def run_local(config_path):
     products = config["products"]
     thresholds = config.get("alert_thresholds_days", [30, 60, 90])
 
-    results = [r for r in (check_product(entry, today) for entry in products) if r is not None]
-    report_text, has_alerts = format_report_text(results, thresholds, today)
+    results, _run_meta = run_checks(products, today, context=context)
+    analysis = analyse_results(results, thresholds)
+    report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    prefix = "EOL ALERT" if has_alerts else "EOL Report"
-    subject = f"[{prefix}] Software End-of-Life Status - {today}"
+    subject = build_subject(analysis, None, today)
 
-    send_notifications(config, report_text, report_html, subject)
+    outcomes = send_notifications(config, report_text, report_html, subject)
+    print("Notification channels:")
+    print(summarize_outcomes(outcomes))
+    if delivery_failed(outcomes):
+        print("WARNING: no required notification channel delivered; see details above.")
+        return outcomes
+    return outcomes

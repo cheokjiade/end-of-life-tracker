@@ -127,7 +127,9 @@ The scraper validates the page structure on every run. If AWS renames a column, 
 "alert_thresholds_days": [30, 60, 90]
 ```
 
-Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life".
+Products within the **largest** threshold (90 days) of their EOL date are flagged as "approaching end of life". Products past their EOL date are flagged as "already end of life". At-risk lifecycle phases that publish **no date** (for example an AWS SDK in *Maintenance*) are always treated as approaching — they cannot be thresholded away.
+
+Results the tracker could not verify are reported separately as **tracker health** failures: `error` (the check itself failed) and `unknown` (present but unverifiable, e.g. a version missing from npm/Maven Central). They never render as healthy and trigger notifications even under `alerts_only`, with a distinct `[TRACKER HEALTH]` subject/banner. Products deliberately marked `untracked` stay informational.
 
 ### Notification frequency
 
@@ -138,7 +140,7 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Value | Behaviour |
 |-------|-----------|
 | `always` | Send a report every run, even if nothing needs attention |
-| `alerts_only` | Only send when at least one product is EOL or approaching |
+| `alerts_only` | Send when something needs attention: a product is EOL/approaching (including undated at-risk phases), or any product reports an `error`/`unknown` tracker-health failure |
 
 ### Notification channels
 
@@ -154,11 +156,52 @@ Products within the **largest** threshold (90 days) of their EOL date are flagge
 | Type | Format | Notes |
 |------|--------|-------|
 | `console` | Plain text to stdout | No config needed |
-| `html_file` | HTML file | `path` defaults to `eol_report.html`; the file is written under `reports/<project>/<year>/<month>/<day>/` (`<project>` derived from the `path` base name) |
+| `html_file` | HTML file | `path` defaults to `eol_report.html`; the file is written under `reports/<project>/<year>/<month>/<day>/` (`<project>` derived from the `path` base name). **Lambda deployments:** this channel is local-only by default — inside Lambda a relative path (or any absolute path outside `/tmp`) skips with a warning instead of failing. To write in Lambda, set `path` to an explicit absolute destination under `/tmp` (e.g. `/tmp/reports/eol_report.html`); note `/tmp` is ephemeral scratch space — use S3 for durable AWS-hosted reports |
 | `sns` | Plain text email via SNS | `topic_arn` or `SNS_TOPIC_ARN` env var |
 | `ses` | HTML email via SES | `from_email`/`to_emails` or `SES_FROM_EMAIL`/`SES_TO_EMAILS` env vars. Sender must be [verified in SES](https://docs.aws.amazon.com/ses/latest/dg/creating-identities.html) |
 
 You can enable multiple channels simultaneously.
+
+SNS and SES are **required delivery channels by default**; console and
+`html_file` are optional by default. Set a boolean `"required": true` or
+`false` on any channel to override that default. A successful optional console
+or file delivery never masks failure of every required durable route.
+
+### Delivery outcomes and failure handling
+
+Every channel invocation produces an outcome record — returned in the Lambda
+response as `notification_outcomes`, logged per run, and printed by local runs:
+
+- `delivered` — the channel confirmed the send/write.
+- `skipped` — never attempted: unknown channel type, missing routing config
+  (no topic ARN / no sender or recipients), or html_file not writable in Lambda.
+- `failed` (error) — attempted but the delivery raised.
+
+Outcome records also identify whether the channel was `required`; a delivered
+`html_file` outcome includes its local output path.
+
+Behaviour on failure:
+
+1. Channels are attempted in configuration order; one failing channel never
+   prevents a later independent channel from being attempted. Delivery succeeds
+   when at least one required channel delivers (or when no channel is required).
+2. The handler's `notified` response field reflects **actual delivery** — it is
+   true only when at least one configured channel delivered, not merely that a
+   notification was attempted. A run suppressed by `alerts_only` also reports
+   `notified: false`.
+3. If required channels exist and **every required channel** ends up
+   undelivered, the handler raises a failure while running on AWS Lambda. This
+   makes the invocation fail so
+   Lambda's asynchronous retry policy engages, and after all retries the event
+   lands in the function's dead-letter queue (`<project>-lambda-failures`). Two
+   CloudWatch alarms (`<project>-function-errors`,
+   `<project>-failure-dlq-not-empty`) page the ops topic configured via
+   `ops_notification_email`. Local runs never raise — they print the per-channel
+   outcomes instead.
+
+Logs never contain recipient addresses: SES messages log a recipient count
+only, and outcome details describe routing qualitatively rather than naming
+destinations.
 
 ## Deploy to AWS Lambda
 
@@ -171,6 +214,9 @@ You can enable multiple channels simultaneously.
 ### Steps
 
 ```bash
+# 0. Build the Lambda artifact from the runtime allowlist
+python build_lambda_package.py build
+
 cd terraform
 
 # 1. Create your variables file
@@ -185,6 +231,11 @@ python ../lambda_function.py --validate ../eol_config.a.json
 terraform init
 terraform apply
 ```
+
+The ZIP contains only `lambda_function.py` and the `eoltracker/` package.
+Terraform fails plan/apply unless that artifact is byte-for-byte current, so
+rerun step 0 after any change under `eoltracker/`. See
+[docs/packaging.md](docs/packaging.md) for how packaging and verification work.
 
 After deployment:
 - **Confirm every SNS subscription** — AWS emails each project's `notification_email` a confirmation link; that topic stays silent until it is clicked.
@@ -255,7 +306,11 @@ Top-level variables (`terraform/variables.tf`):
 | `aws_region` | No | `eu-west-1` | AWS region |
 | `lambda_timeout` | No | `60` | Lambda timeout in seconds |
 | `lambda_memory` | No | `128` | Lambda memory in MB |
+| `eol_max_workers` | No | `4` | Maximum concurrent provider checks |
+| `eol_time_reserve_ms` | No | `15000` | Milliseconds reserved for rendering and delivery |
+| `eol_check_start_guard_ms` | No | `18000` | Additional time required before starting a provider check |
 | `ses_from_email` | No | `""` | Verified SES sender shared across all projects; empty disables SES |
+| `ops_notification_email` | No | `""` | Email subscribed to Lambda failure and dead-letter queue alarms; empty creates the ops topic without a subscription |
 
 Per-project settings — one entry per project under `projects`:
 
@@ -268,12 +323,16 @@ Per-project settings — one entry per project under `projects`:
 
 ### Environment variables (set by Terraform)
 
-Terraform sets only two environment variables on the shared function — there are no per-project env vars:
+Terraform sets shared environment variables on the function; there are no
+per-project environment variables:
 
 | Variable | Purpose |
 |----------|---------|
 | `CONFIG_BUCKET` | S3 bucket containing every project's config file |
 | `SES_FROM_EMAIL` | Fallback SES sender (may be empty; the notification config wins) |
+| `EOL_MAX_WORKERS` | Concurrent provider checks (default `4`) |
+| `EOL_TIME_RESERVE_MS` | Time kept for rendering and delivery (default `15000`) |
+| `EOL_CHECK_START_GUARD_MS` | Extra time required before starting a check (default `18000`) |
 
 In particular, Terraform sets **no** `CONFIG_KEY`, `SNS_TOPIC_ARN`, or `SES_TO_EMAILS`. Per-project routing instead arrives in each EventBridge rule's input payload (`project`, `config_key`, `sns_topic_arn`, `ses_to_emails`) — see `aws_cloudwatch_event_target.lambda` in `terraform/main.tf` and `lambda_handler` in `eoltracker/handler.py`.
 
@@ -285,7 +344,24 @@ When a value is absent from both the event and the config entry, the handler fal
 | SNS topic ARN | config entry `topic_arn` → event `sns_topic_arn` → `SNS_TOPIC_ARN` env var |
 | SES sender / recipients | config entry `from_email` / `to_emails` → event overrides → `SES_FROM_EMAIL` / `SES_TO_EMAILS` env vars |
 
-Under the default Terraform layout the env-var layers are unset, so only event-supplied values resolve to real resources.
+Under the default Terraform layout `CONFIG_KEY`, `SNS_TOPIC_ARN`, and
+`SES_TO_EMAILS` remain unset, so scheduled runs use the exact values carried by
+their per-project event payloads. `SES_FROM_EMAIL` is the one optional shared
+routing fallback Terraform may populate.
+
+### Provider execution budget
+
+Provider checks use bounded concurrency and retain config-file order in the
+report. Work is submitted lazily and stops when the remaining Lambda time is
+less than the reporting reserve plus the provider start guard. A check that
+cannot finish safely becomes an `error` row, so `alerts_only` reports degraded
+tracker health instead of allowing the invocation to time out silently.
+
+The Terraform controls are `eol_max_workers`, `eol_time_reserve_ms`, and
+`eol_check_start_guard_ms`. Keep the start guard at least 15000 ms, the longest
+socket timeout used by a built-in provider. Increase the Lambda timeout or
+lower concurrency if CloudWatch shows repeated partial runs; do not consume
+the reporting reserve to squeeze in more lookups.
 
 ### Manual invocation
 
@@ -357,7 +433,7 @@ EventBridge schedule rules (one per project, cron-driven)
         |
         +---> this project's SNS topic (plain-text email)
         +---> SES (HTML email)
-        +---> HTML file (reports/<project>/<year>/<month>/<day>/)
+        +---> HTML file (dated reports/ tree locally; explicit /tmp path in Lambda)
         +---> Console (CloudWatch Logs)
 ```
 

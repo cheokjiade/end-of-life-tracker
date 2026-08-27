@@ -15,7 +15,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker.validation import main as validate_main
-from eoltracker.validation import validate_config, validate_config_file
+from eoltracker.validation import VALID_ENGINES, validate_config, validate_config_file
+from eoltracker.parsers.aws_rds import _AWS_DOCS_URLS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,9 +46,15 @@ assert by_path(errors(res), "products"), res
 res = validate_config({"products": []})
 assert by_path(errors(res), "products"), res
 
-# dividers are skipped exactly like check_product does
+# Dividers are skipped exactly like check_product does, but a config made only
+# of dividers is unusable and fails at the products container path.
 res = validate_config({"products": [{"_section": "Spring Boot", "label": "d"}]})
-assert not res, res
+assert by_path(errors(res), "products"), res
+res = validate_config({"products": [
+    {"_section": "Spring Boot", "label": "d"},
+    {"source": "manual", "label": "Tracked row"},
+]})
+assert not errors(res), res
 
 # --- default provider (endoflife_date) ------------------------------------
 res = validate_config({"products": [{"product": "python"}]})
@@ -58,6 +65,14 @@ assert by_path(errors(res), "products[0].product"), res
 for bad in ("", "   ", None, {"v": 1}, True):
     res = validate_config({"products": [{"product": bad}]})
     assert by_path(errors(res), "products[0].product"), (bad, res)
+
+# Identifiers and versions must be strings. JSON numbers such as 3.10 are
+# already lossy (decoded as 3.1) before providers can compare them.
+for bad_version in (3, 3.10):
+    res = validate_config({"products": [{
+        "product": "python", "version": bad_version,
+    }]})
+    assert by_path(errors(res), "products[0].version"), (bad_version, res)
 
 # --- unknown sources -------------------------------------------------------
 res = validate_config({"products": [{"source": "wheel", "version": "1"}]})
@@ -94,6 +109,7 @@ for source, missing, present in (
 assert not errors(validate_config({"products": [{"source": "manual"}]}))
 
 # --- aws_rds_scrape engine guard -------------------------------------------
+assert set(VALID_ENGINES) == set(_AWS_DOCS_URLS)
 res = validate_config({
     "products": [
         {"source": "aws_rds_scrape", "engine": "mysql", "version": "17.5"}]
@@ -123,18 +139,19 @@ res = validate_config({"products": one, "notifications": [
     {"type": "html_file", "path": 42},
     {"type": "sns", "topic_arn": 7},
     {"type": "ses", "to_emails": "team@example.com"},  # string, not list
+    {"type": "console", "required": "yes"},
 ]})
 expected_paths = {
     "notifications[0]", "notifications[1].type",
     "notifications[2].path", "notifications[3].topic_arn",
-    "notifications[4].to_emails",
+    "notifications[4].to_emails", "notifications[5].required",
 }
 got_paths = {r["path"] for r in errors(res)}
 assert got_paths == expected_paths, res
 
 valid_channels = validate_config({"products": one, "notifications": [
     {"type": "console"},
-    {"type": "html_file", "path": "eol_report.html"},
+    {"type": "html_file", "path": "eol_report.html", "required": False},
     {"type": "sns", "topic_arn": "arn:aws:sns:eu-west-1:123:eol-alerts"},
     {"type": "ses", "from_email": "noreply@example.com",
      "to_emails": ["team@example.com"]},

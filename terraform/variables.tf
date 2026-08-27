@@ -27,8 +27,47 @@ variable "lambda_memory" {
   default     = 128
 }
 
+variable "eol_max_workers" {
+  description = "Maximum concurrent provider checks per Lambda invocation"
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.eol_max_workers >= 1 && var.eol_max_workers <= 32
+    error_message = "eol_max_workers must be between 1 and 32."
+  }
+}
+
+variable "eol_time_reserve_ms" {
+  description = "Lambda time reserved for rendering and notification delivery"
+  type        = number
+  default     = 15000
+
+  validation {
+    condition     = var.eol_time_reserve_ms >= 1000
+    error_message = "eol_time_reserve_ms must be at least 1000."
+  }
+}
+
+variable "eol_check_start_guard_ms" {
+  description = "Extra time, above the reserve, required to start a provider check"
+  type        = number
+  default     = 18000
+
+  validation {
+    condition     = var.eol_check_start_guard_ms >= 15000
+    error_message = "eol_check_start_guard_ms must be at least the longest built-in provider timeout (15000 ms)."
+  }
+}
+
 variable "ses_from_email" {
   description = "SES sender (must be verified in SES). Shared across all projects. Leave empty to skip SES."
+  type        = string
+  default     = ""
+}
+
+variable "ops_notification_email" {
+  description = "Email subscribed to operational alarms (Lambda failures, dead-letter queue). Leave empty to create the ops topic without a subscription."
   type        = string
   default     = ""
 }

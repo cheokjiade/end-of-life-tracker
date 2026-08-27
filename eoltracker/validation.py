@@ -22,19 +22,34 @@ aws_rds_scrape       version
 aws_sdk_lifecycle    sdk, major
 jackson_lifecycle    version
 maven_central        group, artifact, version
-npm_registry         package, version
+npm_registry         package
 manual               (none)
 tyk_lifecycle        version
 ===================  =========================
 
+(For ``npm_registry`` an omitted ``version`` is valid by design - the
+provider reports the registry's latest release when no in-use version is
+given.)
+
 CLI: ``python lambda_function.py --validate <config.json>`` exits 0 when no
 errors were found (warnings permitted), 1 when the config is invalid, and 2
 on usage problems.
+
+Runtime enforcement: every config load (local file or S3) runs
+``enforce_valid_config`` - structurally unusable top-level/runtime shapes
+(non-object root, bad ``products`` container, invalid thresholds,
+``notify_when``, or notification channels) raise
+:class:`ConfigValidationError` before any provider call. Per-product entry
+problems never reject the load; they are returned as findings (for warning
+logs) and each affected entry later becomes a normalized error row via
+``product_entry_errors`` + ``check_product``, so one malformed product cannot
+abort an otherwise valid run.
 """
 
 import json
 
 from .parsers import SOURCE_LABELS
+from .parsers.aws_rds import _AWS_DOCS_URLS
 
 # Sources whose config entries this module knows how to field-check.
 # Entries routing to a registered source without rules here get a warning.
@@ -44,15 +59,49 @@ REQUIRED_FIELDS = {
     "aws_sdk_lifecycle": ("sdk", "major"),
     "jackson_lifecycle": ("version",),
     "maven_central": ("group", "artifact", "version"),
-    "npm_registry": ("package", "version"),
+    # npm 'version' is optional by design: the provider reports the registry's
+    # latest release when no in-use version is supplied.
+    "npm_registry": ("package",),
     "manual": (),
     "tyk_lifecycle": ("version",),
 }
 
+# Optional identity fields are still strings when present. In particular,
+# JSON numeric versions are lossy (3.10 decodes as 3.1) before a provider can
+# compare them.
+IDENTIFIER_FIELDS = (
+    "product", "version", "group", "artifact", "package", "sdk", "major",
+)
+
 DEFAULT_SOURCE = "endoflife_date"
 
+
+class ConfigValidationError(ValueError):
+    """A loaded config failed fatal (top-level/runtime-shape) validation.
+
+    Carries the error-severity findings that caused the rejection in
+    ``.findings`` so CLI and log surfaces can print the same field-path
+    diagnostics ``--validate`` renders.
+    """
+
+    def __init__(self, message, findings=None):
+        super().__init__(message)
+        self.findings = list(findings or [])
+
+
+def _is_fatal_finding(finding):
+    """True for findings that must reject a config before any provider runs.
+
+    Per-product entry findings (paths like ``products[3].version``) are not
+    fatal: those entries convert to error rows at dispatch time while the
+    remaining products continue. Everything else - the root object, the
+    products container itself, thresholds, notify_when, notification
+    channels - is runtime-critical.
+    """
+    return not finding["path"].startswith("products[")
+
 # Engines accepted by aws_rds_scrape (keys of its release-calendar scrape map).
-VALID_ENGINES = ("aurora-postgresql", "rds-postgresql")
+VALID_ENGINES = tuple(sorted(_AWS_DOCS_URLS))
 
 NOTIFY_WHEN_VALUES = ("always", "alerts_only")
 NOTIFICATION_TYPES = ("console", "html_file", "sns", "ses")
@@ -69,22 +118,20 @@ def _finding(path, severity, message):
 
 
 def _is_scalar(value):
-    """A filled string/number (bools excluded even though bools are ints)."""
-    return (
-        isinstance(value, (str, int, float))
-        and not isinstance(value, bool)
-        and str(value).strip() != ""
-    )
+    """A non-empty string identifier (JSON numbers lose version precision)."""
+    return isinstance(value, str) and value.strip() != ""
 
 
 def _check_product_entry(entry, prefix, results):
     """Field-check one products[] entry against its resolved provider."""
     source = entry.get("source", DEFAULT_SOURCE)
-    if source not in SOURCE_LABELS:
-        known = ", ".join(sorted(SOURCE_LABELS))
+    # isinstance guard: an unhashable source (e.g. a JSON list) must produce a
+    # finding, not a TypeError from the registry membership test.
+    if not isinstance(source, str) or source not in SOURCE_LABELS:
         results.append(_finding(
             f"{prefix}.source", "error",
-            f"unknown source '{source}' (known sources: {known})"))
+            f"unknown source {source!r} "
+            f"(known sources: {', '.join(sorted(SOURCE_LABELS))})"))
         return
 
     required = REQUIRED_FIELDS.get(source)
@@ -100,7 +147,15 @@ def _check_product_entry(entry, prefix, results):
             results.append(_finding(
                 f"{prefix}.{field}", "error",
                 f"required field '{field}' is missing, empty, or not a "
-                "string/number"))
+                "string"))
+    for field in IDENTIFIER_FIELDS:
+        if field in required or field not in entry:
+            continue
+        value = entry.get(field)
+        if value is not None and not _is_scalar(value):
+            results.append(_finding(
+                f"{prefix}.{field}", "error",
+                f"optional field '{field}' must be a non-empty string when present"))
 
     if source == "aws_rds_scrape":
         engine = entry.get("engine", VALID_ENGINES[0])
@@ -113,6 +168,29 @@ def _check_product_entry(entry, prefix, results):
     if label is not None and not isinstance(label, str):
         results.append(_finding(
             f"{prefix}.label", "warning", "label should be a string"))
+
+
+def product_entry_errors(entry, index=None):
+    """Error-severity field checks for one ``products[]`` entry.
+
+    Network-free and exception-free: safe on partial or entirely wrong-typed
+    input. Shared by :func:`validate_config`'s sweep and by
+    ``check_product``'s pre-provider gate, which converts failing entries
+    into normalized error rows without calling the provider. Returns a list
+    of findings whose paths are prefixed ``products[<index>].*`` when an
+    index is supplied, else ``entry.*``.
+    """
+    out = []
+    if not isinstance(entry, dict):
+        kind = type(entry).__name__
+        prefix = f"products[{index}]" if index is not None else "entry"
+        out.append(_finding(
+            prefix, "error",
+            f"product entry must be an object, got {kind}"))
+        return out
+    prefix = f"products[{index}]" if index is not None else "entry"
+    _check_product_entry(entry, prefix, out)
+    return [f for f in out if f["severity"] == "error"]
 
 
 def validate_config(config):
@@ -137,6 +215,7 @@ def validate_config(config):
             "products", "error", "'products' list is empty"))
     else:
         seen_labels = {}
+        checkable_entries = 0
         for i, entry in enumerate(products):
             prefix = f"products[{i}]"
             if not isinstance(entry, dict):
@@ -145,6 +224,7 @@ def validate_config(config):
                 continue
             if entry.get("_section"):
                 continue  # config-file divider, skipped by check_product too
+            checkable_entries += 1
             if isinstance(entry.get("label"), str) and entry["label"].strip():
                 first = seen_labels.setdefault(entry["label"], i)
                 if first != i:
@@ -152,6 +232,10 @@ def validate_config(config):
                         f"{prefix}.label", "warning",
                         f"duplicate label of products[{first}]"))
             _check_product_entry(entry, prefix, results)
+        if checkable_entries == 0:
+            results.append(_finding(
+                "products", "error",
+                "'products' contains no checkable entries (section dividers only)"))
 
     # -- alert thresholds ---------------------------------------------------
     thresholds = config.get("alert_thresholds_days")
@@ -197,6 +281,33 @@ def validate_config(config):
     return results
 
 
+def enforce_valid_config(config, origin=""):
+    """Validate a loaded config and reject fatal top-level/runtime shapes.
+
+    Runs :func:`validate_config` and raises :class:`ConfigValidationError`
+    when any non-product finding has error severity (non-object root; a
+    missing, non-list, or empty ``products`` container; invalid
+    ``alert_thresholds_days``, ``notify_when``, or notification channels).
+    Loaders call this before any provider work so a structurally unusable
+    config fails fast instead of aborting mid-run.
+
+    Per-product entry findings are *not* raised: they are returned (for the
+    caller to log) and each affected entry becomes a normalized error row at
+    dispatch time while valid products continue.
+
+    *origin* labels where the config came from (file path or s3:// URI) in
+    the exception message.
+    """
+    findings = validate_config(config)
+    fatal = [f for f in findings if _is_fatal_finding(f) and f["severity"] == "error"]
+    if fatal:
+        where = f"{origin}: " if origin else ""
+        lines = "; ".join(f"{f['path']}: {f['message']}" for f in fatal)
+        raise ConfigValidationError(
+            f"{where}invalid EOL tracker config ({lines})", fatal)
+    return [f for f in findings if not _is_fatal_finding(f)]
+
+
 def _check_notifications(notifications, results):
     """Channel-level checks shared by validate_config()."""
     for j, notif in enumerate(notifications):
@@ -213,6 +324,12 @@ def _check_notifications(notifications, results):
                 f"{prefix}.type", "error",
                 f"notification type {ntype!r} is not supported (valid: {valid})"))
             continue
+
+        required = notif.get("required")
+        if required is not None and not isinstance(required, bool):
+            results.append(_finding(
+                f"{prefix}.required", "error",
+                "'required' must be a boolean when present"))
 
         if ntype == "html_file":
             path = notif.get("path")
@@ -270,6 +387,19 @@ def load_config_json_bytes(raw):
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON ({exc.msg}, line {exc.lineno} column "
                          f"{exc.colno})") from exc
+
+
+def load_validated_config_bytes(raw, origin=""):
+    """Decode and runtime-validate config bytes with uniform diagnostics."""
+    try:
+        config = load_config_json_bytes(raw)
+    except ValueError as exc:
+        finding = _finding("config", "error", str(exc))
+        where = f"{origin}: " if origin else ""
+        raise ConfigValidationError(
+            f"{where}invalid EOL tracker config ({exc})", [finding]) from exc
+    findings = enforce_valid_config(config, origin=origin)
+    return config, findings
 
 
 def validate_config_file(path):

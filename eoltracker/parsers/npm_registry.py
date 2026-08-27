@@ -3,7 +3,9 @@
 npm libraries rarely publish EOL dates. Like maven_central, we report what
 the registry knows: when the in-use version shipped, the latest version and
 its date, and how far behind. The one hard signal npm gives is per-version
-deprecation, which we surface as an alert.
+deprecation, which we surface as an alert. Versions the registry cannot
+confirm (missing version data, unpublished/private builds) report 'unknown'
+rather than a healthy state.
 """
 
 import json
@@ -102,14 +104,25 @@ def _npm_result_from_doc(entry, doc, today):
         result["message"] = f"npm marks {version} deprecated: {dep.strip()}"
         return result
 
-    result["status"] = "ok"
+    # A version the registry cannot confirm is a data-quality unknown, not a
+    # healthy result: a typo'd/private/unpublished version must not render OK.
     if not latest:
-        result["message"] = "No versions published on npm registry"
-    elif not version:
+        result["status"] = "unknown"
+        result["message"] = "No versions published on npm registry - nothing to verify against"
+        return result
+
+    if not version:
+        result["status"] = "unknown"
         result["message"] = f"In-use version not provided; latest is {latest}" + (f" ({latest_date})" if latest_date else "")
-    elif version not in versions:
+        return result
+
+    if version not in versions:
+        result["status"] = "unknown"
         result["message"] = f"Version {version} not on npm registry (private build?); latest is {latest}" + (f" ({latest_date})" if latest_date else "")
-    elif on_latest:
+        return result
+
+    result["status"] = "ok"
+    if on_latest:
         if latest_date and _months_between(latest_date, today) >= _NPM_STALE_MONTHS:
             yrs = _months_between(latest_date, today) / 12.0
             result["message"] = f"On latest ({latest}) but it's from {latest_date} (~{yrs:.1f}y) - likely unmaintained"

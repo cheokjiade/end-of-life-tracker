@@ -24,7 +24,6 @@ whatever the registry serves that day.
 | Provider | Source | Constraint |
 |---|---|---|
 | AWS | `hashicorp/aws` | `~> 5.100.0` |
-| Archive | `hashicorp/archive` | `~> 2.8.0` |
 
 Rules of thumb:
 
@@ -52,6 +51,10 @@ terraform init
 # off-Linux (no provider execution here - just registry hash collection):
 terraform providers lock -platform=linux_amd64 -platform=linux_arm64
 
+# On the actual Linux deployment runner (or an equivalent CI job), prove that
+# the committed lock can install without being rewritten:
+terraform init -backend=false -lockfile=readonly
+
 # Commit the resulting terraform/.terraform.lock.hcl alongside whatever
 # constraint change triggered it.
 ```
@@ -62,6 +65,8 @@ terraform providers lock -platform=linux_amd64 -platform=linux_arm64
    across a major boundary always deserves its own change.
 2. `terraform init -upgrade`, then
    `terraform providers lock -platform=linux_amd64 -platform=linux_arm64`.
+   Verify with `terraform init -backend=false -lockfile=readonly` on the Linux
+   deployment runner; the static test cannot attribute each `h1:` to a platform.
 3. Inspect the `.terraform.lock.hcl` diff line by line: each removed `h1:`
    entry means a different binary will execute during plan/apply. Verify the
    bumped version corresponds to the release you intended.
@@ -85,8 +90,12 @@ python ../lambda_function.py --validate ../eol_config.<project>.json
 ```
 
 Warnings (env-var fallbacks, duplicate labels, unknown keys) should be treated
-as prompts to tighten the config, not noise. The static test suite also keeps
-the shipped template clean: `python tests/test_config_validation.py`.
+as prompts to tighten the config, not noise. As a second line of defence, the
+Lambda re-runs the same schema checks on every S3 load: invalid top-level or
+runtime settings abort the run before any provider call, while a malformed
+individual product entry is reported as an `error` row without stopping the
+other products. The static test suite also keeps the shipped template clean:
+`python tests/test_config_validation.py`.
 
 ## S3 config rollback runbook
 

@@ -54,9 +54,7 @@ for name, text in tf_files():
                 name, source_addr, local_name)
         declared[local_name] = constraint
 
-assert set(declared) == {"aws", "archive"}, declared
-assert "~> 2.8." in declared["archive"], (
-    f"archive constraint not narrowed to a patch line: {declared['archive']}")
+assert set(declared) == {"aws"}, declared
 for prov, constraint in declared.items():
     # narrow = three-component pessimistic pin: allows only patch releases of
     # one minor line. Bare "~> 5.0"-style ranges are rejected as too broad.
@@ -111,7 +109,7 @@ gitignore_path = os.path.join(ROOT, ".gitignore")
 with open(gitignore_path, encoding="utf-8") as f:
     gitignore = f.read()
 for still_ignored in (".terraform/", "terraform.tfstate",
-                      "terraform.tfvars", "lambda.zip"):
+                      "terraform.tfvars", "lambda.zip", "candidate*.json"):
     assert still_ignored in gitignore, still_ignored
 # unignored since issue #5: the lock file should be committed, not filtered out
 assert ".terraform.lock.hcl" not in gitignore
@@ -126,9 +124,11 @@ if os.path.exists(lock_path):
         addr, body = m.groups()
         ver = re.search(r'version\s*=\s*"([^"]+)"', body)
         hashes = re.findall(r'"h1:[^"]+"', body)
+        registry_hashes = re.findall(r'"zh:[^"]+"', body)
         assert addr not in locked, f"duplicate provider block {addr}"
         assert ver, f"missing version in {addr}"
         assert hashes, f"no h1 checksums recorded for {addr}"
+        assert registry_hashes, f"no signed-registry zh checksums recorded for {addr}"
         locked[addr] = ver.group(1)
     for prov, constraint in declared.items():
         addr = f"registry.terraform.io/hashicorp/{prov}"
