@@ -111,6 +111,12 @@ resource "aws_iam_role_policy" "lambda" {
         Action   = ["ses:SendEmail"]
         Resource = "*"
       },
+      {
+        Sid      = "LambdaFailureDLQ"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.lambda_failures.arn
+      },
     ]
   })
 }
@@ -158,6 +164,18 @@ resource "aws_lambda_function" "eol_checker" {
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
 
+  # Asynchronous failure handling (audit R-03): when the handler raises --
+  # including the deliberate "all required delivery channels failed" error --
+  # Lambda retries and finally drops the event onto this queue so a missed
+  # check is visible instead of silently swallowed.
+  dead_letter_config {
+    target_arn = aws_sqs_queue.lambda_failures.arn
+  }
+
+  # AWS validates the execution role's sqs:SendMessage permission when the
+  # function DLQ is configured; avoid a create/update race with the policy.
+  depends_on = [aws_iam_role_policy.lambda]
+
   environment {
     variables = {
       CONFIG_BUCKET  = aws_s3_bucket.config.id
@@ -199,4 +217,73 @@ resource "aws_lambda_permission" "cloudwatch" {
   function_name = aws_lambda_function.eol_checker.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.daily[each.key].arn
+}
+
+# ──────────────────────────────────────────────
+# Async failure handling + operational alarms (audit R-03)
+#
+# The function-level DLQ receives events that exhausted their asynchronous
+# retries after the handler raised. It is deliberately NOT an EventBridge
+# target DLQ: a target DLQ only captures schedule-to-Lambda delivery failures,
+# not failures raised inside the function code.
+# ──────────────────────────────────────────────
+
+resource "aws_sqs_queue" "lambda_failures" {
+  name                      = "${var.project_name}-lambda-failures"
+  message_retention_seconds = 14 * 24 * 60 * 60 # 14 days
+}
+
+# ──────────────────────────────────────────────
+# Operational alarm topic — delivery/health alerts for operators, separate
+# from the per-project report topics. Subscribe via ops_notification_email.
+# ──────────────────────────────────────────────
+
+resource "aws_sns_topic" "ops_alerts" {
+  name = "${var.project_name}-ops-alerts"
+}
+
+resource "aws_sns_topic_subscription" "ops_email" {
+  count     = var.ops_notification_email == "" ? 0 : 1
+  topic_arn = aws_sns_topic.ops_alerts.arn
+  protocol  = "email"
+  endpoint  = var.ops_notification_email
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  alarm_name          = "${var.project_name}-function-errors"
+  alarm_description   = "The EOL checker invocation failed (runtime error, or every required notification channel failed to deliver and the handler raised). Check CloudWatch logs and the ${var.project_name}-lambda-failures dead-letter queue."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.eol_checker.function_name
+  }
+
+  alarm_actions = [aws_sns_topic.ops_alerts.arn]
+  ok_actions    = [aws_sns_topic.ops_alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_failure_dlq_not_empty" {
+  alarm_name          = "${var.project_name}-failure-dlq-not-empty"
+  alarm_description   = "An EOL-check event exhausted all asynchronous retries and was parked in the ${var.project_name}-lambda-failures dead-letter queue; that scheduled check did not complete."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.lambda_failures.name
+  }
+
+  alarm_actions = [aws_sns_topic.ops_alerts.arn]
 }

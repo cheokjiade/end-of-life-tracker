@@ -4,6 +4,13 @@ Configuration is loaded from an S3 JSON file so products can be updated
 without redeploying the Lambda. Alerts are sent via SNS, SES, console, or
 HTML file (multiple channels can be enabled at once).
 
+On AWS Lambda a failed delivery is an invocation failure: when every required
+channel ends up undelivered (all errored or skipped), the handler
+raises ``DeliveryFailureError`` so Lambda's asynchronous retries, dead-letter
+queue, and CloudWatch alarms engage. Locally, runs print the per-channel
+outcomes and never raise. See README ("Delivery outcomes and failure
+handling") and ``eoltracker/notify.py`` for the outcome contract.
+
 Environment variables:
     CONFIG_BUCKET   — S3 bucket containing the config file
     CONFIG_KEY      — S3 key for the config file (default: eol_config.json)
@@ -19,7 +26,13 @@ from datetime import date
 from .core import logger
 from .parsers import check_product
 from .report import format_report_text, format_report_html
-from .notify import send_notifications
+from .notify import (
+    DeliveryFailureError,
+    delivery_failed,
+    running_in_lambda,
+    send_notifications,
+    summarize_outcomes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,12 +110,31 @@ def lambda_handler(event, context):
 
     should_notify = notify_when == "always" or has_alerts
 
+    outcomes = []
     if should_notify:
         prefix = "EOL ALERT" if has_alerts else "EOL Report"
         proj_tag = f" [{project}]" if project else ""
         subject = f"[{prefix}]{proj_tag} Software End-of-Life Status - {today}"
-        send_notifications(config, report_text, report_html, subject,
-                           runtime_overrides=runtime_overrides)
+        outcomes = send_notifications(config, report_text, report_html, subject,
+                                      runtime_overrides=runtime_overrides)
+        for line in summarize_outcomes(outcomes).splitlines():
+            logger.info("Delivery %s", line)
+        if delivery_failed(outcomes):
+            # No configured channel delivered. In Lambda mode this must be an
+            # invocation failure so retries/DLQ/alarms engage (R-03); local
+            # runs just surface the summary and continue.
+            if running_in_lambda():
+                required_failures = [o for o in outcomes if o.get("required")]
+                raise DeliveryFailureError(
+                    "all required notification channels failed to deliver: "
+                    + "; ".join(
+                        "{}: {}".format(o["channel"],
+                                        "skipped: " + o["detail"] if o["skipped"]
+                                        else o["error"] or o["detail"])
+                        for o in required_failures
+                    )
+                )
+            logger.error("All required notification channels failed to deliver")
     else:
         logger.info("No alerts and notify_when=alerts_only — skipping notification")
 
@@ -111,7 +143,9 @@ def lambda_handler(event, context):
         "project": project,
         "checked": len(results),
         "has_alerts": has_alerts,
-        "notified": should_notify,
+        # True only when at least one configured channel actually delivered.
+        "notified": any(o["delivered"] for o in outcomes),
+        "notification_outcomes": outcomes,
     }
 
 
@@ -123,7 +157,8 @@ def run_local(config_path):
     """Run a check against a local config file and dispatch notifications.
 
     Holds the body of the original ``__main__`` block so the shim's CLI and
-    any caller can invoke it directly.
+    any caller can invoke it directly. Local runs never raise on delivery
+    failure; per-channel outcomes are printed instead.
     """
     config = load_config_from_file(config_path)
 
@@ -138,4 +173,10 @@ def run_local(config_path):
     prefix = "EOL ALERT" if has_alerts else "EOL Report"
     subject = f"[{prefix}] Software End-of-Life Status - {today}"
 
-    send_notifications(config, report_text, report_html, subject)
+    outcomes = send_notifications(config, report_text, report_html, subject)
+    print("Notification channels:")
+    print(summarize_outcomes(outcomes))
+    if delivery_failed(outcomes):
+        print("WARNING: no configured notification channel delivered; see details above.")
+        return outcomes
+    return outcomes

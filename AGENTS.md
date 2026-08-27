@@ -192,6 +192,16 @@ canonical message format and detailed workflow.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
+- **Delivery outcomes (R-03/R-12 contract).** Every notify channel returns an
+  attempted/delivered/skipped/error outcome record; the handler's `notified`
+  field reflects actual delivery, and in Lambda mode it raises
+  `DeliveryFailureError` when every required channel is undelivered (SNS/SES
+  required by default; console/html optional unless explicitly overridden;
+  Lambda
+  retries, function DLQ, and CloudWatch ops alarms are wired in
+  `terraform/main.tf`). `html_file` writes relative paths only locally; inside
+  Lambda it skips unless given an explicit absolute path under `/tmp`.
+  Recipient addresses must never appear in logs or outcome details.
 - **Testing:** no framework — tests are standalone `python` assertion scripts
   that import the relevant `eoltracker` modules and inject synthetic data to
   stay network-free.
