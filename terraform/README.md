@@ -85,8 +85,12 @@ python ../lambda_function.py --validate ../eol_config.<project>.json
 ```
 
 Warnings (env-var fallbacks, duplicate labels, unknown keys) should be treated
-as prompts to tighten the config, not noise. The static test suite also keeps
-the shipped template clean: `python tests/test_config_validation.py`.
+as prompts to tighten the config, not noise. As a second line of defence, the
+Lambda re-runs the same schema checks on every S3 load: invalid top-level or
+runtime settings abort the run before any provider call, while a malformed
+individual product entry is reported as an `error` row without stopping the
+other products. The static test suite also keeps the shipped template clean:
+`python tests/test_config_validation.py`.
 
 ## S3 config rollback runbook
 

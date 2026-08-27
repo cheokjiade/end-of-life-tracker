@@ -12,7 +12,6 @@ Environment variables:
     SES_TO_EMAILS   — Comma-separated SES recipients (optional)
 """
 
-import json
 import os
 from datetime import date
 
@@ -20,11 +19,19 @@ from .core import logger
 from .parsers import check_product
 from .report import format_report_text, format_report_html
 from .notify import send_notifications
+from .validation import ConfigValidationError, load_validated_config_bytes
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
+def _log_product_findings(findings, origin):
+    """Warn about per-product findings that did not reject the config."""
+    for f in findings:
+        logger.warning("%s: %s (%s): %s", origin, f["path"], f["severity"],
+                       f["message"])
+
 
 def load_config_from_s3(key=None):
     """Load product configuration from S3.
@@ -32,6 +39,11 @@ def load_config_from_s3(key=None):
     *key* overrides the CONFIG_KEY env var when supplied. EventBridge rules
     pass it via the invocation event so a single Lambda can fan out across
     many per-project config files.
+
+    Raises :class:`~eoltracker.validation.ConfigValidationError` for
+    structurally unusable configs (bad root/products/thresholds/notifications)
+    before any provider runs; malformed individual product entries are logged
+    and later surface as error rows instead of aborting the run.
     """
     import boto3
 
@@ -39,13 +51,28 @@ def load_config_from_s3(key=None):
     key = key or os.environ.get("CONFIG_KEY", "eol_config.a.json")
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    origin = f"s3://{bucket}/{key}"
+    config, product_findings = load_validated_config_bytes(
+        obj["Body"].read(), origin=origin)
+    _log_product_findings(product_findings, origin)
+    return config
 
 
 def load_config_from_file(path):
-    """Load product configuration from a local file (for testing)."""
-    with open(path) as f:
-        return json.load(f)
+    """Load product configuration from a local file (for testing).
+
+    Reads bytes and enforces the same ASCII-only + JSON rules as the
+    ``--validate`` linter (see :mod:`eoltracker.validation`), then applies
+    :func:`enforce_valid_config` exactly like S3 loading — invalid top-level
+    or runtime shapes raise :class:`ConfigValidationError` before providers
+    run.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    config, product_findings = load_validated_config_bytes(raw, origin=path)
+    _log_product_findings(product_findings, path)
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +114,11 @@ def lambda_handler(event, context):
 
     logger.info("Checking %d products for EOL status", len(products))
 
-    results = [r for r in (check_product(entry, today) for entry in products) if r is not None]
+    results = []
+    for i, entry in enumerate(products):
+        result = check_product(entry, today, index=i)
+        if result is not None:
+            results.append(result)
 
     for r in results:
         logger.info("%s: %s", r["label"], r["message"])
@@ -131,7 +162,11 @@ def run_local(config_path):
     products = config["products"]
     thresholds = config.get("alert_thresholds_days", [30, 60, 90])
 
-    results = [r for r in (check_product(entry, today) for entry in products) if r is not None]
+    results = []
+    for i, entry in enumerate(products):
+        result = check_product(entry, today, index=i)
+        if result is not None:
+            results.append(result)
     report_text, has_alerts = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 

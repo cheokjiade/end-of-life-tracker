@@ -45,9 +45,15 @@ assert by_path(errors(res), "products"), res
 res = validate_config({"products": []})
 assert by_path(errors(res), "products"), res
 
-# dividers are skipped exactly like check_product does
+# Dividers are skipped exactly like check_product does, but a config made only
+# of dividers is unusable and fails at the products container path.
 res = validate_config({"products": [{"_section": "Spring Boot", "label": "d"}]})
-assert not res, res
+assert by_path(errors(res), "products"), res
+res = validate_config({"products": [
+    {"_section": "Spring Boot", "label": "d"},
+    {"source": "manual", "label": "Tracked row"},
+]})
+assert not errors(res), res
 
 # --- default provider (endoflife_date) ------------------------------------
 res = validate_config({"products": [{"product": "python"}]})
