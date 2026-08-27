@@ -162,7 +162,8 @@ data so no network is hit:
 ```python
 import sys
 from datetime import date
-sys.path.insert(0, r"E:\Git\endoflife")   # so `import eoltracker` resolves
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))   # run from the repository root
 
 from eoltracker.parsers import foo, PROVIDERS, SOURCE_LABELS, source_url_for
 
@@ -180,9 +181,9 @@ Then one live smoke run: `python lambda_function.py <a config using source: foo>
 
 ## Document the provider
 
-Add it to `eol_config_generation_prompt.md` so config generation (and the
-`eol-config-extractor` agent) knows to use it: a row in the providers table, an entry-shape
-example, and a line in the mapping decision order.
+Add it to `eol_config_generation_prompt.md` so the canonical
+`manage-eol-config` skill knows to use it: a row in the providers table, an
+entry-shape example, and a line in the mapping decision order.
 
 ## Repairing a broken provider
 
@@ -194,8 +195,10 @@ floor) instead of silently wrong dates. When that happens:
    actual error — canary failure, row-count floor, missing header, HTTP error:
 
    ```python
-   import sys; sys.path.insert(0, r"E:\Git\endoflife")
+   import sys
    from datetime import date
+   from pathlib import Path
+   sys.path.insert(0, str(Path.cwd()))   # run from the repository root
    from eoltracker.parsers import tyk_lifecycle as mod   # the broken module
    print(mod.provider({"source": mod.SOURCE, "version": "5.8"}, date.today()))
    ```

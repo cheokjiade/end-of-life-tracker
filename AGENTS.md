@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Canonical guidance for AI coding agents — any harness — working in this
-repository. Claude Code layers its own entry points (a subagent and skills) on
-top of this file; those live in `CLAUDE.md`.
+repository. Authoritative reusable workflows live under `.agents/skills/`;
+`CLAUDE.md` contains only the aliases Claude Code needs for discovery.
 
 ## What this is
 
@@ -21,8 +21,8 @@ deployment zip.
 | Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
-| Add a new data-source provider | `docs/adding-a-provider.md` |
-| Repair a provider whose upstream page drifted | "Repairing a broken provider" in `docs/adding-a-provider.md` |
+| Add a new data-source provider | Invoke `add-eol-provider` in Codex/OpenCode or `eol-provider` in Claude Code; canonical instructions: `.agents/skills/add-eol-provider/SKILL.md` |
+| Repair a provider whose upstream page drifted | Use the same provider skill; canonical repair procedure: `docs/adding-a-provider.md` |
 | Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
 
 Universal norms, whichever workflow you are in:
@@ -114,13 +114,23 @@ drifts). In brief:
    shape + decision order) so config generation uses it, and update the provider
    count/list in this file.
 
+## Cross-agent skills
+
+- `.agents/skills/manage-eol-config/SKILL.md` is the canonical workflow for
+  config generation, messy-input extraction, and curation-preserving updates.
+- `.agents/skills/add-eol-provider/SKILL.md` is the canonical workflow for
+  adding or repairing providers.
+- Codex and OpenCode discover the canonical skills directly. Claude Code
+  discovers only `.claude/skills/`, so `eol-config` and `eol-provider` are thin
+  loaders that point to the canonical files. Their distinct IDs prevent exact
+  collisions when OpenCode scans both locations. Do not copy workflow logic
+  into a loader.
+- There is no repository-defined extractor subagent. Any harness may delegate
+  the canonical skill to its normal subagent mechanism when context isolation
+  or parallel work is useful.
+
 ## Config generation & maintenance
 
-- `.agents/skills/manage-eol-config/SKILL.md` is the canonical cross-harness
-  agent workflow for both generation and updates. Codex and OpenCode discover
-  it directly. Claude Code uses the thin loader at
-  `.claude/skills/eol-config/SKILL.md`. The distinct loader name avoids a
-  duplicate skill ID when OpenCode scans both locations.
 - `eol_config_generation_prompt.md` is the **canonical extraction spec**: config
   schema, the 8 providers' entry shapes, the input-to-entry mapping decision
   order, and real-world document patterns (strikethrough = skip, "was X now Y" =
@@ -131,8 +141,6 @@ drifts). In brief:
 - `docs/updating-a-config.md` is the refresh workflow: diff new evidence against
   the existing config and patch it, preserving human curation. Never regenerate
   an existing config wholesale.
-- Claude Code additionally provides the optional extractor subagent at
-  `.claude/agents/eol-config-extractor.md` — see `CLAUDE.md`.
 
 ## Git workflow and commits
 
@@ -200,7 +208,7 @@ canonical message format and detailed workflow.
 | Path | Purpose |
 |---|---|
 | `AGENTS.md` | This file — the canonical guide for AI agents in any harness |
-| `CLAUDE.md` | Claude-specific entry points (subagent + skills) layered on this file |
+| `CLAUDE.md` | Thin Claude Code discovery aliases for canonical `.agents` skills |
 | `lambda_function.py` | Shim: re-exports `lambda_handler` (the Lambda entry point) + the local CLI (`run_local`) |
 | `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers |
 | `eoltracker/parsers/` | One file per provider + `eoltracker/parsers/__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |

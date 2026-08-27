@@ -1,17 +1,16 @@
 # EOL Config Generation Prompt
 
-A reusable prompt for a Claude web-interface chat (e.g. Opus 4.x). Paste the
-**PROMPT** block below into a new chat, attach your inputs (dependency manifests,
-Confluence exports, architecture docs, spreadsheets — anything that names software
-and versions), and Claude will return a ready-to-review `eol_config.<project>.json`
-for this tracker plus a manual-verification checklist.
+A reusable, harness-neutral extraction specification. Repository-aware agents
+should load `.agents/skills/manage-eol-config/SKILL.md`, which selects this
+document for new-config generation. The self-contained **PROMPT** block also
+works in a standalone AI chat that cannot see this repository.
 
 **How to use**
 
-1. Open a new Claude chat.
+1. Open a new AI chat.
 2. Copy everything between `=== PROMPT START ===` and `=== PROMPT END ===`.
 3. Attach or paste your input files. Replace `<PROJECT_NAME>` if you want a specific name.
-4. Send. Review the verification checklist Claude returns *before* deploying the config.
+4. Send. Review the verification checklist the agent returns *before* deploying the config.
 
 The prompt is self-contained: it does not assume the model can see this repo or run
 code. If the chat has web access, the prompt tells it to verify slugs/cycles online;
@@ -185,13 +184,13 @@ the in-use version `deprecated`.
   `package`+`version` resolves at `https://registry.npmjs.org/<package>`.
 
 **7. `manual`.** For components with **no automated source anywhere**: commercial
-software with a published EOL date (Tyk, Splunk, MongoDB), OS-bundled packages lacking
-an upstream endoflife.date slug (OpenSSH), or tools that publish no lifecycle at all
-(PuTTY).
+software not covered by endoflife.date or a specialized provider, OS-bundled packages
+lacking an upstream endoflife.date slug (OpenSSH), or tools that publish no lifecycle
+at all (PuTTY).
 
 ```json
-{"source": "manual", "label": "Tyk Gateway 5.8.7", "eol_date": "2027-06-30",
- "note": "Tyk LTS; per vendor EOL table", "reference_url": "https://tyk.io/docs/..."}
+{"source": "manual", "label": "Vendor Tool 4.2", "eol_date": "2027-06-30",
+ "note": "Date supplied by the inventory document", "reference_url": "https://vendor.example/support"}
 ```
 
 - `label` required. `eol_date` (`YYYY-MM-DD`), `note`, `reference_url`, `version`,

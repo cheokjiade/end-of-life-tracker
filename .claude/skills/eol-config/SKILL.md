@@ -7,7 +7,7 @@ metadata:
 
 # Manage an EOL config
 
-Before acting, read `.agents/skills/manage-eol-config/SKILL.md` completely and
+Before acting, read `../../../.agents/skills/manage-eol-config/SKILL.md` completely and
 follow it as the canonical workflow. This loader has a distinct name because
 OpenCode also discovers `.claude/skills`; do not duplicate or override the
 canonical instructions here.
