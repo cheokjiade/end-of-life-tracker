@@ -14,7 +14,8 @@ __pycache__/
 
 # Terraform
 terraform/.terraform/
-terraform/.terraform.lock.hcl
+# The dependency lock file pins provider builds and SHOULD be committed
+# (see terraform/README.md); only the download cache, state, and tfvars are ignored.
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/lambda.zip
