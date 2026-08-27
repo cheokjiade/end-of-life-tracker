@@ -11,12 +11,14 @@ Proves, with fake providers and a scripted Lambda context:
 Run:  python tests/test_runtime_budget.py
 """
 
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
 import time
+from contextlib import redirect_stdout
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from eoltracker import runner, handler
 
 TODAY = date(2026, 8, 27)
+REAL_CHECK_PRODUCT = runner.check_product
 
 
 class FakeContext:
@@ -102,9 +105,6 @@ print("OK concurrency bound preserved and ordering deterministic")
 # 2. Ordering survives mixed completion times and section dividers
 # ---------------------------------------------------------------------------
 
-runner_check_original = runner.check_product
-
-
 def instant_check(entry, today, index=None):
     time.sleep({"slow-a": 0.10, "slow-b": 0.15}.get(entry.get("label"), 0))
     return make_result(entry)
@@ -136,6 +136,8 @@ dupes = [
      "label": "Alpha runtime"},
     {"source": "endoflife_date", "product": "python", "version": "3.9",
      "label": "Beta runtime", "policy_note": "Team-approved upgrade cadence."},
+    {"source": "endoflife_date", "product": "python", "version": "3.9",
+     "label": 42, "policy_note": 123},
     {"source": "endoflife_date", "product": "nginx", "version": "1.25",
      "label": "Web proxy"},
 ]
@@ -143,17 +145,36 @@ results, meta = runner.run_checks(dupes, TODAY, max_workers=4,
                                   time_reserve_ms=0)
 assert len(calls) == 2, f"expected 2 upstream lookups, got {len(calls)}: {calls}"
 assert ("python", "3.9") in calls and ("nginx", "1.25") in calls, calls
-assert meta["scheduled"] == 2 and meta["dedup_hits"] == 1, meta
-assert len(results) == 3
-alpha, beta, web = results
+assert meta["scheduled"] == 2 and meta["dedup_hits"] == 2, meta
+assert len(results) == 4
+alpha, beta, legacy, web = results
 assert alpha["label"] == "Alpha runtime"
 assert beta["label"] == "Beta runtime"
 assert beta["policy_note"] == "Team-approved upgrade cadence."
+assert legacy["label"] == 42 and legacy["policy_note"] == 123
 assert "policy_note" not in alpha and "policy_note" not in web
-assert [r["label"] for r in results] == ["Alpha runtime", "Beta runtime", "Web proxy"]
+assert [r["label"] for r in results] == [
+    "Alpha runtime", "Beta runtime", 42, "Web proxy"]
 print("OK lookup dedupe executes once and re-stamps curated fields")
 
-runner.check_product = runner_check_original
+# Fields that affect a provider lookup must keep groups separate.
+calls = []
+install_fake_provider({}, recorder=calls)
+engine_variants = [
+    {"source": "manual", "product": "db", "version": "1",
+     "engine": "engine-a", "label": "A"},
+    {"source": "manual", "product": "db", "version": "1",
+     "engine": "engine-b", "label": "B"},
+]
+_results, meta = runner.run_checks(engine_variants, TODAY, max_workers=2,
+                                   time_reserve_ms=0)
+assert len(calls) == 2 and meta["dedup_hits"] == 0, (calls, meta)
+
+runner.check_product = REAL_CHECK_PRODUCT
+malformed, meta = runner.run_checks(["not-an-object"], TODAY, max_workers=1,
+                                    time_reserve_ms=0)
+assert malformed[0]["status"] == "error" and meta["unfinished"] == 0
+print("OK lookup-affecting fields do not dedupe and malformed rows stay isolated")
 
 # ---------------------------------------------------------------------------
 # 4. Time reserve: scheduling stops, unfinished work becomes error results
@@ -183,11 +204,23 @@ assert meta["scheduled"] == 1, "work must be submitted lazily"
 assert meta["unfinished"] == 3 and meta["degraded"] is True, meta
 print("OK reserve stops scheduling and normalises unfinished checks")
 
+# A check already running when the reserve is reached is explicitly marked
+# incomplete rather than being confused with work that never started.
+install_fake_provider({"Running": 0.3})
+running = [{"source": "manual", "label": "Running"}]
+results, meta = runner.run_checks(
+    running, TODAY, context=FakeContext(60000, 100), max_workers=1,
+    time_reserve_ms=200, check_start_guard_ms=200)
+assert results[0].get("incomplete") is True, results
+assert "reporting reserve was reached" in results[0]["message"], results
+assert meta["scheduled"] == 1 and meta["unfinished"] == 1, meta
+print("OK running checks are marked incomplete when the reserve is reached")
+
 # ---------------------------------------------------------------------------
 # 5. Partial report + notification still delivered under timeout pressure
 # ---------------------------------------------------------------------------
 
-runner_check_saved = runner.check_product
+runner_check_saved = REAL_CHECK_PRODUCT
 
 
 def staged_check(entry, today, index=None):
@@ -286,6 +319,23 @@ assert resp["unfinished"] == 2, resp
 assert resp["has_alerts"] is False and resp["notified"] is True, resp
 print("OK lambda_handler reports degradation metadata")
 
+# Lambda-only EMF uses a stable namespace/dimension and carries no project
+# config data. CloudWatch extracts this JSON directly from stdout.
+os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "eol-test"
+try:
+    captured = io.StringIO()
+    with redirect_stdout(captured):
+        handler._emit_partial_run_metrics(7)
+    emf = json.loads(captured.getvalue())
+finally:
+    del os.environ["AWS_LAMBDA_FUNCTION_NAME"]
+assert emf["FunctionName"] == "eol-test" and emf["PartialRuns"] == 1
+assert emf["UnfinishedChecks"] == 7
+directive = emf["_aws"]["CloudWatchMetrics"][0]
+assert directive["Namespace"] == "EOLTracker"
+assert directive["Dimensions"] == [["FunctionName"]]
+print("OK partial-run CloudWatch metric payload")
+
 # ---------------------------------------------------------------------------
 # 7. Env-var knob parsing degrades safely
 # ---------------------------------------------------------------------------
@@ -298,6 +348,13 @@ finally:
 os.environ["EOL_MAX_WORKERS"] = "4"
 try:
     assert runner._positive_int_env("EOL_MAX_WORKERS", 8) == 4
+finally:
+    del os.environ["EOL_MAX_WORKERS"]
+os.environ["EOL_MAX_WORKERS"] = "99"
+try:
+    assert runner._positive_int_env(
+        "EOL_MAX_WORKERS", runner.DEFAULT_MAX_WORKERS, maximum=32
+    ) == runner.DEFAULT_MAX_WORKERS
 finally:
     del os.environ["EOL_MAX_WORKERS"]
 print("OK environment knobs parse with safe fallbacks")
