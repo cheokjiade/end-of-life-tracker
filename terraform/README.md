@@ -24,7 +24,6 @@ whatever the registry serves that day.
 | Provider | Source | Constraint |
 |---|---|---|
 | AWS | `hashicorp/aws` | `~> 5.100.0` |
-| Archive | `hashicorp/archive` | `~> 2.8.0` |
 
 Rules of thumb:
 

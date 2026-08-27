@@ -10,8 +10,9 @@ An AWS Lambda that checks software **end-of-life (EOL)** status across multiple
 data sources and reports via console / HTML file / SNS / SES. The runtime is a
 **stdlib-only** Python package — `eoltracker/` — with a thin
 `lambda_function.py` shim that re-exports the handler (preserving the
-`lambda_function.lambda_handler` entry point); Terraform packages both into the
-deployment zip.
+`lambda_function.lambda_handler` entry point); `build_lambda_package.py`
+assembles both into an allowlisted deployment zip with a verified manifest
+(see `docs/packaging.md`).
 
 ## Workflows index
 
@@ -224,4 +225,6 @@ canonical message format and detailed workflow.
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
 | `terraform/README.md` | Provider pinning + dependency-lock update workflow, S3 config rollback runbook |
-| `terraform/` | Deployment (packages `lambda_function.py` + `eoltracker/` as a zip) |
+| `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
+| `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
+| `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |

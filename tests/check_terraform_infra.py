@@ -54,9 +54,7 @@ for name, text in tf_files():
                 name, source_addr, local_name)
         declared[local_name] = constraint
 
-assert set(declared) == {"aws", "archive"}, declared
-assert "~> 2.8." in declared["archive"], (
-    f"archive constraint not narrowed to a patch line: {declared['archive']}")
+assert set(declared) == {"aws"}, declared
 for prov, constraint in declared.items():
     # narrow = three-component pessimistic pin: allows only patch releases of
     # one minor line. Bare "~> 5.0"-style ranges are rejected as too broad.
