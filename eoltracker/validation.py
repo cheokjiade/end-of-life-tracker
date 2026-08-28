@@ -47,6 +47,7 @@ abort an otherwise valid run.
 """
 
 import json
+import math
 
 from .parsers import SOURCE_LABELS
 from .parsers.aws_rds import _AWS_DOCS_URLS
@@ -243,6 +244,7 @@ def validate_config(config):
         valid = isinstance(thresholds, list) and len(thresholds) > 0 and all(
             isinstance(t, (int, float))
             and not isinstance(t, bool)
+            and math.isfinite(t)
             and t > 0
             for t in thresholds
         )
@@ -250,7 +252,7 @@ def validate_config(config):
             results.append(_finding(
                 "alert_thresholds_days", "error",
                 "'alert_thresholds_days' must be a non-empty list of "
-                "positive numbers"))
+                "positive finite numbers"))
 
     # -- notification frequency --------------------------------------------
     notify_when = config.get("notify_when")

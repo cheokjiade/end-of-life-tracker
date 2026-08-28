@@ -91,7 +91,9 @@ section_only = load_rejected({"products": [
 assert any(f["path"] == "products" for f in section_only.findings), section_only
 
 one = [{"label": "A", "source": "manual"}]
-for bad_thresholds in ([], [0], [-5], ["soon"], [True], {}, "soon"):
+for bad_thresholds in (
+        [], [0], [-5], ["soon"], [True], [float("inf")], [float("nan")],
+        {}, "soon"):
     exc = load_rejected({"alert_thresholds_days": bad_thresholds, "products": one})
     assert any(f["path"] == "alert_thresholds_days" for f in exc.findings), \
         (bad_thresholds, exc)
@@ -207,7 +209,7 @@ try:
     assert r["status"] == "error" and "RuntimeError" in r["message"], r
     assert r["label"] == "Boom" and r["source"] == "synthetic", r
     assert "sekrit-token" not in r["message"], r   # non-secret diagnostics only
-    assert "see run logs" in r["message"], r
+    assert "see run logs" not in r["message"], r
     captured = io.StringIO()
     log_handler = logging.StreamHandler(captured)
     handler_mod.logger.addHandler(log_handler)

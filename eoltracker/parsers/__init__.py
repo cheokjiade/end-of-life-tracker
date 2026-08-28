@@ -81,7 +81,7 @@ def check_product(entry, today, index=None):
                 result = _error_result(
                     entry,
                     f"unexpected {type(exc).__name__} while checking source "
-                    f"'{source}' - see run logs for details")
+                    f"'{source}'")
             if not isinstance(result, dict):
                 # A broken provider contract must not leak into the report
                 # loop or formatters; normalize it like any other failure.
@@ -91,7 +91,7 @@ def check_product(entry, today, index=None):
                 result = _error_result(
                     entry,
                     f"provider for source '{source}' returned an invalid "
-                    f"result ({type(result).__name__}) - see run logs for details")
+                    f"result ({type(result).__name__})")
     note = entry.get("policy_note")
     if note and isinstance(result, dict):
         result["policy_note"] = note
