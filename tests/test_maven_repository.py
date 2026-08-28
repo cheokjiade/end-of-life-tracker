@@ -358,6 +358,31 @@ assert "build.shibboleth.net" in shib_missing["message"], shib_missing
 assert shib_missing["source_label"] == "build.shibboleth.net", shib_missing
 assert default_missing["status"] == "error", default_missing
 assert "source_label" not in default_missing, default_missing
+
+# The fetch-failure branch (not just not-found) keeps the host label too.
+calls.clear()
+
+
+def failing_repo_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise TimeoutError("simulated timeout")
+
+
+try:
+    maven.urllib.request.urlopen = failing_repo_urlopen
+    shib_failed = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.1.2",
+        "repository": SHIBBOLETH,
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert shib_failed["status"] == "error", shib_failed
+assert "query failed (TimeoutError)" in shib_failed["message"], shib_failed
+assert shib_failed["source_label"] == "build.shibboleth.net", shib_failed
 print("OK error rows honour the repository label")
 
 

@@ -260,7 +260,8 @@ Apply this decision order per component you find:
    AWS SDK (`software.amazon.awssdk` = v2, `com.amazonaws:aws-java-sdk*` = v1) →
    `aws_sdk_lifecycle`.
 3. **Any other Java/Kotlin library?** → `maven_central` with full `group`/`artifact`/`version`.
-   Shibboleth-hosted groups (`org.opensaml`, `net.shibboleth.*`) are auto-mapped
+   Shibboleth-hosted groups (`org.opensaml`, `net.shibboleth`,
+   `net.shibboleth.*`) are auto-mapped
    to the Shibboleth repository, not Maven Central: give those entries the
    optional `repository` field described above (they 404 on Maven Central).
 4. **npm / JavaScript library** (frontend deps, webjars like Bootstrap/jQuery/Chart.js,
