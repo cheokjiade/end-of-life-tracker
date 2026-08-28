@@ -177,6 +177,13 @@ pinned version is — no EOL is claimed.
 ```
 
 - Needs `group`, `artifact`, and the **full** version (do not truncate Maven versions).
+- Optional `repository`: the absolute http(s) **base URL** of an alternative
+  Maven 2 repository layout, used when the artifact is **not published to
+  Maven Central**, e.g. Shibboleth-hosted artifacts (`org.opensaml`,
+  `net.shibboleth.*`, repository base
+  `https://build.shibboleth.net/nexus/content/repositories/releases`). Base
+  URL only — no credentials, query string, or fragment (scheme and host are
+  lowercased). Omit the field for anything available on Maven Central.
 
 **6. `npm_registry`.** For npm / JavaScript libraries that publish no EOL dates
 (Material UI, Axios, Redux, Day.js, DOMPurify, and most webjars/frontend deps). Like
@@ -253,6 +260,10 @@ Apply this decision order per component you find:
    AWS SDK (`software.amazon.awssdk` = v2, `com.amazonaws:aws-java-sdk*` = v1) →
    `aws_sdk_lifecycle`.
 3. **Any other Java/Kotlin library?** → `maven_central` with full `group`/`artifact`/`version`.
+   Shibboleth-hosted groups (`org.opensaml`, `net.shibboleth`,
+   `net.shibboleth.*`) are auto-mapped
+   to the Shibboleth repository, not Maven Central: give those entries the
+   optional `repository` field described above (they 404 on Maven Central).
 4. **npm / JavaScript library** (frontend deps, webjars like Bootstrap/jQuery/Chart.js,
    Node tooling)? → `npm_registry` with the npm `package` name (+ `version` if known). If
    it ALSO has an endoflife.date slug (`nodejs`, `angular`, `vue`, …), prefer

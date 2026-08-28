@@ -66,6 +66,46 @@ except ValueError as exc:
 print("OK Maven metadata parsing")
 
 
+# Pure repository normalization: blank -> None, one trailing slash stripped,
+# non-http(s) or relative values rejected.
+assert maven._normalize_repository(None) is None
+assert maven._normalize_repository("   ") is None
+assert maven._normalize_repository(
+    "  https://build.shibboleth.net/nexus/content/repositories/releases/  "
+) == "https://build.shibboleth.net/nexus/content/repositories/releases"
+assert maven._normalize_repository("https://example.com/repo//") == \
+    "https://example.com/repo/"
+assert maven._normalize_repository("http://localhost:8081/maven2") == \
+    "http://localhost:8081/maven2"
+for bad in ("not-a-url", "ftp://example.com/maven2", "/relative/path",
+            "example.com/maven2"):
+    try:
+        maven._normalize_repository(bad)
+        raise AssertionError(f"invalid repository accepted: {bad!r}")
+    except ValueError:
+        pass
+print("OK repository normalization")
+
+
+# Credentials, query/fragment, and malformed ports are rejected; scheme and
+# host are canonicalized to lower case while the path keeps its case.
+for bad, why in (
+    ("https://user:secret@example.com/repo", "credentials"),
+    ("https://user@example.com/repo", "credentials"),
+    ("https://example.com/repo?x=1", "query or fragment"),
+    ("https://example.com/repo#frag", "query or fragment"),
+    ("https://h:badport/repo", "port"),
+):
+    try:
+        maven._normalize_repository(bad)
+        raise AssertionError(f"invalid repository accepted: {bad!r}")
+    except ValueError as exc:
+        assert why in str(exc), (bad, str(exc))
+assert maven._normalize_repository("HTTPS://EXAMPLE.com/repo/") == \
+    "https://example.com/repo"
+print("OK repository normalization guards")
+
+
 # Latest lookup: canonical metadata GET + POM HEAD, exact date, cache reuse.
 clear_caches()
 calls = []
@@ -150,6 +190,8 @@ finally:
 assert result["status"] == "ok", result
 assert "release date unknown" in result["message"], result
 assert "not on Maven Central" not in result["message"], result
+# Default-repository rows gain no per-row source-label override.
+assert "source_label" not in result, result
 print("OK confirmed undated POM message")
 
 try:
@@ -219,14 +261,214 @@ try:
         raise AssertionError("transient timeout was swallowed")
     except TimeoutError:
         pass
-    key = ("org.example", "widget", "1.0.0")
+    key = (maven._MAVEN_REPOSITORY, "org.example", "widget", "1.0.0")
     assert key not in maven._MAVEN_VERSION_CACHE
-    recovered = maven._fetch_maven_specific(*key)
+    recovered = maven._fetch_maven_specific("org.example", "widget", "1.0.0")
 finally:
     maven.urllib.request.urlopen = real_urlopen
 assert recovered["released"].isoformat() == "2025-02-25"
 assert attempts == 2
 print("OK transient failures are not cached")
+
+
+# Custom repository override: requests hit the configured host with the
+# trailing slash stripped; the message names that host and the result
+# carries the normalized effective base URL.
+clear_caches()
+calls.clear()
+SHIBBOLETH = "https://build.shibboleth.net/nexus/content/repositories/releases/"
+
+
+def shibboleth_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    if request.full_url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"""<?xml version="1.0" encoding="UTF-8"?>
+<metadata><versioning><release>5.2.3</release></versioning></metadata>
+""")
+    assert request.full_url.endswith(
+        "/org/opensaml/opensaml-core-api/5.2.3/"
+        "opensaml-core-api-5.2.3.pom"), request.full_url
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT",
+    })
+
+
+try:
+    maven.urllib.request.urlopen = shibboleth_urlopen
+    result = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.2.3",
+        "repository": SHIBBOLETH,
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert calls, "provider made no network calls"
+assert all("build.shibboleth.net" in url and "/releases/" in url
+           for url, _method in calls), calls
+assert calls[0] == (
+    "https://build.shibboleth.net/nexus/content/repositories/releases"
+    "/org/opensaml/opensaml-core-api/maven-metadata.xml",
+    "GET"), calls[0]
+assert calls[0][1] == "GET" and calls[1][1] == "HEAD", calls
+assert result["status"] == "ok", result
+assert "build.shibboleth.net" in result["message"], result
+assert "Maven Central" not in result["message"], result
+assert result["repository"] == (
+    "https://build.shibboleth.net/nexus/content/repositories/releases")
+# Provenance: a custom-repo row labels itself by host, not "Maven Central".
+assert result["source_label"] == "build.shibboleth.net", result
+print("OK custom repository override")
+
+
+# Error rows from a custom repository keep the truthful host label;
+# default-repository error rows gain no override.
+clear_caches()
+calls.clear()
+
+
+def missing_repo_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = missing_repo_urlopen
+    shib_missing = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.1.2",
+        "repository": SHIBBOLETH,
+    }, date(2026, 8, 28))
+    clear_caches()
+    default_missing = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert shib_missing["status"] == "error", shib_missing
+assert "build.shibboleth.net" in shib_missing["message"], shib_missing
+assert shib_missing["source_label"] == "build.shibboleth.net", shib_missing
+assert default_missing["status"] == "error", default_missing
+assert "source_label" not in default_missing, default_missing
+
+# The fetch-failure branch (not just not-found) keeps the host label too.
+calls.clear()
+
+
+def failing_repo_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise TimeoutError("simulated timeout")
+
+
+try:
+    maven.urllib.request.urlopen = failing_repo_urlopen
+    shib_failed = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.1.2",
+        "repository": SHIBBOLETH,
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert shib_failed["status"] == "error", shib_failed
+assert "query failed (TimeoutError)" in shib_failed["message"], shib_failed
+assert shib_failed["source_label"] == "build.shibboleth.net", shib_failed
+print("OK error rows honour the repository label")
+
+
+# Invalid repository values fail closed as error rows with zero network calls,
+# propagating the specific normalization reason (which always names the field).
+calls.clear()
+
+
+def must_not_be_called(request, timeout):
+    calls.append(request.full_url)
+    return FakeResponse(METADATA)
+
+
+for bad, exact in (
+    ("not-a-url", None),
+    ("https://user:secret@example.com/repo",
+     "repository must not contain credentials"),
+    ("https://example.com/repo?x=1", None),
+    ("https://h:badport/repo", None),
+):
+    try:
+        maven.urllib.request.urlopen = must_not_be_called
+        result = maven._provider_maven_central({
+            "label": "Broken repo",
+            "group": "org.example",
+            "artifact": "widget",
+            "version": "1.0.0",
+            "repository": bad,
+        }, date(2026, 8, 28))
+    finally:
+        maven.urllib.request.urlopen = real_urlopen
+
+    assert result["status"] == "error", (bad, result)
+    assert result["message"].startswith("repository"), (bad, result)
+    if exact is not None:
+        assert result["message"] == exact, (bad, result)
+assert calls == [], calls
+print("OK invalid repository is a no-network error")
+
+
+# Cache keys include the repository: the same gav in two repositories is
+# fetched twice, once per host.
+clear_caches()
+calls.clear()
+
+
+def two_repo_urlopen(request, timeout):
+    calls.append(request.full_url)
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT",
+    })
+
+
+try:
+    maven.urllib.request.urlopen = two_repo_urlopen
+    maven._fetch_maven_specific(
+        "org.example", "widget", "1.0.0",
+        repository="https://repo-a.example/maven2")
+    maven._fetch_maven_specific(
+        "org.example", "widget", "1.0.0",
+        repository="https://repo-b.example/maven2")
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert len(calls) == 2, calls
+assert any("repo-a.example" in url for url in calls), calls
+assert any("repo-b.example" in url for url in calls), calls
+print("OK cache does not leak across repositories")
+
+
+# url_for honours the repository: custom repos get their own artifact
+# directory URL; default rows keep the central.sonatype.com artifact page.
+shib_row = {
+    "label": "OpenSAML Core API",
+    "product": "org.opensaml:opensaml-core-api",
+    "repository": "https://build.shibboleth.net/nexus/content/repositories/releases",
+}
+assert maven.url_for(shib_row) == (
+    "https://build.shibboleth.net/nexus/content/repositories/releases"
+    "/org/opensaml/opensaml-core-api/"), maven.url_for(shib_row)
+assert maven.url_for({"product": "io.netty:netty-codec-http"}) == \
+    "https://central.sonatype.com/artifact/io.netty/netty-codec-http"
+assert maven.url_for({"product": "io.netty:netty-codec-http",
+                      "repository": maven._MAVEN_REPOSITORY}) == \
+    "https://central.sonatype.com/artifact/io.netty/netty-codec-http"
+print("OK url_for honours the repository")
 
 clear_caches()
 print("OK test_maven_repository")

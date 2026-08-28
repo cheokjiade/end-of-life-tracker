@@ -8,6 +8,12 @@ is, and when that was released.
 Status is 'ok' only when the in-use version could be positively located on
 Central (or it is the resolved 'latest'); an in-use version Central has no
 record of is data-quality 'unknown', not healthy.
+
+Entries may set an optional 'repository' key: the absolute http(s) base URL
+of any Maven 2 repository layout exposing maven-metadata.xml and POM
+Last-Modified headers (e.g. the Shibboleth repository for OpenSAML
+artifacts, which are not published to Maven Central). The default is Maven
+Central.
 """
 
 import urllib.error
@@ -23,17 +29,56 @@ _HTTP_TIMEOUT_SECONDS = 10
 _MAX_METADATA_BYTES = 1024 * 1024
 # Two cache namespaces: one for "the latest gav of this artifact" and one
 # for "this specific gav". Canonical metadata has no search-result row cutoff,
-# including for artifacts with hundreds of releases (e.g. Netty).
-_MAVEN_LATEST_CACHE = {}    # (group, artifact) -> {"v", "released"}|None
-_MAVEN_VERSION_CACHE = {}   # (group, artifact, version) -> {"v", "released"}|None
+# including for artifacts with hundreds of releases (e.g. Netty). Both keys
+# lead with the repository so overrides never collide with Central entries.
+_MAVEN_LATEST_CACHE = {}    # (repository, group, artifact) -> {"v", "released"}|None
+_MAVEN_VERSION_CACHE = {}   # (repository, group, artifact, version) -> {"v", "released"}|None
 
 
-def _artifact_base_url(group, artifact):
+def _normalize_repository(value):
+    """Canonical base URL for an optional custom Maven repository override.
+
+    Returns None when *value* is absent or blank; otherwise strips
+    surrounding whitespace, lowercases the scheme and host (the path stays
+    case-sensitive), and strips exactly one trailing '/'. Raises ValueError
+    for anything that is not an absolute http(s) URL, that carries
+    credentials, or that includes a query string, fragment, or malformed
+    port. Pure: no network.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("repository must be an absolute http(s) URL")
+    text = value.strip()
+    if not text:
+        return None
+    parts = urllib.parse.urlsplit(text)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("repository must be an absolute http(s) URL")
+    if parts.username or parts.password:
+        raise ValueError("repository must not contain credentials")
+    if parts.query or parts.fragment:
+        raise ValueError("repository must not include a query or fragment")
+    try:
+        _ = parts.port
+    except ValueError:
+        raise ValueError("repository has an invalid port") from None
+    # Canonical scheme/host case keeps cache keys stable across variants and
+    # makes the Maven Central detection below case-insensitive.
+    parts = parts._replace(
+        scheme=parts.scheme.lower(), netloc=parts.netloc.lower())
+    text = urllib.parse.urlunsplit(parts)
+    if text.endswith("/"):
+        text = text[:-1]
+    return text
+
+
+def _artifact_base_url(group, artifact, repository=_MAVEN_REPOSITORY):
     """Canonical, path-quoted repository URL for one Maven artifact."""
     group_path = "/".join(
         urllib.parse.quote(part, safe="") for part in group.split("."))
     artifact_path = urllib.parse.quote(artifact, safe="")
-    return f"{_MAVEN_REPOSITORY}/{group_path}/{artifact_path}"
+    return f"{repository}/{group_path}/{artifact_path}"
 
 
 def _parse_metadata_release(raw):
@@ -59,9 +104,9 @@ def _parse_metadata_release(raw):
     return values[-1] if values else None
 
 
-def _fetch_metadata_release(group, artifact):
+def _fetch_metadata_release(group, artifact, repository=_MAVEN_REPOSITORY):
     """Fetch canonical repository metadata; return None on HTTP 404."""
-    url = f"{_artifact_base_url(group, artifact)}/maven-metadata.xml"
+    url = f"{_artifact_base_url(group, artifact, repository)}/maven-metadata.xml"
     req = urllib.request.Request(url, headers={
         "Accept": "application/xml",
         "User-Agent": "EOL-Tracker/1.0",
@@ -79,11 +124,11 @@ def _fetch_metadata_release(group, artifact):
         raise
 
 
-def _pom_info(group, artifact, version):
+def _pom_info(group, artifact, version, repository=_MAVEN_REPOSITORY):
     """Confirm a version POM and read its repository modification date."""
     encoded_version = urllib.parse.quote(version, safe="")
     pom_name = urllib.parse.quote(f"{artifact}-{version}.pom", safe="")
-    url = f"{_artifact_base_url(group, artifact)}/{encoded_version}/{pom_name}"
+    url = f"{_artifact_base_url(group, artifact, repository)}/{encoded_version}/{pom_name}"
     req = urllib.request.Request(url, method="HEAD", headers={
         "Accept": "application/xml",
         "User-Agent": "EOL-Tracker/1.0",
@@ -106,15 +151,15 @@ def _pom_info(group, artifact, version):
     return {"v": version, "released": released}
 
 
-def _fetch_maven_latest(group, artifact):
+def _fetch_maven_latest(group, artifact, repository=_MAVEN_REPOSITORY):
     """Return the most recent gav for an artifact (any major), or None."""
-    key = (group, artifact)
+    key = (repository, group, artifact)
     if key in _MAVEN_LATEST_CACHE:
         return _MAVEN_LATEST_CACHE[key]
-    version = _fetch_metadata_release(group, artifact)
+    version = _fetch_metadata_release(group, artifact, repository)
     info = None
     if version:
-        info = _pom_info(group, artifact, version)
+        info = _pom_info(group, artifact, version, repository)
         if info is None:
             # Metadata is authoritative for the latest version even if a CDN
             # edge has not made the POM visible yet.
@@ -123,12 +168,13 @@ def _fetch_maven_latest(group, artifact):
     return info
 
 
-def _fetch_maven_specific(group, artifact, version):
-    """Return the gav doc for a specific version, or None if not on Central."""
-    key = (group, artifact, version)
+def _fetch_maven_specific(group, artifact, version, repository=_MAVEN_REPOSITORY):
+    """Return the gav doc for a specific version, or None if absent from
+    the repository."""
+    key = (repository, group, artifact, version)
     if key in _MAVEN_VERSION_CACHE:
         return _MAVEN_VERSION_CACHE[key]
-    info = _pom_info(group, artifact, version)
+    info = _pom_info(group, artifact, version, repository)
     _MAVEN_VERSION_CACHE[key] = info
     return info
 
@@ -145,20 +191,44 @@ def _provider_maven_central(entry, today):
         result["source"] = "maven_central"
         return result
 
+    repository = _MAVEN_REPOSITORY
+    if "repository" in entry:
+        try:
+            repository = _normalize_repository(entry.get("repository"))
+        except ValueError as exc:
+            # Propagate the specific reason (credentials, query/fragment,
+            # malformed port, ...) instead of a generic complaint; the check
+            # is pure, so this stays a no-network error row.
+            result = _error_result(entry, str(exc))
+            result["source"] = "maven_central"
+            return result
+        if repository is None:
+            result = _error_result(
+                entry,
+                "'repository' must be an absolute http(s) URL when provided")
+            result["source"] = "maven_central"
+            return result
+
+    where = ("Maven Central" if repository == _MAVEN_REPOSITORY
+             else urllib.parse.urlsplit(repository).netloc)
+
     try:
-        latest = _fetch_maven_latest(group, artifact)
-        in_use = _fetch_maven_specific(group, artifact, version)
+        latest = _fetch_maven_latest(group, artifact, repository)
+        in_use = _fetch_maven_specific(group, artifact, version, repository)
     except Exception as exc:
         summary = type(exc).__name__
-        logger.error("Maven Central fetch failed (%s)", summary)
-        result = _error_result(
-            entry, f"Maven Central repository query failed ({summary})")
+        logger.error("%s fetch failed (%s)", where, summary)
+        result = _error_result(entry, f"{where} query failed ({summary})")
         result["source"] = "maven_central"
+        if repository != _MAVEN_REPOSITORY:
+            result["source_label"] = where
         return result
 
     if not latest:
-        result = _error_result(entry, f"Artifact {group}:{artifact} not found on Maven Central")
+        result = _error_result(entry, f"Artifact {group}:{artifact} not found on {where}")
         result["source"] = "maven_central"
+        if repository != _MAVEN_REPOSITORY:
+            result["source_label"] = where
         return result
 
     latest_v = latest["v"]
@@ -168,12 +238,12 @@ def _provider_maven_central(entry, today):
     on_latest = latest_v == version
 
     # 'latest' is resolved independently of the in-use gav query, so the
-    # in-use version may be absent from Central (private build, typo, or an
-    # indexing gap). That is unverifiable data quality -> unknown, not OK.
+    # in-use version may be absent from the repository (private build, typo,
+    # or an indexing gap). That is unverifiable data quality -> unknown, not OK.
     status = "ok" if (in_use is not None or on_latest) else "unknown"
 
     if on_latest:
-        message = f"On latest Maven Central release ({latest_v})"
+        message = f"On latest {where} release ({latest_v})"
     elif in_use_date and latest_date:
         days_newer = (latest_date - in_use_date).days
         message = (
@@ -182,7 +252,7 @@ def _provider_maven_central(entry, today):
         )
     elif in_use is None:
         message = (
-            f"Version {version} could not be verified on Maven Central "
+            f"Version {version} could not be verified on {where} "
             f"(private build, typo, or repository gap); "
             f"latest published is {latest_v} ({latest_date_text})"
         )
@@ -194,7 +264,7 @@ def _provider_maven_central(entry, today):
     else:
         message = f"In use: {version}; latest: {latest_v}"
 
-    return {
+    result = {
         "label": label,
         "product": f"{group}:{artifact}",
         "version": version,
@@ -213,7 +283,13 @@ def _provider_maven_central(entry, today):
         "days_remaining": None,
         "support_days_remaining": None,
         "source": "maven_central",
+        "repository": repository,
     }
+    if repository != _MAVEN_REPOSITORY:
+        # Provenance: a custom-repository row must not render under the
+        # "Maven Central" source label; default rows gain no new key.
+        result["source_label"] = where
+    return result
 
 
 SOURCE = "maven_central"
@@ -223,7 +299,10 @@ provider = _provider_maven_central
 
 def url_for(r):
     product = r.get("product") or ""
-    if ":" in product:
-        group, artifact = product.split(":", 1)
-        return f"https://central.sonatype.com/artifact/{group}/{artifact}"
-    return None
+    if ":" not in product:
+        return None
+    group, artifact = product.split(":", 1)
+    repository = r.get("repository")
+    if repository and repository != _MAVEN_REPOSITORY:
+        return f"{_artifact_base_url(group, artifact, repository)}/"
+    return f"https://central.sonatype.com/artifact/{group}/{artifact}"

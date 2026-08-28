@@ -15,7 +15,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker.validation import main as validate_main
-from eoltracker.validation import VALID_ENGINES, validate_config, validate_config_file
+from eoltracker.validation import (VALID_ENGINES, validate_config,
+                                   validate_config_file, enforce_valid_config)
 from eoltracker.parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -132,6 +133,31 @@ res = validate_config({
         {"source": "aws_rds_scrape", "engine": "mysql", "version": "17.5"}]
 })
 assert by_path(errors(res), "products[0].engine"), res
+
+# --- maven_central repository guard -----------------------------------------
+maven_entry = {"source": "maven_central", "group": "org.opensaml",
+               "artifact": "opensaml-core-api", "version": "5.2.3"}
+assert not errors(validate_config({"products": [dict(
+    maven_entry,
+    repository="https://build.shibboleth.net/nexus/content/repositories/releases")]}))
+for bad_repo in (
+    "https://user:secret@example.com/repo",   # credentials
+    "https://user@example.com/repo",          # credentials
+    "https://example.com/repo?x=1",           # query string
+    "https://example.com/repo#frag",          # fragment
+    "https://h:badport/repo",                 # malformed port
+):
+    res = validate_config({"products": [dict(maven_entry, repository=bad_repo)]})
+    errs = by_path(errors(res), "products[0].repository")
+    assert errs and "repository" in errs[0]["message"], (bad_repo, res)
+    # entry-level: nothing else fails, and the load still succeeds (the
+    # finding is non-fatal; the entry becomes an error row at dispatch).
+    assert not [e for e in errors(res)
+                if e["path"] != "products[0].repository"], (bad_repo, res)
+    non_fatal = enforce_valid_config(
+        {"products": [dict(maven_entry, repository=bad_repo)]})
+    assert [f["path"] for f in non_fatal] == ["products[0].repository"], \
+        (bad_repo, non_fatal)
 
 # --- thresholds -------------------------------------------------------------
 # 'one' keeps the otherwise-empty products list from raising its own error.
