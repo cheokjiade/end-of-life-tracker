@@ -164,12 +164,20 @@ assert got_paths == expected_paths, res
 
 valid_channels = validate_config({"products": one, "notifications": [
     {"type": "console"},
-    {"type": "html_file", "path": "eol_report.html"},
+    {"type": "html_file", "path": "eol_report.html", "required": True},
     {"type": "sns", "topic_arn": "arn:aws:sns:eu-west-1:123:eol-alerts"},
     {"type": "ses", "from_email": "noreply@example.com",
-     "to_emails": ["team@example.com"]},
+     "to_emails": ["team@example.com"], "required": False},
 ]})
 assert not errors(valid_channels)
+
+for bad_required in ("true", 1, None, [], {}):
+    invalid_required = validate_config({"products": one, "notifications": [
+        {"type": "sns", "required": bad_required},
+    ]})
+    assert by_path(
+        errors(invalid_required), "notifications[0].required"
+    ), (bad_required, invalid_required)
 
 empty_notifications = validate_config({"products": one, "notifications": []})
 assert by_path(warnings(empty_notifications), "notifications"), empty_notifications

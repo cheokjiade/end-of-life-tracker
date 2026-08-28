@@ -219,6 +219,10 @@ def _check_notifications(notifications, results):
                 prefix, "error", "notification channel must be an object"))
             continue
 
+        if "required" in notif and not isinstance(notif["required"], bool):
+            results.append(_finding(
+                f"{prefix}.required", "error", "'required' must be a boolean"))
+
         ntype = notif.get("type")
         if not isinstance(ntype, str) or ntype not in NOTIFICATION_TYPES:
             valid = ", ".join(NOTIFICATION_TYPES)
