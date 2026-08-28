@@ -4,9 +4,10 @@ Everything the manifest scanner needs lives here as importable, network-free
 modules so standalone assertion tests can exercise parsing, mapping, and
 config generation without subprocesses:
 
+    models         normalized records, provenance, warnings, exclusions
     mappings       version helpers and the provider mapping tables
-    discovery      folder walking and manifest discovery (scan_folder)
-    config_writer  de-duplication and EOL config assembly (generate_config)
+    discovery      deterministic folder walking (scan_folder)
+    config_writer  provenance merging and EOL config assembly (generate_config)
     parsers.java   Maven POM + Gradle declaration parsing
     parsers.node   package.json parsing
 
@@ -28,14 +29,33 @@ from .mappings import (
     _map_npm_dep,
     _mc_entry,
 )
-from .parsers import parse_gradle, parse_package_json, parse_pom
+from .models import (
+    DEFAULT_EXCLUDED_DIRS,
+    MAX_FILES,
+    MAX_FILE_BYTES,
+    SCHEMA_VERSION,
+    GENERATOR_VERSION,
+    add_location,
+    format_location,
+    is_excluded,
+    load_ignore_patterns,
+    new_record,
+    new_warning,
+    sort_locations,
+    sort_warnings,
+)
+from .parsers import (
+    parse_gradle_records,
+    parse_package_json_records,
+    parse_pom_records,
+)
 
 __all__ = [
     "scan_folder",
     "generate_config",
-    "parse_pom",
-    "parse_gradle",
-    "parse_package_json",
+    "parse_pom_records",
+    "parse_gradle_records",
+    "parse_package_json_records",
     "_entry_key",
     "_JAVA_MAPPINGS",
     "_NPM_MAPPINGS",
@@ -47,4 +67,17 @@ __all__ = [
     "_map_java_dep",
     "_map_npm_dep",
     "_mc_entry",
+    "DEFAULT_EXCLUDED_DIRS",
+    "MAX_FILES",
+    "MAX_FILE_BYTES",
+    "SCHEMA_VERSION",
+    "GENERATOR_VERSION",
+    "add_location",
+    "format_location",
+    "is_excluded",
+    "load_ignore_patterns",
+    "new_record",
+    "new_warning",
+    "sort_locations",
+    "sort_warnings",
 ]

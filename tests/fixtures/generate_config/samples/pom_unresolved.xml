@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent-pom</artifactId>
+    <version>${parent.rev}</version>
+  </parent>
+  <artifactId>unresolved-sample</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>org.acme</groupId>
+      <artifactId>lib</artifactId>
+      <version>${lib.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.acme</groupId>
+      <artifactId>managed</artifactId>
+    </dependency>
+  </dependencies>
+</project>
