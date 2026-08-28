@@ -11,8 +11,8 @@ data sources and reports via console / HTML file / SNS / SES. The runtime is a
 **stdlib-only** Python package — `eoltracker/` — with a thin
 `lambda_function.py` shim that re-exports the handler (preserving the
 `lambda_function.lambda_handler` entry point); `build_lambda_package.py`
-assembles both into an allowlisted deployment zip with a verified manifest
-(see `docs/packaging.md`).
+assembles Git-tracked runtime sources into an allowlisted deployment zip with
+a verified manifest (see `docs/packaging.md`).
 
 ## Workflows index
 
