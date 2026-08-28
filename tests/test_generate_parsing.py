@@ -485,6 +485,62 @@ assert outcomes["com.example:braced:${jacksonVersion}"] == (
     "skipped: unresolved property placeholder"), outcomes
 print("OK interpolated $var decls produce no row; records cite the placeholder reason")
 
+# Mixed numeric+placeholder form: '2.16.$minor' (Groovy double-quoted
+# interpolation of just the trailing segment) must skip like a full $var.
+assert _map_java_dep("org.example", "lib", "2.16.$minor") is None
+entry, reason = _map_java_dep_with_reason("org.example", "lib", "2.16.$minor")
+assert entry is None and reason == "unresolved property placeholder", (entry, reason)
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation "org.example:lib:2.16.$minor"
+    implementation "com.example:keeper:1.2.3"
+}
+""")
+    deps = parse_gradle(p)
+assert ("org.example", "lib", "2.16.$minor", "gradle") in deps, deps
+scan = {
+    "java": [(g, a, v, str(p), kind) for g, a, v, kind in deps],
+    "pom_properties": [],
+    "node": [],
+    "files": [str(p)],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["keeper 1.2.3"], rows
+outcomes = {r["decl"]: r["outcome"] for r in config["_discovered_dependencies"]}
+assert outcomes["org.example:lib:2.16.$minor"] == (
+    "skipped: unresolved property placeholder"), outcomes
+print("OK mixed numeric.$var interpolation skips with the placeholder reason")
+
+
+# --- K3: POM property values that are themselves placeholders ---------------
+
+# A property whose value is an unresolved placeholder (${undefined.prop})
+# used to bypass the $ check in the property-mapping path and fabricate a
+# phantom tracker row (probed: "Apache Tomcat ${undefined.prop}" recorded
+# as tracked). It must skip with the placeholder reason and produce no row.
+scan = {
+    "java": [],
+    "pom_properties": [
+        ({"tomcat.version": "${undefined.prop}"}, "pom.xml"),
+        ({"tomcat.version": "10.1.28"}, "pom.xml"),
+    ],
+    "node": [],
+    "files": ["pom.xml"],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["Apache Tomcat 10.1"], rows
+records = config["_discovered_dependencies"]
+placeholder = [r for r in records if r["decl"] == "tomcat.version=${undefined.prop}"]
+assert len(placeholder) == 1, records
+assert placeholder[0]["kind"] == "property", placeholder
+assert placeholder[0]["outcome"] == "skipped: unresolved property placeholder", placeholder
+tracked = [r for r in records if r["decl"] == "tomcat.version=10.1.28"]
+assert len(tracked) == 1 and tracked[0]["outcome"] == "tracked: Apache Tomcat 10.1", records
+print("OK pom property placeholder value skips; real property still tracks")
+
 
 # --- L: test-* configurations and non-dependency declarations ----------------
 

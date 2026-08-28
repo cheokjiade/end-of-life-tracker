@@ -209,7 +209,7 @@ assert r["outcome"] == "unmapped: see _skipped_npm_packages", r
 r = one(records, "vue@3")
 assert (r["kind"] == "npm"
         and r["outcome"]
-        == "skipped: bare-major vue spec (no minor cycle published)"), r
+        == "skipped: vue version spec with no matching published cycle"), r
 skipped_npm = {s["name"] for s in config["_skipped_npm_packages"]}
 assert {"lodash", "vue"} <= skipped_npm, config["_skipped_npm_packages"]
 

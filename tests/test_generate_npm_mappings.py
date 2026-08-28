@@ -55,8 +55,9 @@ print("OK next range spec is cleaned to a bare major")
 # "3.2", "3.1", "3.0", "2.6" ... "2.0") plus the bare-major cycle "1" —
 # verified live against /api/vue.json; there are NO cycles "3", "2" or
 # "1.0". So: a bare-major spec must be skipped (not guessed into a doomed
-# cycle), a 1.x.y pin maps to cycle "1", and everything else uses
-# major.minor.
+# cycle), a numeric 1.x.y pin (e.g. 1.0.27) maps to cycle "1", non-numeric
+# specs ("1.x", "1.x.y" — no such cycle exists) are skipped, and numeric
+# major.minor specs use major.minor.
 entry = _map_npm_dep("vue", "3.5.3")
 assert "source" not in entry, entry
 assert entry["product"] == "vue", entry
@@ -96,10 +97,18 @@ print("OK vue ~1.0.0 cleans to 1.0.0 and maps to the bare-major cycle 1")
 # endoflife.date cycle (live /api/vue.json: '1', '2.0'..'2.7',
 # '3.0'..'3.5'), so mapping it fabricated a doomed row; 'v3.5.3' splits
 # into a non-numeric major 'v3' because _clean_version does not strip a
-# leading 'v'. Both must be skipped into _skipped_npm_packages.
-for spec in ("3.x", "^3.x", "2.x", "3.X", "v3.5.3"):
+# leading 'v'. '1.x'/'1.x.y' have no cycle either — major 1 exists only as
+# the bare cycle '1'. All must be skipped into _skipped_npm_packages.
+for spec in ("3.x", "^3.x", "2.x", "3.X", "v3.5.3", "1.x", "1.x.y"):
     assert _map_npm_dep("vue", spec) is None, spec
-print("OK vue non-numeric minor specs (3.x, ^3.x, 2.x, 3.X) and v-prefixed spec are skipped")
+print("OK vue non-numeric minor specs (3.x, ^3.x, 2.x, 3.X, 1.x, 1.x.y) and v-prefixed spec are skipped")
+
+# A pinned 3.5.x spec is numeric in both mapped segments: it maps to the
+# published major.minor cycle '3.5' (the trailing .x is simply ignored).
+entry = _map_npm_dep("vue", "3.5.x")
+assert entry is not None and entry["version"] == "3.5", entry
+assert entry["label"] == "Vue 3.5", entry
+print("OK vue 3.5.x maps to the published 3.5 cycle")
 
 # End-to-end: the skipped bare-major spec must not produce a tracker row.
 scan = {
@@ -114,5 +123,20 @@ assert "vue" in skipped, config.get("_skipped_npm_packages")
 rows = [p for p in config["products"] if not p.get("_section")]
 assert not rows, config["products"]
 print("OK vue ^3 dependency falls into _skipped_npm_packages, no row")
+
+# End-to-end: a non-numeric 1.x spec lands in _skipped_npm_packages too —
+# it has no published cycle to map to.
+scan = {
+    "java": [],
+    "pom_properties": [],
+    "node": [("vue", "1.x", "package.json")],
+    "files": ["package.json"],
+}
+config = generate_config(scan, "demo")
+skipped = [s["name"] for s in config.get("_skipped_npm_packages", [])]
+assert "vue" in skipped, config.get("_skipped_npm_packages")
+rows = [p for p in config["products"] if not p.get("_section")]
+assert not rows, config["products"]
+print("OK vue 1.x dependency falls into _skipped_npm_packages, no row")
 
 print("OK test_generate_npm_mappings")

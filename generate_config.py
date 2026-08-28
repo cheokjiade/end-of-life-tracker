@@ -284,13 +284,14 @@ def _vue_entry(version):
     '2.7', ... '2.0') plus the bare-major cycle '1'; there are no cycles
     '3', '2' or '1.0' (verified live against /api/vue.json). A bare-major
     spec ('^3', '3', '2') must therefore not be guessed into a cycle —
-    return None so the package lands in _skipped_npm_packages — and a 1.x
-    pin maps to the bare-major cycle '1' (label 'Vue 1'), since no 1.x
-    minor cycles exist. Both the major and minor segments must be numeric
-    before any mapping: a range-style spec ('3.x', '3.X', '2.x') has no
-    matching cycle at all, and a v-prefixed spec ('v3.5.3') splits into a
-    non-numeric major segment 'v3' (_clean_version does not strip a
-    leading 'v') — skipping both is safer than a doomed row.
+    return None so the package lands in _skipped_npm_packages — while a
+    numeric 1.x.y pin ('1.0', '1.2.3') maps to the bare-major cycle '1'
+    (label 'Vue 1'), since no 1.x minor cycles exist. Both the major and
+    minor segments must be numeric before any mapping: a range-style spec
+    ('3.x', '3.X', '2.x', '1.x', '1.x.y') has no matching cycle at all,
+    and a v-prefixed spec ('v3.5.3') splits into a non-numeric major
+    segment 'v3' (_clean_version does not strip a leading 'v') — skipping
+    both is safer than a doomed row.
     """
     parts = (version or "").split(".")
     if len(parts) < 2:
@@ -948,9 +949,20 @@ def generate_config(scan, project_name):
             for prop_name, mapper in _POM_PROPERTY_MAPPINGS.items():
                 if prop_name in props:
                     v = props[prop_name]
-                    entry = mapper(v)
                     fname = os.path.basename(src)
                     decl = f"{prop_name}={v}"
+                    if "$" in (v or ""):
+                        # A property value that is itself an unresolved
+                        # placeholder (e.g. <tomcat.version>${undefined.prop}
+                        # </tomcat.version>) resolves nowhere on any registry;
+                        # mapping it would fabricate a phantom tracker row
+                        # (probed: "Apache Tomcat ${undefined.prop}"). Skip it
+                        # like $-placeholder versions in the dependency path.
+                        records.append(_discovered_record(
+                            decl, fname, "property",
+                            "skipped: unresolved property placeholder"))
+                        continue
+                    entry = mapper(v)
                     if entry is None:
                         records.append(_discovered_record(
                             decl, fname, "property", "skipped: unmapped property"))
@@ -1010,7 +1022,7 @@ def generate_config(scan, project_name):
                 # Track unmapped for the user's review
                 if name not in {"react-dom"}:  # known-no-mapping
                     skipped_npm.append({"name": name, "version": v, "source": fname})
-                outcome = ("skipped: bare-major vue spec (no minor cycle published)"
+                outcome = ("skipped: vue version spec with no matching published cycle"
                            if name == "vue"
                            else "unmapped: see _skipped_npm_packages")
                 records.append(_discovered_record(decl, fname, "npm", outcome))

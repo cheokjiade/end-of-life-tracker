@@ -341,9 +341,10 @@ extracted manually (the scanner silently misses it):
   (`1.0`).
 - `package.json`: `dependencies`/`devDependencies`/`engines.node`; known packages map to
   endoflife.date entries, the rest land in `_skipped_npm_packages`. `vue` needs a pinned
-  **numeric** minor: `vue@3.5.3` maps to cycle `3.5`, a `1.0`/`1.x.y` pin maps to the
-  bare-major cycle `1` (label `Vue 1` — no 1.x minor cycles exist), but a bare-major spec
-  (`^3`, `2`), a non-numeric minor segment (`3.x`, `^3.x`, `3.X`), or a `v`-prefixed spec
+  **numeric** minor: `vue@3.5.3` maps to cycle `3.5`, and a numeric 1.x.y pin (`1.0`,
+  `1.2.3`) maps to the bare-major cycle `1` (label `Vue 1` — no 1.x minor cycles exist),
+  but a bare-major spec (`^3`, `2`), a non-numeric minor segment (`3.x`, `^3.x`, `3.X`,
+  `1.x`, `1.x.y` — no such cycle exists to map to), or a `v`-prefixed spec
   (`v3.5.3` — the scanner does not strip a leading `v`) is skipped to
   `_skipped_npm_packages` — endoflife.date has no vue cycles `3` or `2`, and guessing a
   non-numeric minor fabricates a doomed row.
@@ -383,7 +384,7 @@ Record shape:
   - `skipped: <reason>` - standardized reasons: `maven version range`, `gradle dynamic
     version`, `SNAPSHOT version`, `unresolved property placeholder`, `internal group`,
     `no version (parent/BOM-managed)`, `classifier variant (duplicates the base artifact)`,
-    `bare-major vue spec (no minor cycle published)`, `known-untracked test dependency`,
+    `vue version spec with no matching published cycle`, `known-untracked test dependency`,
     or the non-runtime scope itself (`test scope`, `provided scope`, `system scope`);
   - `unmapped: see _skipped_npm_packages` - npm package with no mapping; the package and
     version are detailed in `_skipped_npm_packages` (`react-dom` is a known no-mapping
