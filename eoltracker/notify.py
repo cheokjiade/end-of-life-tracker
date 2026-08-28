@@ -290,6 +290,7 @@ def send_notifications(config, report_text, report_html, subject, runtime_overri
 
     *runtime_overrides* carries per-invocation routing values (e.g. SNS topic ARN
     supplied by EventBridge so each project routes to its own topic).
+
     """
     notifications = config.get("notifications", [{"type": "sns"}])
 

@@ -10,39 +10,100 @@ Central (or it is the resolved 'latest'); an in-use version Central has no
 record of is data-quality 'unknown', not healthy.
 """
 
-import json
+import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 from ..core import _error_result, logger
 
-_MAVEN_CENTRAL_API = "https://search.maven.org/solrsearch/select"
+_MAVEN_REPOSITORY = "https://repo1.maven.org/maven2"
+_HTTP_TIMEOUT_SECONDS = 10
+_MAX_METADATA_BYTES = 1024 * 1024
 # Two cache namespaces: one for "the latest gav of this artifact" and one
-# for "this specific gav". Targeted queries avoid the rows-cutoff problem
-# that bites artifacts with hundreds of releases (e.g. Netty).
+# for "this specific gav". Canonical metadata has no search-result row cutoff,
+# including for artifacts with hundreds of releases (e.g. Netty).
 _MAVEN_LATEST_CACHE = {}    # (group, artifact) -> {"v", "released"}|None
 _MAVEN_VERSION_CACHE = {}   # (group, artifact, version) -> {"v", "released"}|None
 
 
-def _fetch_maven_doc(query):
-    """Run a Maven Central solr query and return the first doc, or None."""
-    url = f"{_MAVEN_CENTRAL_API}?q={query}&core=gav&rows=1&wt=json"
+def _artifact_base_url(group, artifact):
+    """Canonical, path-quoted repository URL for one Maven artifact."""
+    group_path = "/".join(
+        urllib.parse.quote(part, safe="") for part in group.split("."))
+    artifact_path = urllib.parse.quote(artifact, safe="")
+    return f"{_MAVEN_REPOSITORY}/{group_path}/{artifact_path}"
+
+
+def _parse_metadata_release(raw):
+    """Extract the current release/latest version from maven-metadata.xml."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ValueError("invalid Maven metadata XML") from exc
+    versioning = root.find("versioning")
+    if versioning is None:
+        return None
+    for tag in ("release", "latest"):
+        value = versioning.findtext(tag)
+        if value and value.strip():
+            return value.strip()
+    versions = versioning.find("versions")
+    if versions is None:
+        return None
+    values = [
+        node.text.strip() for node in versions.findall("version")
+        if node.text and node.text.strip()
+    ]
+    return values[-1] if values else None
+
+
+def _fetch_metadata_release(group, artifact):
+    """Fetch canonical repository metadata; return None on HTTP 404."""
+    url = f"{_artifact_base_url(group, artifact)}/maven-metadata.xml"
     req = urllib.request.Request(url, headers={
-        "Accept":     "application/json",
+        "Accept": "application/xml",
         "User-Agent": "EOL-Tracker/1.0",
     })
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    docs = data.get("response", {}).get("docs", [])
-    if not docs:
-        return None
-    d = docs[0]
-    ts = d.get("timestamp")
-    return {
-        "v":        d.get("v"),
-        "released": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).date() if ts else None,
-    }
+    try:
+        with urllib.request.urlopen(
+                req, timeout=_HTTP_TIMEOUT_SECONDS) as resp:
+            raw = resp.read(_MAX_METADATA_BYTES + 1)
+            if len(raw) > _MAX_METADATA_BYTES:
+                raise ValueError("Maven metadata response exceeds 1 MiB")
+            return _parse_metadata_release(raw)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def _pom_info(group, artifact, version):
+    """Confirm a version POM and read its repository modification date."""
+    encoded_version = urllib.parse.quote(version, safe="")
+    pom_name = urllib.parse.quote(f"{artifact}-{version}.pom", safe="")
+    url = f"{_artifact_base_url(group, artifact)}/{encoded_version}/{pom_name}"
+    req = urllib.request.Request(url, method="HEAD", headers={
+        "Accept": "application/xml",
+        "User-Agent": "EOL-Tracker/1.0",
+    })
+    try:
+        with urllib.request.urlopen(
+                req, timeout=_HTTP_TIMEOUT_SECONDS) as resp:
+            modified = resp.headers.get("Last-Modified")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+    released = None
+    if modified:
+        try:
+            released = parsedate_to_datetime(modified).date()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return {"v": version, "released": released}
 
 
 def _fetch_maven_latest(group, artifact):
@@ -50,8 +111,14 @@ def _fetch_maven_latest(group, artifact):
     key = (group, artifact)
     if key in _MAVEN_LATEST_CACHE:
         return _MAVEN_LATEST_CACHE[key]
-    q = f"g:{urllib.parse.quote(group)}+AND+a:{urllib.parse.quote(artifact)}"
-    info = _fetch_maven_doc(q)
+    version = _fetch_metadata_release(group, artifact)
+    info = None
+    if version:
+        info = _pom_info(group, artifact, version)
+        if info is None:
+            # Metadata is authoritative for the latest version even if a CDN
+            # edge has not made the POM visible yet.
+            info = {"v": version, "released": None}
     _MAVEN_LATEST_CACHE[key] = info
     return info
 
@@ -61,12 +128,7 @@ def _fetch_maven_specific(group, artifact, version):
     key = (group, artifact, version)
     if key in _MAVEN_VERSION_CACHE:
         return _MAVEN_VERSION_CACHE[key]
-    q = (
-        f"g:{urllib.parse.quote(group)}+AND+"
-        f"a:{urllib.parse.quote(artifact)}+AND+"
-        f"v:{urllib.parse.quote(version)}"
-    )
-    info = _fetch_maven_doc(q)
+    info = _pom_info(group, artifact, version)
     _MAVEN_VERSION_CACHE[key] = info
     return info
 
@@ -87,8 +149,10 @@ def _provider_maven_central(entry, today):
         latest = _fetch_maven_latest(group, artifact)
         in_use = _fetch_maven_specific(group, artifact, version)
     except Exception as exc:
-        logger.error("Maven Central fetch failed for %s:%s: %s", group, artifact, exc)
-        result = _error_result(entry, f"Maven Central query failed: {exc}")
+        summary = type(exc).__name__
+        logger.error("Maven Central fetch failed (%s)", summary)
+        result = _error_result(
+            entry, f"Maven Central repository query failed ({summary})")
         result["source"] = "maven_central"
         return result
 
@@ -99,6 +163,7 @@ def _provider_maven_central(entry, today):
 
     latest_v = latest["v"]
     latest_date = latest["released"]
+    latest_date_text = str(latest_date) if latest_date else "date unknown"
     in_use_date = in_use["released"] if in_use else None
     on_latest = latest_v == version
 
@@ -118,13 +183,13 @@ def _provider_maven_central(entry, today):
     elif in_use is None:
         message = (
             f"Version {version} could not be verified on Maven Central "
-            f"(private build, typo, or indexing gap); "
-            f"latest published is {latest_v} ({latest_date})"
+            f"(private build, typo, or repository gap); "
+            f"latest published is {latest_v} ({latest_date_text})"
         )
     elif in_use_date is None:
         message = (
             f"In use: {version} (release date unknown); "
-            f"latest: {latest_v} ({latest_date})"
+            f"latest: {latest_v} ({latest_date_text})"
         )
     else:
         message = f"In use: {version}; latest: {latest_v}"

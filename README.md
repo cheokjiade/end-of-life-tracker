@@ -58,6 +58,62 @@ Passing a bare name like `a` resolves to `eol_config.a.json`; with no argument y
 
 ![Interactive config menu](docs/sample_interactive_menu.png)
 
+### Generate HTML reports without sending notifications
+
+`run_html_report.py` is the safe local runner for report generation. It checks
+the live public provider APIs, but replaces each config's notification list in
+memory with one `html_file` channel. It therefore never invokes configured
+console, SNS, or SES channels and never modifies the source JSON files.
+
+```bash
+# One config: explicit path or shorthand
+python run_html_report.py eol_config.a.json
+python run_html_report.py a
+
+# Several configs in one process (provider caches are shared)
+python run_html_report.py a b-auto c
+
+# Every local eol_config.*.json except the sample template
+python run_html_report.py --all
+```
+
+Reports are written beneath `reports/<project>/<year>/<month>/<day>/`. The
+command exits non-zero if a config cannot be loaded or its HTML report cannot
+be written. Provider lookup failures still appear as `error` rows in a
+successfully generated report, so review each report's tracker-health rows.
+
+### Generate a config with an AI portal
+
+Use an AI portal together with the repository's canonical
+`eol_config_generation_prompt.md` when the inventory is spread across
+dependency files, Confluence pages, spreadsheets, or other documents:
+
+1. Open `eol_config_generation_prompt.md` and paste its complete contents into
+   the AI portal as the task instructions (or attach the file if supported).
+2. Attach or paste the approved source material: for example `pom.xml`,
+   `build.gradle` / `build.gradle.kts`, `package.json`, exported Confluence
+   pages, dependency spreadsheets, architecture inventories, or upgrade notes.
+   Do not upload confidential material to a portal that is not approved for it.
+3. Ask the portal to produce only the JSON config described by the prompt and
+   to flag ambiguous products, versions, or provider mappings instead of
+   guessing. Name the result `eol_config.<project>.json`.
+4. Save the file in the repository root, parse-check it, then perform a live
+   smoke run so provider slugs, versions, and package coordinates are verified:
+
+   ```bash
+   python -c "import json; json.load(open('eol_config.<project>.json'))"
+   python lambda_function.py eol_config.<project>.json
+   ```
+
+5. Review the generated report and the JSON against the original source
+   material. Keep per-project configs local: `eol_config.*.json` is ignored by
+   Git except for the tracked sample template.
+
+For clean dependency directories, `python generate_config.py <folder> --name
+<project>` is the deterministic alternative. For an existing curated config,
+follow `docs/updating-a-config.md` and patch it from new evidence rather than
+regenerating it wholesale.
+
 ### Sample output
 
 #### Console (plain text)

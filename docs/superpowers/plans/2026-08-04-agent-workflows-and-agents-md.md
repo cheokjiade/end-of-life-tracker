@@ -98,7 +98,7 @@ Update = diff + patch.
    source, as shown in the "Verification Checklist" section of
    `eol_config_generation_prompt.md`: confirm each endoflife.date slug + exact
    `cycle`, each npm `package` (+ `version`) resolves on `registry.npmjs.org`,
-   each Maven `group:artifact` resolves on `search.maven.org`. Anything
+   each Maven `group:artifact` resolves in canonical repository metadata. Anything
    unverifiable is flagged, not guessed.
 6. **Validate + smoke-run:**
    `python -c "import json; json.load(open('eol_config.<project>.json'))"`, then
