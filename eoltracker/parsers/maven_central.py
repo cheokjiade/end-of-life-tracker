@@ -107,6 +107,11 @@ def _artifact_base_url(group, artifact, repository=_MAVEN_REPOSITORY):
 # snapshot/preview/ea as a prefix or exact match, m/milestone (and the b
 # shorthand) only when followed by a number — e.g. 5.0.0.Alpha2, 1.0.0-b1,
 # 2.0.0-RC1, 9.9.M3. Final, GA, RELEASE, sp<N> and plain numerics are stable.
+# Deliberate exclusions (pinned by tests; extend only with evidence of a
+# real-world Central casualty, none identified by review):
+#   - bare "milestone"/"m"/"b" with no trailing number
+#     ("1.0-milestone-3", "1.0.0-b"),
+#   - unlisted qualifier spellings ("1.0-pre1", "1.0-dev").
 _PRERELEASE_SEGMENT_RE = re.compile(
     r"^(?:alpha|beta|rc|cr|snapshot|preview|ea\d*|b\d+|m\d+|milestone\d+)")
 

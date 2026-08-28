@@ -2,6 +2,7 @@
 
 import logging
 import os
+import random
 import sys
 import urllib.error
 from datetime import date
@@ -120,6 +121,53 @@ assert maven._parse_metadata_release(b"""
 </versioning></metadata>
 """) == "4.2.17.Final"
 print("OK stale pre-release tag is not trusted as latest")
+
+
+# Deliberate-limitation pins (adversarial review of d78074a): these qualifier
+# spellings are classified STABLE by design — bare "milestone"/"m"/"b" with
+# no trailing number, and unlisted spellings like "pre1"/"dev". No real-world
+# Maven Central casualty was identified for any of them; if one surfaces,
+# extend _PRERELEASE_SEGMENT_RE (see the comment there) and this pin.
+for stable_by_design in ("1.0-milestone-3", "1.0-pre1", "1.0-dev", "1.0.0-b"):
+    assert not maven._is_prerelease_version(stable_by_design), stable_by_design
+print("OK qualifier exclusions pinned: milestone-N/pre1/dev/b stay stable by design")
+
+
+# Garbage inputs never crash and stay deterministic: the helpers stringify
+# whatever they receive (str(None), str(123), repr(bytes)) and fall back to
+# the plain tag when no <versions> list exists.
+for garbage in (None, 123, b"bytes", b"1.0.0-alpha", "", object()):
+    first = maven._is_prerelease_version(garbage)
+    assert first == maven._is_prerelease_version(garbage), garbage
+assert maven._is_prerelease_version(None) is False
+assert maven._is_prerelease_version(123) is False
+assert maven._is_prerelease_version(b"bytes") is False
+assert maven._pick_latest(None, None) is None
+assert maven._pick_latest(5, None) == 5          # no versions list -> tag as-is
+assert maven._pick_latest(None, [1, 2]) == 2     # numeric-aware max still applies
+assert maven._pick_latest(None, [None]) is None
+assert maven._pick_latest(b"1.0", [b"1.0"]) == b"1.0"
+assert maven._pick_latest(3, [b"a", 2]) == 2
+for args in ((None, [1, 2]), (None, [None]), (b"1.0", [b"1.0"]), (3, [b"a", 2])):
+    assert maven._pick_latest(*args) == maven._pick_latest(*args), args
+print("OK garbage inputs (None/int/bytes) are crash-free and deterministic")
+
+
+# Order-independence: the chosen latest never depends on the <versions>
+# listing order (metadata files are not guaranteed to be sorted).
+rng = random.Random(1234)
+for tag, versions, expected in (
+    ("5.0.0.Alpha2", NETTY_VERSIONS, "4.2.17.Final"),   # stale pre-release tag
+    ("2.22.0", ["1.0.0", "2.22.0", "3.0.0"], "2.22.0"),  # stable listed tag
+    (None, ["1.0.9", "1.0.10", "1.0.2"], "1.0.10"),      # no tag, numeric max
+):
+    assert maven._pick_latest(tag, list(versions)) == expected, (tag, versions)
+    assert maven._pick_latest(tag, list(reversed(versions))) == expected
+    for _ in range(5):
+        shuffled = list(versions)
+        rng.shuffle(shuffled)
+        assert maven._pick_latest(tag, shuffled) == expected, (tag, shuffled)
+print("OK latest selection is independent of the versions-list order")
 
 
 # Pure repository normalization: blank -> None, one trailing slash stripped,
