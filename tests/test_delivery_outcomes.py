@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import eoltracker.notify as notify
 
 
+ORIGINAL_BOTO3 = sys.modules.get("boto3")
+
+
 def dump(obj):
     return json.dumps(obj)
 
@@ -160,5 +163,32 @@ out = notify.send_notifications(
     "t", "<html/>", "s")
 assert notify.delivery_failed(out) is True
 print("OK required-channel semantics")
+
+# --- 7. Config routing wins visibly when an invocation also supplies routing.
+captured = io.StringIO()
+h = logging.StreamHandler(captured)
+notify.logger.addHandler(h)
+try:
+    install_fake_boto3(sns=FakeSNS(), ses=FakeSES())
+    out = notify.send_notifications(
+        CFG_SNS_SES_FAIL_FIRST, "t", "<html/>", "s",
+        runtime_overrides={
+            "sns_topic_arn": "arn:aws:sns:eu-west-1:123:event-topic",
+            "ses_from_email": "event-sender@example.com",
+            "ses_to_emails": "event-recipient@example.com",
+        },
+    )
+finally:
+    notify.logger.removeHandler(h)
+assert all(o["delivered"] for o in out), out
+conflict_log = captured.getvalue()
+assert "overrides the invocation routing value" in conflict_log, conflict_log
+assert "event-topic" not in conflict_log and "@" not in conflict_log, conflict_log
+print("OK routing conflict warnings are destination-free")
+
+if ORIGINAL_BOTO3 is None:
+    sys.modules.pop("boto3", None)
+else:
+    sys.modules["boto3"] = ORIGINAL_BOTO3
 
 print("OK test_delivery_outcomes")

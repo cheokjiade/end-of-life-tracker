@@ -18,6 +18,7 @@ Run from the repository root: python tests/check_terraform_infra.py
 
 import os
 import re
+import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TF = os.path.join(ROOT, "terraform")
@@ -34,9 +35,15 @@ def tf_files():
             yield name, read(name)
 
 
+def without_comments(text):
+    """Remove Terraform line comments before static semantic assertions."""
+    return re.sub(r"(?m)^\s*(?:#|//).*?$", "", text)
+
+
 # --- 1. provider declarations ------------------------------------------------
 declared = {}
 for name, text in tf_files():
+    text = without_comments(text)
     block = re.search(
         r"required_providers\s*\{(.*?)\n  \}", text, re.S)
     if not block:
@@ -62,6 +69,7 @@ for prov, constraint in declared.items():
 
 used_prefixes = set()
 for name, text in tf_files():
+    text = without_comments(text)
     # resource/data types are "<provider>_<resource>[_...]"; the leading
     # segment is the provider local name.
     used_prefixes.update(
@@ -73,7 +81,7 @@ undeclared = used_prefixes - set(declared)
 assert not undeclared, f"provider types used but not declared: {undeclared}"
 
 # --- 2. S3 versioning on the config bucket -----------------------------------
-main_tf = read("main.tf")
+main_tf = without_comments(read("main.tf"))
 m = re.search(
     r'resource\s+"aws_s3_bucket_versioning"\s+"config"\s*\{(.*?)\n\}',
     main_tf,
@@ -82,8 +90,17 @@ m = re.search(
 assert m, "aws_s3_bucket_versioning 'config' resource missing"
 assert re.search(r"bucket\s*=\s*aws_s3_bucket\.config\.id", m.group(1))
 assert re.search(r'status\s*=\s*"Enabled"', m.group(1))
-assert 'resource "terraform_data" "validate_eol_config"' in main_tf
-assert "lambda_function.py" in main_tf and "--validate" in main_tf
+validation_block = re.search(
+    r'resource\s+"terraform_data"\s+"validate_eol_config"\s*\{(.*?)\n\}',
+    main_tf, re.S)
+assert validation_block, "config validation resource missing"
+validation_body = validation_block.group(1)
+assert re.search(r'triggers_replace\s*=\s*\[', validation_body)
+assert 'filesha256("${path.module}/../${each.value.config_path}")' in validation_body
+assert 'filesha256("${path.module}/../lambda_function.py")' in validation_body
+assert 'fileset("${path.module}/../eoltracker", "**/*.py")' in validation_body
+assert re.search(r'command\s*=\s*"[^"]*python', validation_body)
+assert "--validate" in validation_body
 object_block = re.search(
     r'resource\s+"aws_s3_object"\s+"eol_config"\s*\{(.*?)\n\}',
     main_tf,
@@ -93,6 +110,7 @@ assert object_block and "aws_s3_bucket_versioning.config" in object_block.group(
 assert "terraform_data.validate_eol_config" in object_block.group(1)
 
 for name, text in tf_files():
+    text = without_comments(text)
     assert "noncurrent_version_expiration" not in text, (
         f"{name}: expiring noncurrent versions would destroy rollback data "
         "documented in terraform/README.md")
@@ -112,8 +130,16 @@ for still_ignored in (".terraform/", "terraform.tfstate",
                       "terraform.tfvars", "lambda.zip", "candidate*.json"):
     assert still_ignored in gitignore, still_ignored
 # unignored since issue #5: the lock file should be committed, not filtered out
-assert ".terraform.lock.hcl" not in gitignore
+assert "!terraform/.terraform.lock.hcl" in gitignore
+ignored = subprocess.run(
+    ["git", "check-ignore", "--no-index", "-q",
+     "terraform/.terraform.lock.hcl"],
+    cwd=ROOT, check=False)
+assert ignored.returncode == 1, "terraform lockfile is ignored"
 lock_path = os.path.join(TF, ".terraform.lock.hcl")
+assert os.path.exists(lock_path), (
+    "terraform/.terraform.lock.hcl is required; regenerate it per "
+    "terraform/README.md")
 if os.path.exists(lock_path):
     with open(lock_path, encoding="utf-8") as f:
         lock_text = f.read()
@@ -143,8 +169,5 @@ if os.path.exists(lock_path):
             f"locked {addr} {locked[addr]} violates constraint {constraint}")
     print("check_terraform_infra: lockfile OK "
           f"({', '.join(sorted(locked))})")
-else:
-    print("check_terraform_infra: SKIP - .terraform.lock.hcl not generated yet; "
-          "run terraform init once and commit it (see terraform/README.md)")
 
 print("OK check_terraform_infra")

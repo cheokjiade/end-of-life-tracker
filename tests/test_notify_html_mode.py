@@ -34,6 +34,8 @@ skip, root = plan("\\Windows\\Temp\\r.html", True)   # backslashes never qualify
 assert skip is not None and root is None, (skip, root)
 skip, root = plan("/tmpfoo/r.html", True)            # prefix look-alike rejected
 assert skip is not None and root is None, (skip, root)
+skip, root = plan("/tmp", True)                       # root is not a file path
+assert skip is not None and root is None, (skip, root)
 skip, root = plan("/tmp/../etc/r.html", True)        # traversal rejected
 assert skip is not None and root is None, (skip, root)
 skip, root = plan("", True)

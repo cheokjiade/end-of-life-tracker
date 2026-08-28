@@ -198,6 +198,10 @@ Behaviour on failure:
    `<project>-failure-dlq-not-empty`) page the ops topic configured via
    `ops_notification_email`. Local runs never raise — they print the per-channel
    outcomes instead.
+4. If only some required channels fail, the successful channel still prevents
+   duplicate Lambda retries, but the `RequiredChannelsUndelivered` metric pages
+   the `<project>-required-delivery-failures` alarm. Partial durable failures
+   therefore remain visible even when another required route succeeds.
 
 Logs never contain recipient addresses: SES messages log a recipient count
 only, and outcome details describe routing qualitatively rather than naming
@@ -237,7 +241,10 @@ rerun step 0 after any change under `eoltracker/`. See
 [docs/packaging.md](docs/packaging.md) for how packaging and verification work.
 
 After deployment:
-- **Confirm the SNS subscription** — check your email for a confirmation link from AWS
+- **Confirm both SNS subscriptions** — check your email for confirmation links
+  for the per-project report topic and, when `ops_notification_email` is set,
+  the operational alarm topic. `terraform output ops_topic_arn` identifies the
+  latter if confirmation needs troubleshooting.
 - The Lambda runs daily at 8:00 AM UTC by default (configurable via `schedule_expression`)
 - The config file is uploaded to S3 automatically and is **versioned** — see `terraform/README.md` for provider pinning/lockfile updates and the point-in-time config rollback runbook
 
@@ -267,17 +274,17 @@ Or update it via the S3 console.
 | `schedule_expression` | No | `cron(0 8 * * ? *)` | CloudWatch cron schedule |
 | `ses_from_email` | No | `""` | SES sender address (if using SES) |
 | `ses_to_emails` | No | `""` | Comma-separated SES recipients |
-| `ops_notification_email` | No | `""` | Email subscribed to operational alarms (Lambda failures / dead-letter queue); empty = ops topic without a subscription |
+| `ops_notification_email` | No | `""` | Email subscribed to operational alarms (Lambda failures, partial required-channel delivery, dead-letter queue); confirmation required; empty = ops topic without a subscription |
 
-### Environment variables (set by Terraform)
+### Runtime routing values
 
 | Variable | Purpose |
 |----------|---------|
 | `CONFIG_BUCKET` | S3 bucket containing the config file |
-| `CONFIG_KEY` | S3 key for the config file |
-| `SNS_TOPIC_ARN` | SNS topic ARN for plain-text alerts |
+| `CONFIG_KEY` | Optional default S3 key for manual invocations; scheduled Terraform events provide `config_key` in their payload instead |
+| `SNS_TOPIC_ARN` | Optional default SNS topic for manual invocations; scheduled Terraform events provide `sns_topic_arn` in their payload instead |
 | `SES_FROM_EMAIL` | SES sender (optional, can also be set in config) |
-| `SES_TO_EMAILS` | SES recipients (optional, can also be set in config) |
+| `SES_TO_EMAILS` | Optional default SES recipients for manual invocations; scheduled Terraform events provide `ses_to_emails` in their payload |
 | `EOL_MAX_WORKERS` | Concurrent provider checks (default `4`) |
 | `EOL_TIME_RESERVE_MS` | Time kept for rendering and delivery (default `15000`) |
 | `EOL_CHECK_START_GUARD_MS` | Extra time required before starting a check (default `18000`) |
@@ -306,9 +313,14 @@ Trigger the Lambda outside its schedule:
 ```bash
 aws lambda invoke \
   --function-name eol-checker \
-  --payload '{}' \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"config_key":"projects/<project>/eol_config.json","project":"<project>"}' \
   response.json && cat response.json
 ```
+
+An empty payload is accepted only when `CONFIG_KEY` is configured explicitly;
+Terraform's multi-project deployment intentionally does not choose a default
+project.
 
 ## Architecture
 
