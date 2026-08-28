@@ -43,6 +43,11 @@ def _error_result(entry, message):
     if isinstance(entry, dict):
         label = entry.get(
             "label", f'{entry.get("product", "?")} {entry.get("version", "?")}')
+        if not isinstance(label, str):
+            label = str(label)
+        source = entry.get("source", "endoflife_date")
+        if not isinstance(source, str):
+            source = "unknown"
         return {
             "label": label,
             "product": entry.get("product"),
@@ -50,7 +55,7 @@ def _error_result(entry, message):
             "status": "error",
             "message": message,
             "days_remaining": None,
-            "source": entry.get("source", "endoflife_date"),
+            "source": source,
         }
     return {
         "label": f"<unusable product entry ({type(entry).__name__})>",

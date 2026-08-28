@@ -45,8 +45,8 @@ def check_product(entry, today, index=None):
     - entries failing the structural field checks from :mod:`..validation`
       return an error result *before* the provider is called (no network);
     - unknown sources produce an error-shaped result;
-    - unexpected provider exceptions are logged with traceback context and
-      converted into the normalized error shape, preserving label/source.
+    - unexpected provider exceptions are logged by type only (never exception
+      details) and converted into the normalized error shape.
     """
     # Imported lazily: validation imports this package's SOURCE_LABELS at
     # module load, so importing it back here at registration time would cycle.
@@ -95,4 +95,11 @@ def check_product(entry, today, index=None):
     note = entry.get("policy_note")
     if note and isinstance(result, dict):
         result["policy_note"] = note
+    # Provider/config identity fields feed set/dict lookups and sorting in the
+    # formatters. Normalize hostile or broken-provider values at the dispatch
+    # boundary so a single bad row remains isolated through report delivery.
+    if not isinstance(result.get("source"), str):
+        result["source"] = "unknown"
+    if not isinstance(result.get("label"), str):
+        result["label"] = str(result.get("label", "?"))
     return result

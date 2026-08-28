@@ -244,7 +244,7 @@ def validate_config(config):
         valid = isinstance(thresholds, list) and len(thresholds) > 0 and all(
             isinstance(t, (int, float))
             and not isinstance(t, bool)
-            and math.isfinite(t)
+            and (isinstance(t, int) or math.isfinite(t))
             and t > 0
             for t in thresholds
         )

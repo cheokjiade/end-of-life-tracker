@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import eoltracker.notify as notify
 
 
+ORIGINAL_BOTO3 = sys.modules.get("boto3")
+
+
 def dump(obj):
     return json.dumps(obj)
 
@@ -160,5 +163,10 @@ out = notify.send_notifications(
     "t", "<html/>", "s")
 assert notify.delivery_failed(out) is True
 print("OK required-channel semantics")
+
+if ORIGINAL_BOTO3 is None:
+    sys.modules.pop("boto3", None)
+else:
+    sys.modules["boto3"] = ORIGINAL_BOTO3
 
 print("OK test_delivery_outcomes")

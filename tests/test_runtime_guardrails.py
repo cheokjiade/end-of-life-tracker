@@ -97,6 +97,9 @@ for bad_thresholds in (
     exc = load_rejected({"alert_thresholds_days": bad_thresholds, "products": one})
     assert any(f["path"] == "alert_thresholds_days" for f in exc.findings), \
         (bad_thresholds, exc)
+assert not validate_config({
+    "alert_thresholds_days": [10 ** 400], "products": one,
+})
 
 exc = load_rejected({"notify_when": "sometimes", "products": one})
 assert any(f["path"] == "notify_when" for f in exc.findings), exc
@@ -240,6 +243,10 @@ try:
         r = check_product({"label": "H", "source": hostile}, TODAY)
         assert r["status"] == "error", (hostile, r)
         assert "source" in r["message"], (hostile, r)
+        assert r["source"] == "unknown", (hostile, r)
+        text, _ = format_report_text([r], [30, 60, 90], TODAY)
+        html, _ = format_report_html([r], [30, 60, 90], TODAY)
+        assert "H" in text and "H" in html, (hostile, text)
 
     # --- optional-version npm entry still reaches its provider ----------------
     seen = {}
