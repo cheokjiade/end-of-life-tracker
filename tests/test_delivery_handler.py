@@ -66,6 +66,7 @@ resp = handler.lambda_handler({}, context=None)
 assert resp["statusCode"] == 200
 assert resp["notified"] is True, "a delivered channel means notified=True"
 assert [o["channel"] for o in resp["notification_outcomes"]] == ["sns", "ses"]
+assert resp["required_channels_undelivered"] == 1
 print("OK partial delivery -> notified=True, outcomes returned")
 
 # --- 3. local mode + total failure -> no raise --------------------------------

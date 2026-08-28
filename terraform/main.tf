@@ -339,6 +339,26 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   ok_actions    = [aws_sns_topic.ops_alerts.arn]
 }
 
+resource "aws_cloudwatch_metric_alarm" "required_delivery_failures" {
+  alarm_name          = "${var.project_name}-required-delivery-failures"
+  alarm_description   = "At least one required report channel was undelivered. Another channel may have succeeded, so the Lambda invocation itself may still be successful."
+  namespace           = "EOLTracker"
+  metric_name         = "RequiredChannelsUndelivered"
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.eol_checker.function_name
+  }
+
+  alarm_actions = [aws_sns_topic.ops_alerts.arn]
+  ok_actions    = [aws_sns_topic.ops_alerts.arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "lambda_failure_dlq_not_empty" {
   alarm_name          = "${var.project_name}-failure-dlq-not-empty"
   alarm_description   = "An EOL-check event exhausted all asynchronous retries and was parked in the ${var.project_name}-lambda-failures dead-letter queue; that scheduled check did not complete."

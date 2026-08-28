@@ -13,14 +13,15 @@ handling") and ``eoltracker/notify.py`` for the outcome contract.
 
 Environment variables:
     CONFIG_BUCKET   — S3 bucket containing the config file
-    CONFIG_KEY      — S3 key for the config file (default: eol_config.json)
-    SNS_TOPIC_ARN   — SNS topic ARN for plain-text email notifications
+    CONFIG_KEY      — Optional default S3 key for manual invocations
+    SNS_TOPIC_ARN   — Optional default SNS topic for manual invocations
     SES_FROM_EMAIL  — SES sender for HTML email notifications (optional)
-    SES_TO_EMAILS   — Comma-separated SES recipients (optional)
+    SES_TO_EMAILS   — Optional default comma-separated SES recipients
 """
 
 import json
 import os
+import time
 from datetime import date
 
 from .core import logger
@@ -59,6 +60,33 @@ def build_subject(analysis, project, today):
     return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
 
 
+def _emit_delivery_metrics(outcomes):
+    """Emit a durable signal when any required channel is undelivered."""
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    undelivered = [
+        outcome for outcome in outcomes
+        if outcome.get("required") and not outcome.get("delivered")
+    ]
+    if not function_name or not undelivered:
+        return
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "EOLTracker",
+                "Dimensions": [["FunctionName"]],
+                "Metrics": [{
+                    "Name": "RequiredChannelsUndelivered",
+                    "Unit": "Count",
+                }],
+            }],
+        },
+        "FunctionName": function_name,
+        "RequiredChannelsUndelivered": len(undelivered),
+    }
+    print(json.dumps(payload, separators=(",", ":")))
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -70,10 +98,13 @@ def load_config_from_s3(key=None):
     pass it via the invocation event so a single Lambda can fan out across
     many per-project config files.
     """
+    key = key or os.environ.get("CONFIG_KEY")
+    if not key:
+        raise ValueError(
+            "no config_key was provided and CONFIG_KEY is not configured")
     import boto3
 
     bucket = os.environ["CONFIG_BUCKET"]
-    key = key or os.environ.get("CONFIG_KEY", "eol_config.a.json")
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     return json.loads(obj["Body"].read().decode("utf-8"))
@@ -154,6 +185,7 @@ def lambda_handler(event, context):
         ) or []
         for line in summarize_outcomes(outcomes).splitlines():
             logger.info("Delivery %s", line)
+        _emit_delivery_metrics(outcomes)
         if delivery_failed(outcomes):
             # No required channel delivered. In Lambda mode this must be an
             # invocation failure so retries/DLQ/alarms engage (R-03); local
@@ -182,6 +214,10 @@ def lambda_handler(event, context):
         # True only when at least one configured channel actually delivered.
         "notified": any(o["delivered"] for o in outcomes),
         "notification_outcomes": outcomes,
+        "required_channels_undelivered": sum(
+            1 for o in outcomes
+            if o.get("required") and not o.get("delivered")
+        ),
     }
 
 
