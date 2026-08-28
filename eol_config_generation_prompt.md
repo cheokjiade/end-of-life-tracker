@@ -187,6 +187,11 @@ pinned version is — no EOL is claimed.
 ```
 
 - Needs `group`, `artifact`, and the **full** version (do not truncate Maven versions).
+- The reported latest is the repository metadata's `<release>`/`<latest>` tag only
+  when it is a **stable** version listed in `<versions>`; a stale pre-release tag is
+  ignored in favour of the newest stable listed version (Netty advertised
+  `5.0.0.Alpha2` while its newest listed version was `4.2.17.Final`), and without a
+  `<versions>` list the tag is trusted as-is.
 - Optional `repository`: the absolute http(s) **base URL** of an alternative
   Maven 2 repository layout, used when the artifact is **not published to
   Maven Central**, e.g. Shibboleth-hosted artifacts (`org.opensaml`,
