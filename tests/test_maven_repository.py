@@ -66,6 +66,61 @@ except ValueError as exc:
 print("OK Maven metadata parsing")
 
 
+# --- Stale pre-release tag handling (live netty metadata shape) --------------
+
+# Pre-release qualifier segments (case-insensitive) mark a version unstable;
+# Final/GA/RELEASE/sp<N>/plain numerics are stable.
+for pre in ("5.0.0.Alpha2", "1.0.0-b1", "2.0.0-RC1", "9.9.M3",
+            "1.0.0-SNAPSHOT", "3.0.0-beta7", "1.0.milestone2",
+            "2.0.0-preview1", "21.0-ea", "1.0.0-cr1"):
+    assert maven._is_prerelease_version(pre), pre
+for stable in ("4.2.17.Final", "1.0.0", "2.22.0", "1.0.0.GA",
+               "1.0.0.RELEASE", "3.2.2.sp1", "1.0.Final", "10.0.2"):
+    assert not maven._is_prerelease_version(stable), stable
+print("OK pre-release qualifier detection")
+
+
+# Numeric-aware ordering: numeric segments compare numerically, stable beats
+# pre-release at an equal numeric core, and text chunks break ties.
+keys = [maven._version_order_key(v) for v in
+        ("1.0.0-alpha", "1.0.0", "1.0.9", "1.0.10", "4.2.16.Final",
+         "4.2.17.Final", "5.0.0.Alpha1", "5.0.0.Alpha2", "6.0.0")]
+for earlier, later in zip(keys, keys[1:]):
+    assert earlier < later, (earlier, later)
+print("OK version ordering key")
+
+
+# A release/latest tag is trusted only when it is stable AND listed; a stale
+# pre-release tag falls back to the newest stable listed version.
+NETTY_VERSIONS = [
+    "4.1.118.Final", "4.1.119.Final", "4.2.15.Final", "4.2.16.Final",
+    "4.2.17.Final", "5.0.0.Alpha1", "5.0.0.Alpha2",
+]
+assert maven._pick_latest("5.0.0.Alpha2", NETTY_VERSIONS) == "4.2.17.Final"
+# A stable tag present in <versions> is trusted verbatim.
+assert maven._pick_latest("2.22.0", ["1.0.0", "2.22.0", "3.0.0"]) == "2.22.0"
+# A stable tag absent from <versions> is not authoritative either.
+assert maven._pick_latest("3.0.0", ["2.0.0", "2.10.0"]) == "2.10.0"
+# Every listed version pre-release -> deterministic highest overall.
+assert maven._pick_latest(
+    "1.0.0-beta2", ["1.0.0-alpha", "1.0.0-beta2", "2.0.0-RC1"]) == "2.0.0-RC1"
+# No <versions> list (tiny/private metadata) -> trust the tag as today.
+assert maven._pick_latest("5.0.0.Alpha2", None) == "5.0.0.Alpha2"
+assert maven._pick_latest("5.0.0.Alpha2", []) == "5.0.0.Alpha2"
+assert maven._pick_latest(None, []) is None
+# ...and the metadata parser wires the pieces together.
+assert maven._parse_metadata_release(b"""
+<metadata><versioning>
+  <latest>5.0.0.Alpha2</latest><release>5.0.0.Alpha2</release>
+  <versions>
+    <version>4.2.16.Final</version><version>4.2.17.Final</version>
+    <version>5.0.0.Alpha1</version><version>5.0.0.Alpha2</version>
+  </versions>
+</versioning></metadata>
+""") == "4.2.17.Final"
+print("OK stale pre-release tag is not trusted as latest")
+
+
 # Pure repository normalization: blank -> None, one trailing slash stripped,
 # non-http(s) or relative values rejected.
 assert maven._normalize_repository(None) is None
@@ -469,6 +524,74 @@ assert maven.url_for({"product": "io.netty:netty-codec-http",
                       "repository": maven._MAVEN_REPOSITORY}) == \
     "https://central.sonatype.com/artifact/io.netty/netty-codec-http"
 print("OK url_for honours the repository")
+
+
+# End-to-end on the stubbed fetch path: netty-shaped metadata (stale
+# pre-release release/latest = 5.0.0.Alpha2) yields latest 4.2.17.Final, and
+# an in-use 4.1.x gets a sane positive "days newer" — never a negative one.
+clear_caches()
+calls.clear()
+NETTY_METADATA = b"""<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>io.netty</groupId>
+  <artifactId>netty-codec-http</artifactId>
+  <versioning>
+    <latest>5.0.0.Alpha2</latest>
+    <release>5.0.0.Alpha2</release>
+    <versions>
+      <version>4.1.118.Final</version>
+      <version>4.1.119.Final</version>
+      <version>4.2.15.Final</version>
+      <version>4.2.16.Final</version>
+      <version>4.2.17.Final</version>
+      <version>5.0.0.Alpha1</version>
+      <version>5.0.0.Alpha2</version>
+    </versions>
+    <lastUpdated>20250729164314</lastUpdated>
+  </versioning>
+</metadata>
+"""
+
+
+def netty_urlopen(request, timeout):
+    url = request.full_url
+    calls.append((url, request.get_method()))
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(NETTY_METADATA)
+    if "/4.2.17.Final/" in url:
+        return FakeResponse(headers={
+            "Last-Modified": "Wed, 16 Jul 2025 10:00:00 GMT"})
+    assert url.endswith(
+        "/4.1.119.Final/netty-codec-http-4.1.119.Final.pom"), url
+    return FakeResponse(headers={
+        "Last-Modified": "Wed, 26 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = netty_urlopen
+    latest = maven._fetch_maven_latest("io.netty", "netty-codec-http")
+    result = maven._provider_maven_central({
+        "label": "Netty Codec HTTP 4.1.119",
+        "group": "io.netty",
+        "artifact": "netty-codec-http",
+        "version": "4.1.119.Final",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert latest == {"v": "4.2.17.Final", "released": date(2025, 7, 16)}, latest
+assert result["status"] == "ok", result
+assert result["latest_patch"] == "4.2.17.Final", result
+days = (date(2025, 7, 16) - date(2025, 2, 26)).days
+assert f"{days} days newer" in result["message"], result
+assert "-3648" not in result["message"], result
+# The selected latest — not the stale tag — is the version whose POM is probed.
+assert any("/4.2.17.Final/netty-codec-http-4.2.17.Final.pom" in url
+           for url, _method in calls), calls
+assert any("/4.1.119.Final/netty-codec-http-4.1.119.Final.pom" in url
+           for url, _method in calls), calls
+print("OK netty-shaped metadata yields a sane latest")
+
 
 clear_caches()
 print("OK test_maven_repository")
