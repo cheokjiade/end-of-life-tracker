@@ -25,10 +25,11 @@ Mapping strategy:
                    groups (org.opensaml, net.shibboleth.*) are emitted
                    against the Shibboleth repository, not Maven Central.
                    Versions that no registry resolves — -SNAPSHOT,
-                   ${property} placeholders, Maven ranges ([2.0,) or an
-                   unterminated [2.0), classifier variants (1.0:ext), and
-                   Gradle dynamic versions (2.+, 1.0+eap, latest.*) — are
-                   skipped; ext suffixes (1.0@jar) are truncated to 1.0.
+                   ${property} / Groovy $var placeholders, Maven ranges
+                   ([2.0,) or an unterminated [2.0), classifier variants
+                   (1.0:ext), and Gradle dynamic versions (2.+, 1.0+eap,
+                   latest.*) — are skipped; ext suffixes (1.0@jar) are
+                   truncated to 1.0.
     Gradle plugin ids -> best-effort Maven coordinates, then the normal
                    java mapping (kind "gradle-plugin").
     POM props   -> known names (tomcat.version, netty.version, logback.version,
@@ -39,7 +40,8 @@ Mapping strategy:
                    (react, vue, angular, next, nuxt, node, express,
                    ckeditor); unmapped packages are listed in
                    _skipped_npm_packages for manual review (vue bare-major
-                   specs like '^3' are skipped there too — no such cycle).
+                   specs like '^3' and non-numeric minor specs like '3.x'
+                   are skipped there too — no such cycle).
 
 Complete picture vs runnable set:
     products stays the deduped runnable set (first declaration wins).
@@ -284,10 +286,16 @@ def _vue_entry(version):
     spec ('^3', '3', '2') must therefore not be guessed into a cycle —
     return None so the package lands in _skipped_npm_packages — and a 1.x
     pin maps to the bare-major cycle '1' (label 'Vue 1'), since no 1.x
-    minor cycles exist.
+    minor cycles exist. Both the major and minor segments must be numeric
+    before any mapping: a range-style spec ('3.x', '3.X', '2.x') has no
+    matching cycle at all, and a v-prefixed spec ('v3.5.3') splits into a
+    non-numeric major segment 'v3' (_clean_version does not strip a
+    leading 'v') — skipping both is safer than a doomed row.
     """
     parts = (version or "").split(".")
     if len(parts) < 2:
+        return None
+    if not (parts[0].isdigit() and parts[1].isdigit()):
         return None
     if parts[0] == "1":
         return _eol_entry("vue", "1", "Vue 1")
@@ -376,7 +384,10 @@ def _map_java_dep_with_reason(group, artifact, version):
         return None, "SNAPSHOT version"
     if group.startswith("internal."):
         return None, "internal group"
-    if "${" in version:
+    if "$" in version:
+        # Braced ${property} placeholders AND Groovy double-quoted $var
+        # interpolation (implementation "g:a:$jacksonVersion") — the
+        # literal string resolves nowhere on any registry.
         return None, "unresolved property placeholder"
     if _is_maven_version_range(version):
         return None, "maven version range"
@@ -397,12 +408,13 @@ def _map_java_dep(group, artifact, version):
     Thin wrapper over _map_java_dep_with_reason, kept with its original
     signature for existing callers and tests. Skips anything no public
     registry resolves as written: SNAPSHOT builds (in-flight project
-    versions), internal coordinate prefixes, ${unresolved.property}
-    placeholders, classifier variants ('1.0:test-jar' - they duplicate the
-    base artifact), Maven version ranges including unterminated ones
-    ('[2.0,'), and Gradle dynamic versions ('2.+', 'latest', '1.0+eap').
-    Ext suffixes ('1.0@jar') are truncated to the plain version before
-    mapping.
+    versions), internal coordinate prefixes, $-placeholder versions
+    (braced ${property} or Groovy $var interpolation — the literal string
+    resolves nowhere), classifier variants ('1.0:test-jar' - they
+    duplicate the base artifact), Maven version ranges including
+    unterminated ones ('[2.0,'), and Gradle dynamic versions ('2.+',
+    'latest', '1.0+eap'). Ext suffixes ('1.0@jar') are truncated to the
+    plain version before mapping.
     """
     return _map_java_dep_with_reason(group, artifact, version)[0]
 

@@ -86,6 +86,21 @@ assert entry["version"] == "1", entry
 assert entry["label"] == "Vue 1", entry
 print("OK vue 1.x pins map to the bare-major cycle 1 (label 'Vue 1')")
 
+entry = _map_npm_dep("vue", "~1.0.0")
+assert entry is not None and entry["version"] == "1", entry
+assert entry["label"] == "Vue 1", entry
+print("OK vue ~1.0.0 cleans to 1.0.0 and maps to the bare-major cycle 1")
+
+# (c) non-numeric minor segments and v-prefixed specs: both the major and
+# the minor segment must be numeric before any mapping. '3.x' has no
+# endoflife.date cycle (live /api/vue.json: '1', '2.0'..'2.7',
+# '3.0'..'3.5'), so mapping it fabricated a doomed row; 'v3.5.3' splits
+# into a non-numeric major 'v3' because _clean_version does not strip a
+# leading 'v'. Both must be skipped into _skipped_npm_packages.
+for spec in ("3.x", "^3.x", "2.x", "3.X", "v3.5.3"):
+    assert _map_npm_dep("vue", spec) is None, spec
+print("OK vue non-numeric minor specs (3.x, ^3.x, 2.x, 3.X) and v-prefixed spec are skipped")
+
 # End-to-end: the skipped bare-major spec must not produce a tracker row.
 scan = {
     "java": [],

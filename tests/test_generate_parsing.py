@@ -12,6 +12,7 @@ from generate_config import (
     _is_dynamic_version,
     _is_maven_version_range,
     _map_java_dep,
+    _map_java_dep_with_reason,
     _strip_gradle_comments,
     parse_gradle,
     parse_pom,
@@ -439,6 +440,50 @@ for good in ("2.16.0", "3.0.0-M1", "1.0-alpha", "33.4.0-jre", "2.21"):
     entry = _map_java_dep("commons-io", "commons-io", good)
     assert entry is not None and entry["version"] == good, (good, entry)
 print("OK legit positives still map: 3.0.0-M1, 1.0-alpha, 33.4.0-jre, 2.21")
+
+
+# --- K2: any $ in a version is an unresolved placeholder ----------------------
+
+# Groovy double-quoted interpolation (implementation "g:a:$jacksonVersion")
+# used to slip past the braced-only '${' check and fabricate a phantom
+# maven_central row; ANY '$' must now skip with the placeholder reason.
+assert _map_java_dep("com.example", "lib", "$jacksonVersion") is None
+assert _map_java_dep("com.example", "lib", "${jacksonVersion}") is None
+entry, reason = _map_java_dep_with_reason("com.example", "lib", "$jacksonVersion")
+assert entry is None and reason == "unresolved property placeholder", (entry, reason)
+print("OK $var and braced ${var} versions both skip as unresolved placeholders")
+
+# End-to-end: the interpolated declarations parse but produce no row, and
+# their _discovered_dependencies records cite the placeholder reason.
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation "com.example:lib:$jacksonVersion"
+    implementation "com.example:braced:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:2.17.0"
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [
+    ("com.example", "lib", "$jacksonVersion", "gradle"),
+    ("com.example", "braced", "${jacksonVersion}", "gradle"),
+    ("com.fasterxml.jackson.core", "jackson-databind", "2.17.0", "gradle"),
+], deps
+scan = {
+    "java": [(g, a, v, str(p), kind) for g, a, v, kind in deps],
+    "pom_properties": [],
+    "node": [],
+    "files": [str(p)],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["Jackson Databind 2.17"], rows
+outcomes = {r["decl"]: r["outcome"] for r in config["_discovered_dependencies"]}
+assert outcomes["com.example:lib:$jacksonVersion"] == (
+    "skipped: unresolved property placeholder"), outcomes
+assert outcomes["com.example:braced:${jacksonVersion}"] == (
+    "skipped: unresolved property placeholder"), outcomes
+print("OK interpolated $var decls produce no row; records cite the placeholder reason")
 
 
 # --- L: test-* configurations and non-dependency declarations ----------------
