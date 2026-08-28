@@ -179,10 +179,15 @@ def _provider_maven_central(entry, today):
             f"In use: {version} ({in_use_date}); latest: {latest_v} "
             f"({latest_date}, {days_newer} days newer)"
         )
-    elif in_use_date is None:
+    elif in_use is None:
         message = (
             f"Version {version} not on Maven Central (private build?); "
             f"latest published is {latest_v} ({latest_date})"
+        )
+    elif in_use_date is None:
+        message = (
+            f"In use: {version} (release date unknown); "
+            f"latest: {latest_v} ({latest_date})"
         )
     else:
         message = f"In use: {version}; latest: {latest_v}"

@@ -130,6 +130,28 @@ assert info == again == {"v": "1.0.0", "released": None}
 assert len(calls) == 1 and calls[0][1] == "HEAD"
 print("OK specific POM existence/date and cache reuse")
 
+# A confirmed POM without a date remains healthy and is described truthfully.
+real_latest = maven._fetch_maven_latest
+real_specific = maven._fetch_maven_specific
+try:
+    maven._fetch_maven_latest = lambda *_args: {
+        "v": "2.0.0", "released": date(2025, 2, 25)}
+    maven._fetch_maven_specific = lambda *_args: {
+        "v": "1.0.0", "released": None}
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven._fetch_maven_latest = real_latest
+    maven._fetch_maven_specific = real_specific
+assert result["status"] == "ok", result
+assert "release date unknown" in result["message"], result
+assert "not on Maven Central" not in result["message"], result
+print("OK confirmed undated POM message")
+
 
 # Repository path components are quoted; coordinates cannot alter the host.
 base = maven._artifact_base_url("org.example space", "widget/name")
