@@ -94,11 +94,12 @@ _SHIBBOLETH_REPOSITORY = (
 def _shibboleth_mc_entry(group, artifact, version):
     entry = _mc_entry(group, artifact, version, f"{artifact} {version}")
     entry["repository"] = _SHIBBOLETH_REPOSITORY
-    entry["policy_note"] = (
-        "Hosted on the Shibboleth repository, not Maven Central; each "
-        "major version's support ends with its Shibboleth IdP release "
-        "train (OpenSAML 4 EOL 2024-09-01)."
-    )
+    note = ("Hosted on the Shibboleth repository, not Maven Central; each "
+            "major version's support ends with its Shibboleth IdP release "
+            "train")
+    if group == "org.opensaml":
+        note += " (OpenSAML 4 EOL 2024-09-01)"
+    entry["policy_note"] = note + "."
     return entry
 
 
@@ -170,7 +171,8 @@ _JAVA_MAPPINGS = [
     # OpenSAML / Shibboleth artifacts are distributed from the Shibboleth
     # repository, not Maven Central (since OpenSAML 3).
     (
-        lambda g, a: g == "org.opensaml" or g.startswith("net.shibboleth"),
+        lambda g, a: (g == "org.opensaml" or g == "net.shibboleth"
+                      or g.startswith("net.shibboleth.")),
         lambda g, a, v: _shibboleth_mc_entry(g, a, v),
     ),
     # Skip junk we don't want to track

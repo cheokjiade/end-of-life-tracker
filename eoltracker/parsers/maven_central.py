@@ -220,11 +220,15 @@ def _provider_maven_central(entry, today):
         logger.error("%s fetch failed (%s)", where, summary)
         result = _error_result(entry, f"{where} query failed ({summary})")
         result["source"] = "maven_central"
+        if repository != _MAVEN_REPOSITORY:
+            result["source_label"] = where
         return result
 
     if not latest:
         result = _error_result(entry, f"Artifact {group}:{artifact} not found on {where}")
         result["source"] = "maven_central"
+        if repository != _MAVEN_REPOSITORY:
+            result["source_label"] = where
         return result
 
     latest_v = latest["v"]

@@ -323,6 +323,44 @@ assert result["source_label"] == "build.shibboleth.net", result
 print("OK custom repository override")
 
 
+# Error rows from a custom repository keep the truthful host label;
+# default-repository error rows gain no override.
+clear_caches()
+calls.clear()
+
+
+def missing_repo_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = missing_repo_urlopen
+    shib_missing = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.1.2",
+        "repository": SHIBBOLETH,
+    }, date(2026, 8, 28))
+    clear_caches()
+    default_missing = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert shib_missing["status"] == "error", shib_missing
+assert "build.shibboleth.net" in shib_missing["message"], shib_missing
+assert shib_missing["source_label"] == "build.shibboleth.net", shib_missing
+assert default_missing["status"] == "error", default_missing
+assert "source_label" not in default_missing, default_missing
+print("OK error rows honour the repository label")
+
+
 # Invalid repository values fail closed as error rows with zero network calls,
 # propagating the specific normalization reason (which always names the field).
 calls.clear()
