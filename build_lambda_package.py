@@ -8,13 +8,14 @@ finding S-01, ``docs/audits/2026-08-27-security-risk-audit.md``).
 The artifact is an allowlist, strictly:
 
 - ``lambda_function.py``
-- every ``*.py`` under ``eoltracker/``
+- every Git-tracked ``*.py`` under ``eoltracker/``
 
 Everything else is structurally excluded because it is never collected.
 Known compiled/junk artifacts (``__pycache__/``, ``*.pyc``, ``*.pyo``) are
 skipped so builds stay predictable in dirty development trees; any other
-non-Python file found under ``eoltracker/`` is refused outright (fail closed)
-rather than skipped, so unknown junk can never enter the artifact unnoticed.
+non-Python file or untracked Python file found under ``eoltracker/`` is refused
+outright (fail closed) rather than skipped, so unknown junk can never enter the
+artifact unnoticed. Packaging must run from the root of a Git worktree.
 
 Outputs (under ``terraform/build/``):
 
@@ -40,6 +41,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -89,8 +91,82 @@ def _reject_link(path: Path, description: str) -> None:
         raise PackagingError(f"cannot inspect runtime path {path}: {exc}") from exc
     if path.is_symlink() or _is_reparse_point(path):
         raise PackagingError(f"refusing linked/reparse-point {description}: {path}")
-    if metadata.st_nlink > 1:
+    # POSIX directories normally have multiple links (``.`` and each child
+    # directory's ``..``). Only regular files can be smuggled into the package
+    # through a hard-link alias; directory aliases are covered by the symlink
+    # and reparse-point checks above.
+    if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1:
         raise PackagingError(f"refusing hard-linked {description}: {path}")
+
+
+def _assert_exact_path_case(repo_root: Path, relative_path: Path) -> None:
+    """Reject case-only aliases for an expected repository-relative path.
+
+    ``Path.exists`` follows the filesystem's case-folding rules on Windows and
+    macOS. Walk directory entries instead so the ZIP member casing, Git index,
+    and Python import path cannot silently disagree.
+    """
+    parent = repo_root
+    for part in relative_path.parts:
+        try:
+            names = [entry.name for entry in os.scandir(parent)]
+        except OSError as exc:
+            raise PackagingError(f"cannot inspect runtime path casing under {parent}: {exc}") from exc
+        if part in names:
+            parent = parent / part
+            continue
+        aliases = sorted(name for name in names if name.casefold() == part.casefold())
+        if aliases:
+            raise PackagingError(
+                f"runtime path casing differs from the allowlist: expected "
+                f"{relative_path.as_posix()!r}, found component {aliases[0]!r}"
+            )
+        return
+
+
+def _git_tracked_runtime_paths(repo_root: Path) -> set[str]:
+    """Return runtime paths recorded by Git, failing closed outside a repo."""
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+    except OSError as exc:
+        raise PackagingError(f"cannot verify Git-tracked runtime sources: {exc}") from exc
+    if root_result.returncode != 0:
+        raise PackagingError(
+            "cannot verify Git-tracked runtime sources: repository root is not a Git worktree"
+        )
+
+    git_root = Path(root_result.stdout.strip()).resolve()
+    try:
+        same_root = os.path.samefile(repo_root, git_root)
+    except OSError:
+        same_root = os.path.normcase(str(repo_root)) == os.path.normcase(str(git_root))
+    if not same_root:
+        raise PackagingError(
+            f"packaging root must be the Git worktree root (got {repo_root}, Git root is {git_root})"
+        )
+
+    tracked_result = subprocess.run(
+        [
+            "git", "-C", str(repo_root), "ls-files", "-z", "--",
+            *TOP_LEVEL_RUNTIME_FILES, RUNTIME_PACKAGE_DIR,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if tracked_result.returncode != 0:
+        raise PackagingError("cannot enumerate Git-tracked runtime sources")
+    return {
+        os.fsdecode(raw).replace("\\", "/")
+        for raw in tracked_result.stdout.split(b"\0")
+        if raw
+    }
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -105,9 +181,11 @@ def collect_runtime_sources(repo_root: Path) -> List[str]:
     missing.
     """
     repo_root = repo_root.resolve()
+    tracked_paths = _git_tracked_runtime_paths(repo_root)
 
     collected: List[str] = []
     for name in TOP_LEVEL_RUNTIME_FILES:
+        _assert_exact_path_case(repo_root, Path(name))
         path = repo_root / name
         _reject_link(path, "runtime file")
         if not path.is_file():
@@ -115,6 +193,7 @@ def collect_runtime_sources(repo_root: Path) -> List[str]:
         collected.append(name)
 
     pkg_dir = repo_root / RUNTIME_PACKAGE_DIR
+    _assert_exact_path_case(repo_root, Path(RUNTIME_PACKAGE_DIR))
     _reject_link(pkg_dir, "runtime package")
     if not pkg_dir.is_dir():
         raise PackagingError(f"required runtime package is missing: {RUNTIME_PACKAGE_DIR}/")
@@ -149,10 +228,30 @@ def collect_runtime_sources(repo_root: Path) -> List[str]:
                 " (runtime ships only lambda_function.py and eoltracker/**.py;"
                 " remove it or teach build_lambda_package.py about deliberate additions)"
             )
+        if rel not in tracked_paths:
+            raise PackagingError(f"refusing untracked runtime source: {rel}")
         collected.append(rel)
 
     if len(collected) <= len(TOP_LEVEL_RUNTIME_FILES):
         raise PackagingError(f"no runtime modules found under {RUNTIME_PACKAGE_DIR}/")
+
+    collected_set = set(collected)
+    tracked_allowlist = {
+        rel for rel in tracked_paths
+        if rel in TOP_LEVEL_RUNTIME_FILES
+        or (
+            rel.startswith(f"{RUNTIME_PACKAGE_DIR}/")
+            and rel.endswith(".py")
+            and not any(part.casefold() in IGNORED_PARTS for part in Path(rel).parts)
+        )
+    }
+    if collected_set != tracked_allowlist:
+        missing = sorted(tracked_allowlist - collected_set)
+        extra = sorted(collected_set - tracked_allowlist)
+        raise PackagingError(
+            "runtime source set differs from Git-tracked allowlist"
+            f" (missing={missing}, untracked={extra})"
+        )
 
     return sorted(collected)
 

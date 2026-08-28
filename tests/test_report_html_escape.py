@@ -8,7 +8,7 @@ from datetime import date
 
 from eoltracker.parsers import check_product
 from eoltracker.core import logger
-from eoltracker.report import format_report_html
+from eoltracker.report import format_report_html, format_report_text, sanitize_text
 
 TODAY = date(2026, 8, 27)
 TH = [30, 60, 90]
@@ -137,8 +137,9 @@ assert "(latest)" in lat_out and "&rarr;" not in lat_out
 # ---------------------------------------------------------------------------
 hdr_out, alerts_empty = format_report_html(results=[], thresholds=TH,
                                            today="2026-<b>08</b>-27")
-assert alerts_empty is False
-assert "All products are within support" in hdr_out          # static banner
+assert alerts_empty is True
+assert "TRACKER HEALTH: no products checked" in hdr_out
+assert "All products are within support" not in hdr_out
 assert "2026-&lt;b&gt;08&lt;/b&gt;-27" in hdr_out
 assert "&lt;b&gt;" in hdr_out and "<b>" not in hdr_out
 flattened = hdr_out.replace("\n", "").replace(" ", "")
@@ -209,6 +210,9 @@ BAD_URLS = [
     None,                                                # non-string types
     17,
     {"href": "https://evil.example"},
+    "https://example.com/bad\ud800path",                  # invalid Unicode
+    "https://example.com:not-a-port/path",               # malformed port
+    "https://example.com:99999/path",                    # out-of-range port
 ]
 for bad in BAD_URLS:
     r = check_product({"source": "manual", "label": "Nolink",
@@ -237,5 +241,37 @@ plain_r = check_product({"source": "manual", "label": "Plain Manual"}, TODAY)
 plain_out, _ = format_report_html([plain_r], TH, TODAY)
 assert "<a " not in plain_out
 assert ">Plain Manual</td>" in plain_out
+
+# Lone UTF-16 surrogates can enter through malformed JSON/provider data.
+# They are replaced at the rendering boundary so UTF-8 report delivery cannot
+# be taken down by one bad field. A surrogate-bearing URL is never linked.
+surrogate = "bad\ud800text"
+surrogate_out, _ = format_report_html([
+    poisioned(label=surrogate, message=surrogate, policy_note=surrogate)
+], TH, TODAY)
+encoded = surrogate_out.encode("utf-8")
+assert b"bad\xef\xbf\xbdtext" in encoded
+assert "\ud800" not in surrogate_out
+
+surrogate_url = "https://example.com/bad\udfffpath?token=do-not-log"
+stream = io.StringIO()
+handler = logging.StreamHandler(stream)
+logger.addHandler(handler)
+try:
+    result = check_product({"source": "manual", "label": "Surrogate URL",
+                            "reference_url": surrogate_url}, TODAY)
+    surrogate_url_out, _ = format_report_html([result], TH, TODAY)
+finally:
+    logger.removeHandler(handler)
+assert "<a " not in surrogate_url_out
+assert surrogate_url not in stream.getvalue()
+assert "do-not-log" not in stream.getvalue()
+
+plain_surrogate, _ = format_report_text([
+    poisioned(label=surrogate, message=surrogate)
+], TH, TODAY)
+assert "\ud800" not in plain_surrogate
+assert b"bad\xef\xbf\xbdtext" in plain_surrogate.encode("utf-8")
+assert sanitize_text("project\ud800name") == "project\ufffdname"
 
 print("OK test_report_html_escape")

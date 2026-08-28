@@ -198,6 +198,10 @@ Behaviour on failure:
    `<project>-failure-dlq-not-empty`) page the ops topic configured via
    `ops_notification_email`. Local runs never raise — they print the per-channel
    outcomes instead.
+4. If only some required channels fail, the successful channel still prevents
+   duplicate Lambda retries, but the `RequiredChannelsUndelivered` metric pages
+   the `<project>-required-delivery-failures` alarm. Partial durable failures
+   therefore remain visible even when another required route succeeds.
 
 Logs never contain recipient addresses: SES messages log a recipient count
 only, and outcome details describe routing qualitatively rather than naming
@@ -238,12 +242,16 @@ rerun step 0 after any change under `eoltracker/`. See
 [docs/packaging.md](docs/packaging.md) for how packaging and verification work.
 
 After deployment:
-- **Confirm every SNS subscription** — AWS emails each project's `notification_email` a confirmation link; that topic stays silent until it is clicked.
+- **Confirm every SNS subscription** — AWS emails each project's
+  `notification_email` a report-topic confirmation link. When
+  `ops_notification_email` is set, confirm that operational-topic link too;
+  `terraform output ops_topic_arn` identifies the alarm topic.
 - Each project gets its own EventBridge rule running on its `schedule_expression` (default: daily at 8:00 AM UTC).
 - Terraform uploads each project's `config_path` file to `projects/<project>/eol_config.json` in the config bucket — one object per project. There is no root-level `eol_config.json` object and no global `CONFIG_KEY`.
 - Useful outputs for operating the deployment: `lambda_function_name`,
   `config_bucket`, `config_file_keys` (project → exact S3 key),
-  `config_object_version_ids`, `sns_topic_arns`, and `schedule_rule_names`.
+  `config_object_version_ids`, `sns_topic_arns`, `ops_topic_arn`, and
+  `schedule_rule_names`.
 - Config objects are **versioned**. See `terraform/README.md` for the provider
   lockfile workflow and the point-in-time rollback runbook.
 
@@ -310,7 +318,7 @@ Top-level variables (`terraform/variables.tf`):
 | `eol_time_reserve_ms` | No | `15000` | Milliseconds reserved for rendering and delivery |
 | `eol_check_start_guard_ms` | No | `18000` | Additional time required before starting a provider check |
 | `ses_from_email` | No | `""` | Verified SES sender shared across all projects; empty disables SES |
-| `ops_notification_email` | No | `""` | Email subscribed to Lambda failure and dead-letter queue alarms; empty creates the ops topic without a subscription |
+| `ops_notification_email` | No | `""` | Email subscribed to Lambda, partial-run, partial-delivery, and dead-letter queue alarms; confirmation required; empty creates the ops topic without a subscription |
 
 Per-project settings — one entry per project under `projects`:
 
@@ -321,7 +329,7 @@ Per-project settings — one entry per project under `projects`:
 | `schedule_expression` | No | `cron(0 8 * * ? *)` | Daily 8:00 AM UTC by default |
 | `ses_to_emails` | No | `""` | Comma-separated SES recipients delivered via the schedule's event payload |
 
-### Environment variables (set by Terraform)
+### Runtime routing values
 
 Terraform sets shared environment variables on the function; there are no
 per-project environment variables:
@@ -336,11 +344,13 @@ per-project environment variables:
 
 In particular, Terraform sets **no** `CONFIG_KEY`, `SNS_TOPIC_ARN`, or `SES_TO_EMAILS`. Per-project routing instead arrives in each EventBridge rule's input payload (`project`, `config_key`, `sns_topic_arn`, `ses_to_emails`) — see `aws_cloudwatch_event_target.lambda` in `terraform/main.tf` and `lambda_handler` in `eoltracker/handler.py`.
 
-When a value is absent from both the event and the config entry, the handler falls back to env vars and, for the config key only, to a hard-coded default:
+When a routing value is absent from both the event and the config entry, the
+handler falls back to its optional environment variable. The config key has no
+built-in default:
 
 | Value | Resolution order |
 |-------|------------------|
-| Config key | event `config_key` → `CONFIG_KEY` env var → built-in default `eol_config.a.json` |
+| Config key | event `config_key` → `CONFIG_KEY` env var → clear configuration error |
 | SNS topic ARN | config entry `topic_arn` → event `sns_topic_arn` → `SNS_TOPIC_ARN` env var |
 | SES sender / recipients | config entry `from_email` / `to_emails` → event overrides → `SES_FROM_EMAIL` / `SES_TO_EMAILS` env vars |
 
@@ -413,9 +423,15 @@ AWS CLI v2 treats an inline `--payload` string as base64-encoded binary unless
 `--cli-binary-format raw-in-base64-out` is supplied. `fileb://` bypasses that
 setting and sends the JSON file's raw bytes.
 
-A successful invocation returns a JSON object in `response.json` with `"statusCode": 200`, your `"project"` name, and counts of checked products and alerts. On failure, inspect the `/aws/lambda/<function-name>` CloudWatch Logs log group.
+A successful invocation returns a JSON object in `response.json` with
+`"statusCode": 200`, your `"project"` name, and counts of checked products and
+alerts. On failure, inspect the `/aws/lambda/<function-name>` CloudWatch Logs
+log group.
 
-**Do not invoke with `--payload '{}'`.** Terraform sets no `CONFIG_KEY`, so the handler falls back to its built-in default key `eol_config.a.json` (`eoltracker/handler.py`) — that object does not exist under the `projects/<project>/eol_config.json` layout, so the invocation fails with `NoSuchKey` while scheduled runs continue using their own event payloads.
+**Do not invoke with `--payload '{}'`.** Terraform sets no `CONFIG_KEY` and the
+multi-project handler intentionally chooses no default project, so an empty
+payload fails with a clear missing-config-key error while scheduled runs
+continue using their own event payloads.
 
 ## Architecture
 
