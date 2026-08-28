@@ -1,0 +1,401 @@
+"""Tests for the Go and .NET inventory parsers.
+
+Covers helper_scripts/eol_inventory/parsers/go.py and
+helper_scripts/eol_inventory/parsers/dotnet.py: normalized records,
+provenance locations, warnings, replace-directive handling (local paths
+never become public dependencies), central package versions, lock-file
+fallback, case-insensitive resolution, and determinism. Standalone
+assertion script: no pytest, no network, no subprocesses.
+
+Run from the repository root:  python tests/test_inventory_go_dotnet.py
+"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+FIX = ROOT / "tests" / "fixtures" / "inventory_go_dotnet"
+
+_HELPER_DIR = ROOT / "helper_scripts"
+if str(_HELPER_DIR) not in sys.path:
+    sys.path.insert(0, str(_HELPER_DIR))
+
+import eol_inventory.parsers.dotnet as dotnet_parser
+import eol_inventory.parsers.go as go_parser
+
+
+def _parse_go(*parts):
+    path = FIX.joinpath(*parts)
+    return go_parser.parse_go_mod_records(path, "/".join(parts))
+
+
+def _parse_csproj(*parts):
+    path = FIX.joinpath(*parts)
+    return dotnet_parser.parse_csproj_records(path, "/".join(parts))
+
+
+def _records_named(records, name):
+    return [r for r in records if r["name"] == name]
+
+
+def _one(records, name):
+    hits = _records_named(records, name)
+    assert len(hits) == 1, f"expected exactly one {name!r} record, got {hits}"
+    return hits[0]
+
+
+def _requires(records):
+    return [r for r in records
+            if r["kind"] == "dependency"
+            and any(loc.get("locator", "").startswith("require:")
+                    for loc in r["found_in"])]
+
+
+def _has_warning(warnings, category, substring):
+    return any(w["category"] == category and substring in w["message"]
+               for w in warnings)
+
+
+def _locators(record):
+    return [loc.get("locator") for loc in record["found_in"]]
+
+
+# ---------------------------------------------------------------------------
+# Go: helpers
+# ---------------------------------------------------------------------------
+
+def test_go_strip_v():
+    assert go_parser._strip_v("v1.2.3") == "1.2.3"
+    assert go_parser._strip_v("V2.0.0+incompatible") == "2.0.0+incompatible"
+    assert go_parser._strip_v("1.2.3") == "1.2.3"
+    assert go_parser._strip_v(None) is None
+
+
+def test_go_is_local_path():
+    assert go_parser._is_local_path("./dep")
+    assert go_parser._is_local_path("../dep")
+    assert go_parser._is_local_path("/abs/dep")
+    assert go_parser._is_local_path("C:\\repos\\dep")
+    assert not go_parser._is_local_path("github.com/org/dep")
+
+
+# ---------------------------------------------------------------------------
+# Go: go.mod fixture
+# ---------------------------------------------------------------------------
+
+def test_go_module_go_and_toolchain_directives():
+    records, warnings = _parse_go("go", "basic", "go.mod")
+    assert all(w["category"] in ("go_replace", "go_local_replace")
+               for w in warnings)  # replaces warn; directives don't
+
+    module = _one(records, "example.com/app")
+    assert module["kind"] == "module"
+    assert module["ecosystem"] == "go"
+    assert module["version"] is None
+    assert module["found_in"][0]["line"] == 1
+    assert module["found_in"][0]["locator"] == "module"
+
+    go_versions = sorted(
+        r["version"] for r in _records_named(records, "go"))
+    assert go_versions == ["1.22", "1.22.5"]
+    by_locator = {r["found_in"][0]["locator"]: r["version"]
+                  for r in _records_named(records, "go")}
+    assert by_locator["go"] == "1.22"
+    assert by_locator["toolchain"] == "1.22.5"
+
+
+def test_go_direct_requires_and_indirect_count():
+    records, warnings = _parse_go("go", "basic", "go.mod")
+    assert not _has_warning(warnings, "parse_error", "")
+
+    requires = _requires(records)
+    direct = [r for r in requires if r["direct"]]
+    indirect = [r for r in requires if not r["direct"]]
+    assert len(requires) == 4          # 2 block + 1 single + 1 indirect
+    assert len(direct) == 3
+    assert len(indirect) == 1          # the indirect count is derivable
+
+    errors = _one(requires, "github.com/pkg/errors")
+    assert errors["version"] == "0.9.1"   # v-prefix stripped
+    assert errors["found_in"][0]["line"] == 8
+    assert errors["found_in"][0]["locator"] == "require:github.com/pkg/errors"
+
+    cobra = _one(requires, "github.com/spf13/cobra")
+    assert cobra["direct"] is True
+    assert cobra["found_in"][0]["line"] == 13
+
+    xmod = _one(requires, "golang.org/x/mod")
+    assert xmod["direct"] is False
+    assert xmod["version"] == "0.17.0"
+
+
+def test_go_module_replace_warning_provenance_and_target():
+    records, warnings = _parse_go("go", "basic", "go.mod")
+
+    target = _one(records, "github.com/new/dep")
+    assert target["version"] == "1.2.3"
+    assert target["direct"] is False
+    assert target["found_in"][0]["line"] == 16
+    assert target["found_in"][0]["locator"] == "replace:github.com/old/dep"
+
+    # The replaced module's require record carries replace provenance too.
+    old = _one(records, "github.com/old/dep")
+    assert old["version"] == "0.1.0"
+    assert _locators(old) == ["require:github.com/old/dep",
+                              "replace=>github.com/new/dep"]
+
+    assert _has_warning(warnings, "go_replace", "github.com/old/dep")
+
+
+def test_go_same_module_version_pin_replace():
+    records, warnings = _parse_go("go", "basic", "go.mod")
+
+    pinned = _one(records, "github.com/pinned/dep")
+    assert pinned["version"] == "1.0.4"   # the replaced-to version wins
+    assert _locators(pinned) == ["replace:github.com/pinned/dep"]
+    assert _has_warning(warnings, "go_replace", "github.com/pinned/dep")
+
+
+def test_go_local_replace_never_public_dependency():
+    records, warnings = _parse_go("go", "basic", "go.mod")
+
+    assert not _records_named(records, "./internal/local/dep")
+    assert not [r for r in records if r["name"].startswith(".")]
+    assert not _records_named(records, "github.com/local/dep")
+    assert _has_warning(
+        warnings, "go_local_replace", "./internal/local/dep")
+
+
+def test_go_malformed_lines_warn_and_parsing_continues():
+    records, warnings = _parse_go("go", "broken", "go.mod")
+
+    ok = _one(_requires(records), "github.com/ok/dep")
+    assert ok["version"] == "1.0.0"
+    assert not _records_named(records, "justonepath")
+    assert not _records_named(records, "github.com/one/two")
+    assert not _records_named(records, "v1.5.0")  # retract line ignored
+    parse_errors = [w for w in warnings if w["category"] == "parse_error"]
+    assert len(parse_errors) == 2
+    assert any("line 5" in w["message"] for w in parse_errors)
+    assert any("line 8" in w["message"] for w in parse_errors)
+
+
+def test_go_parsing_is_deterministic():
+    first = _parse_go("go", "basic", "go.mod")
+    second = _parse_go("go", "basic", "go.mod")
+    assert first == second
+
+
+# ---------------------------------------------------------------------------
+# .NET: helpers
+# ---------------------------------------------------------------------------
+
+def test_dotnet_tfm_version():
+    f = dotnet_parser._tfm_version
+    assert f("net8.0") == "8.0"
+    assert f("net8.0-windows") == "8.0"
+    assert f("net48") == "4.8"
+    assert f("netcoreapp3.1") == "3.1"
+    assert f("netstandard2.1") == "2.1"
+    assert f("net") is None
+
+
+def test_dotnet_requested_lower_bound():
+    assert dotnet_parser._requested_lower_bound("[2.0.1, )") == "2.0.1"
+    assert dotnet_parser._requested_lower_bound("[1.0.0]") == "1.0.0"
+    assert dotnet_parser._requested_lower_bound("") is None
+
+
+# ---------------------------------------------------------------------------
+# .NET: project fixture (csproj + props + lock + global.json)
+# ---------------------------------------------------------------------------
+
+def test_dotnet_packagereference_forms():
+    records, _ = _parse_csproj("dotnet", "project", "MyApp.csproj")
+
+    serilog = _records_named(records, "Serilog")
+    assert len(serilog) == 2  # Include and Update forms both recorded
+    assert all(r["version"] == "4.0.0" and r["direct"] for r in serilog)
+
+    case_pkg = _one(records, "CasePkg")
+    assert case_pkg["version"] == "2.1.0"  # lowercase version attribute
+
+    child = _one(records, "NowherePkg")  # <Version> child element form
+    assert child["version"] is None
+    assert child["version_spec"] == "$(NoSuchProp)"
+
+
+def test_dotnet_property_resolution_and_unresolved_warning():
+    records, warnings = _parse_csproj("dotnet", "project", "MyApp.csproj")
+
+    resolved = _one(records, "Newtonsoft.Json")
+    assert resolved["version"] == "13.0.3"
+    assert resolved["version_spec"] is None
+
+    unresolved = _one(records, "serilog.sinks.console")
+    assert unresolved["version"] is None
+    assert unresolved["version_spec"] == "$(MissingProp)"
+    assert _has_warning(
+        warnings, "unresolved_version", "serilog.sinks.console")
+    assert _has_warning(warnings, "unresolved_version", "NowherePkg")
+
+
+def test_dotnet_central_versions_case_insensitive_first_wins():
+    records, warnings = _parse_csproj("dotnet", "project", "MyApp.csproj")
+
+    central = _one(records, "CentralPkg")
+    assert central["version"] == "1.5.0"   # 9.9.9 casing variant loses
+    assert len(central["found_in"]) == 2
+    assert central["found_in"][1]["path"] == \
+        "dotnet/project/Directory.Packages.props"
+    assert central["found_in"][1]["locator"] == "PackageVersion:centralpkg"
+    assert not _has_warning(warnings, "unresolved_version", "CentralPkg")
+
+
+def test_dotnet_lock_file_fallback():
+    records, warnings = _parse_csproj("dotnet", "project", "MyApp.csproj")
+
+    lock_only = _one(records, "LockOnlyPkg")
+    assert lock_only["version"] == "2.0.1"
+    assert lock_only["found_in"][1]["path"] == \
+        "dotnet/project/packages.lock.json"
+    assert lock_only["found_in"][1]["locator"] == "lock:LockOnlyPkg"
+
+    # Lock-only transitive packages are a fallback source, not inventory.
+    assert not _records_named(records, "TransitivePkg")
+    assert not _has_warning(warnings, "unresolved_version", "LockOnlyPkg")
+
+
+def test_dotnet_target_frameworks_as_runtime_records():
+    records, _ = _parse_csproj("dotnet", "project", "MyApp.csproj")
+    runtimes = [r for r in records if r["kind"] == "runtime"
+                and r["name"] == "dotnet"]
+    assert len(runtimes) == 1
+    assert runtimes[0]["version"] == "8.0"
+    assert runtimes[0]["found_in"][0]["locator"] == "TargetFramework"
+
+    fs_records, _ = _parse_csproj("dotnet", "project", "Lib.fsproj")
+    fs_runtimes = sorted(
+        r["version"] for r in fs_records
+        if r["kind"] == "runtime" and r["name"] == "dotnet")
+    assert fs_runtimes == ["6.0", "8.0"]
+    assert _one(fs_records, "FSharp.Data")["version"] == "6.4.0"
+
+    vb_records, _ = _parse_csproj("dotnet", "project", "Lib.vbproj")
+    assert _one(vb_records, "Humanizer")["version"] == "2.14.1"
+
+
+def test_dotnet_props_only_parse_first_wins_on_casing():
+    path = FIX / "dotnet" / "project" / "Directory.Packages.props"
+    records, warnings = dotnet_parser.parse_directory_packages_props(
+        path, "dotnet/project/Directory.Packages.props")
+
+    assert len(records) == 1
+    assert records[0]["name"] == "centralpkg"
+    assert records[0]["version"] == "1.5.0"
+    assert records[0]["found_in"][0]["locator"] == "PackageVersion:centralpkg"
+    assert warnings == []
+
+
+def test_dotnet_global_json_sdk():
+    path = FIX / "dotnet" / "project" / "global.json"
+    records, warnings = dotnet_parser.parse_global_json_records(
+        path, "dotnet/project/global.json")
+
+    assert warnings == []
+    sdk = _one(records, "dotnet-sdk")
+    assert sdk["version"] == "8.0.100"
+    assert sdk["kind"] == "runtime"
+    assert sdk["found_in"][0]["locator"] == "sdk.version"
+
+
+def test_dotnet_project_without_siblings_warns():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        csproj = Path(tmpdir) / "Lone.csproj"
+        csproj.write_text(
+            "<Project><ItemGroup>"
+            "<PackageReference Include=\"Lone\" />"
+            "</ItemGroup></Project>", encoding="utf-8")
+        records, warnings = dotnet_parser.parse_csproj_records(
+            csproj, "Lone.csproj")
+
+    lone = _one(records, "Lone")
+    assert lone["version"] is None
+    assert lone["version_spec"] is None
+    assert _has_warning(
+        warnings, "unresolved_version",
+        "not in Directory.Packages.props or packages.lock.json")
+
+
+def test_dotnet_global_json_malformed_and_empty():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bad = Path(tmpdir) / "global.json"
+        bad.write_text("{not json", encoding="utf-8")
+        records, warnings = dotnet_parser.parse_global_json_records(
+            bad, "global.json")
+        assert records == []
+        assert warnings and warnings[0]["category"] == "parse_error"
+
+        empty = Path(tmpdir) / "empty.json"
+        empty.write_text("{}", encoding="utf-8")
+        records, warnings = dotnet_parser.parse_global_json_records(
+            empty, "empty.json")
+        assert records == [] and warnings == []
+
+
+def test_dotnet_parsing_is_deterministic():
+    first = _parse_csproj("dotnet", "project", "MyApp.csproj")
+    second = _parse_csproj("dotnet", "project", "MyApp.csproj")
+    assert first == second
+
+
+# ---------------------------------------------------------------------------
+
+TESTS = [
+    test_go_strip_v,
+    test_go_is_local_path,
+    test_go_module_go_and_toolchain_directives,
+    test_go_direct_requires_and_indirect_count,
+    test_go_module_replace_warning_provenance_and_target,
+    test_go_same_module_version_pin_replace,
+    test_go_local_replace_never_public_dependency,
+    test_go_malformed_lines_warn_and_parsing_continues,
+    test_go_parsing_is_deterministic,
+    test_dotnet_tfm_version,
+    test_dotnet_requested_lower_bound,
+    test_dotnet_packagereference_forms,
+    test_dotnet_property_resolution_and_unresolved_warning,
+    test_dotnet_central_versions_case_insensitive_first_wins,
+    test_dotnet_lock_file_fallback,
+    test_dotnet_target_frameworks_as_runtime_records,
+    test_dotnet_props_only_parse_first_wins_on_casing,
+    test_dotnet_global_json_sdk,
+    test_dotnet_project_without_siblings_warns,
+    test_dotnet_global_json_malformed_and_empty,
+    test_dotnet_parsing_is_deterministic,
+]
+
+
+def main():
+    failed = 0
+    for t in TESTS:
+        try:
+            t()
+            print(f"ok  {t.__name__}")
+        except AssertionError as exc:
+            failed += 1
+            print(f"FAIL {t.__name__}: {exc}")
+    if failed:
+        print(f"{failed} test(s) failed")
+        return 1
+    print("OK test_inventory_go_dotnet")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

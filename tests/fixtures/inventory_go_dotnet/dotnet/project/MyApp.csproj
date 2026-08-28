@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <NewtonsoftVersion>13.0.3</NewtonsoftVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="4.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="$(NewtonsoftVersion)" />
+    <PackageReference Include="serilog.sinks.console" Version="$(MissingProp)" />
+    <PackageReference Update="Serilog" Version="4.0.0" />
+    <PackageReference Include="CasePkg" version="2.1.0" />
+    <PackageReference Include="CentralPkg" />
+    <PackageReference Include="LockOnlyPkg" />
+    <PackageReference Include="NowherePkg">
+      <Version>$(NoSuchProp)</Version>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
