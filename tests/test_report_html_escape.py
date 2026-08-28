@@ -8,7 +8,7 @@ from datetime import date
 
 from eoltracker.parsers import check_product
 from eoltracker.core import logger
-from eoltracker.report import format_report_html
+from eoltracker.report import format_report_html, format_report_text, sanitize_text
 
 TODAY = date(2026, 8, 27)
 TH = [30, 60, 90]
@@ -210,6 +210,8 @@ BAD_URLS = [
     17,
     {"href": "https://evil.example"},
     "https://example.com/bad\ud800path",                  # invalid Unicode
+    "https://example.com:not-a-port/path",               # malformed port
+    "https://example.com:99999/path",                    # out-of-range port
 ]
 for bad in BAD_URLS:
     r = check_product({"source": "manual", "label": "Nolink",
@@ -263,5 +265,12 @@ finally:
 assert "<a " not in surrogate_url_out
 assert surrogate_url not in stream.getvalue()
 assert "do-not-log" not in stream.getvalue()
+
+plain_surrogate, _ = format_report_text([
+    poisioned(label=surrogate, message=surrogate)
+], TH, TODAY)
+assert "\ud800" not in plain_surrogate
+assert b"bad\xef\xbf\xbdtext" in plain_surrogate.encode("utf-8")
+assert sanitize_text("project\ud800name") == "project\ufffdname"
 
 print("OK test_report_html_escape")
