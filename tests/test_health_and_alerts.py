@@ -355,7 +355,7 @@ def _run_handler(config, product_results):
     cfg["products"] = [{"source": "fake", "_idx": i} for i in range(len(product_results))]
     with mock.patch.object(handler_mod, "load_config_from_s3", return_value=cfg), \
          mock.patch.object(handler_mod, "check_product",
-                           side_effect=lambda entry, today: product_results[entry["_idx"]]), \
+                           side_effect=lambda entry, today, index=None: product_results[entry["_idx"]]), \
          mock.patch.object(handler_mod, "send_notifications", side_effect=fake_send):
         response = handler_mod.lambda_handler({}, None)
     return response, captured

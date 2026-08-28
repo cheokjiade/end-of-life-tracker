@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import eoltracker.notify as notify
 
 
+ORIGINAL_BOTO3 = sys.modules.get("boto3")
+
+
 def dump(obj):
     return json.dumps(obj)
 
@@ -182,5 +185,10 @@ conflict_log = captured.getvalue()
 assert "overrides the invocation routing value" in conflict_log, conflict_log
 assert "event-topic" not in conflict_log and "@" not in conflict_log, conflict_log
 print("OK routing conflict warnings are destination-free")
+
+if ORIGINAL_BOTO3 is None:
+    sys.modules.pop("boto3", None)
+else:
+    sys.modules["boto3"] = ORIGINAL_BOTO3
 
 print("OK test_delivery_outcomes")

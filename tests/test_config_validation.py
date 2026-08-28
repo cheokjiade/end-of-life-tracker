@@ -46,9 +46,15 @@ assert by_path(errors(res), "products"), res
 res = validate_config({"products": []})
 assert by_path(errors(res), "products"), res
 
-# dividers are skipped exactly like check_product does
+# Dividers are skipped exactly like check_product does, but a config made only
+# of dividers is unusable and fails at the products container path.
 res = validate_config({"products": [{"_section": "Spring Boot", "label": "d"}]})
-assert not res, res
+assert by_path(errors(res), "products"), res
+res = validate_config({"products": [
+    {"_section": "Spring Boot", "label": "d"},
+    {"source": "manual", "label": "Tracked row"},
+]})
+assert not errors(res), res
 
 # --- default provider (endoflife_date) ------------------------------------
 res = validate_config({"products": [{"product": "python"}]})
@@ -156,11 +162,12 @@ res = validate_config({"products": one, "notifications": [
     {"type": "html_file", "path": 42},
     {"type": "sns", "topic_arn": 7},
     {"type": "ses", "to_emails": "team@example.com"},  # string, not list
+    {"type": "console", "required": "yes"},
 ]})
 expected_paths = {
     "notifications[0]", "notifications[1].type",
     "notifications[2].path", "notifications[3].topic_arn",
-    "notifications[4].to_emails",
+    "notifications[4].to_emails", "notifications[5].required",
 }
 got_paths = {r["path"] for r in errors(res)}
 assert got_paths == expected_paths, res

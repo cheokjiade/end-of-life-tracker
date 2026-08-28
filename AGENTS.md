@@ -67,7 +67,11 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
 - **Dispatch:** `check_product(entry, today)` reads `entry["source"]`, looks it
   up in the `PROVIDERS` registry (defaults to `endoflife_date`), and calls it.
   Entries carrying a `_section` marker return `None` (they are config-file
-  dividers, not products).
+  dividers, not products). `check_product` is also the per-entry isolation
+  boundary: non-dict entries and entries failing the `eoltracker.validation`
+  field checks return an error result *before* the provider runs, and an
+  unexpected provider exception is converted into the normalized error shape
+  (details logged) so one broken entry cannot abort the run.
 - **Uniform result shape:** every provider returns the same dict keys (`label`,
   `product`, `version`, `status`, `message`, `eol_date`, `days_remaining`,
   `latest_patch`, `source`, ...) so both formatters (`format_report_text`,
@@ -189,8 +193,13 @@ canonical message format and detailed workflow.
 - **Stdlib only** across the `eoltracker/` package (`boto3` is imported lazily
   inside the S3/SNS/SES paths in `eoltracker/notify.py` and
   `eoltracker/handler.py`). No third-party dependencies.
-- **Keep configs ASCII.** `load_config_from_file` opens with no explicit
-  encoding, so on cp1252 (Windows) systems non-ASCII characters break the read.
+- **Keep configs ASCII.** `load_config_from_file` reads bytes and requires
+  ASCII-only JSON (cp1252 (Windows) locale-safety), and **every load — local
+  or S3 — enforces the `eoltracker.validation` schema**: invalid top-level or
+  runtime shapes (`products` container, `alert_thresholds_days`,
+  `notify_when`, notification channels) are rejected before any provider
+  call. Malformed individual product entries do not abort the run; they
+  become `error` rows while valid products continue.
   `json.dump(..., ensure_ascii=True)` (the default) keeps generated configs
   safe.
 - **`eol_config.*.json` and `reports/` are gitignored** (except
