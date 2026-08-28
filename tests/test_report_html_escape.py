@@ -79,14 +79,14 @@ for value in [
 # muted sub-line spans, all five bucket backgrounds (layout preserved).
 assert "&rarr;" in out
 assert "&#9432;" in out
-for bg in ("#fce4e4", "#fff8e1", "#e8f5e9", "#f5f5f5", "#eceff1"):
+for bg in ("#fce4e4", "#fff8e1", "#e8f5e9", "#ede7f6", "#eceff1"):
     assert out.count(f'style="background-color:{bg}"') >= 1, f"{bg} row missing"
 
 # One info marker per non-error row carrying a policy_note (4 here).
 assert out.count("&#9432;") == 4, out.count("&#9432;")
 
 # Error rows keep the text-report behaviour: message only, no notes.
-err_row = out.split('background-color:#f5f5f5"', 1)[1].split("</tr>", 1)[0]
+err_row = out.split('background-color:#ede7f6"', 1)[1].split("</tr>", 1)[0]
 assert "Policy:" not in err_row and "&#9432;" not in err_row
 
 # Status badges remain intact numerics even with poisoned neighbours.
@@ -95,7 +95,7 @@ assert ">END OF LIFE</span>" in out
 assert ">OK</span>" not in out  # a numeric days-remaining badge is rendered instead
 assert "400d remaining</span>" in out
 assert ">UNTRACKED</span>" in out
-assert ">ERROR</span>" in out
+assert ">CHECK FAILED</span>" in out
 
 # ---------------------------------------------------------------------------
 # 2. Layout integrity: structural tag balance and column skeleton unchanged.
@@ -137,8 +137,9 @@ assert "(latest)" in lat_out and "&rarr;" not in lat_out
 # ---------------------------------------------------------------------------
 hdr_out, alerts_empty = format_report_html(results=[], thresholds=TH,
                                            today="2026-<b>08</b>-27")
-assert alerts_empty is False
-assert "All products are within support" in hdr_out          # static banner
+assert alerts_empty is True
+assert "TRACKER HEALTH: no products checked" in hdr_out
+assert "All products are within support" not in hdr_out
 assert "2026-&lt;b&gt;08&lt;/b&gt;-27" in hdr_out
 assert "&lt;b&gt;" in hdr_out and "<b>" not in hdr_out
 flattened = hdr_out.replace("\n", "").replace(" ", "")

@@ -5,7 +5,9 @@ Netty, Quartz, Logback, etc.). For these we report what we *can* know
 from the registry: when the in-use version was released, what the latest
 is, and when that was released.
 
-Status is always 'ok' — no EOL is being claimed, this is informational.
+Status is 'ok' only when the in-use version could be positively located on
+Central (or it is the resolved 'latest'); an in-use version Central has no
+record of is data-quality 'unknown', not healthy.
 """
 
 import json
@@ -100,6 +102,11 @@ def _provider_maven_central(entry, today):
     in_use_date = in_use["released"] if in_use else None
     on_latest = latest_v == version
 
+    # 'latest' is resolved independently of the in-use gav query, so the
+    # in-use version may be absent from Central (private build, typo, or an
+    # indexing gap). That is unverifiable data quality -> unknown, not OK.
+    status = "ok" if (in_use is not None or on_latest) else "unknown"
+
     if on_latest:
         message = f"On latest Maven Central release ({latest_v})"
     elif in_use_date and latest_date:
@@ -108,10 +115,16 @@ def _provider_maven_central(entry, today):
             f"In use: {version} ({in_use_date}); latest: {latest_v} "
             f"({latest_date}, {days_newer} days newer)"
         )
+    elif in_use is None:
+        message = (
+            f"Version {version} could not be verified on Maven Central "
+            f"(private build, typo, or indexing gap); "
+            f"latest published is {latest_v} ({latest_date})"
+        )
     elif in_use_date is None:
         message = (
-            f"Version {version} not on Maven Central (private build?); "
-            f"latest published is {latest_v} ({latest_date})"
+            f"In use: {version} (release date unknown); "
+            f"latest: {latest_v} ({latest_date})"
         )
     else:
         message = f"In use: {version}; latest: {latest_v}"
@@ -121,7 +134,7 @@ def _provider_maven_central(entry, today):
         "product": f"{group}:{artifact}",
         "version": version,
         "lts": False,
-        "status": "ok",
+        "status": status,
         "message": message,
         "in_use_release_date": str(in_use_date) if in_use_date else None,
         "latest_patch": latest_v,

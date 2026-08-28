@@ -108,29 +108,99 @@ def _source_html(r):
 
 
 # ---------------------------------------------------------------------------
-# Categorisation (shared by both formatters)
+# Categorisation (shared by both formatters and the handler)
+#
+# Two independent signal dimensions:
+#   * lifecycle risk  - eol / approaching (product lifecycle facts);
+#   * tracker health  - error / unknown / invalid status / empty inventory
+#     (the tracker could NOT verify the inventory, so the absence of a warning
+#     must never be mistaken for health).
+# 'untracked' is a deliberate config choice ("no automated source") and stays
+# a distinct informational bucket: neither an alert nor a health failure.
 # ---------------------------------------------------------------------------
 
 def _categorise(results, thresholds):
-    """Split results into eol / approaching / ok / error / untracked buckets."""
+    """Split results into lifecycle and tracker-health buckets.
+
+    Rules:
+      - ``eol``                            -> eol bucket (lifecycle alert);
+      - ``approaching`` with ``days_remaining <= max(thresholds)`` OR with NO
+        published date at all              -> approaching bucket (alert); a
+        *dated* far-future approaching falls back to ``ok`` (informational),
+        because an undated risk cannot be thresholded away;
+      - ``error`` (check failed) and ``unknown`` (present but unverifiable)
+                                             -> their own health buckets;
+      - ``untracked``                      -> its own informational bucket.
+      - any missing/unrecognised status    -> error bucket (provider contract
+        violation; fail closed rather than presenting it as healthy).
+
+    A run with no product results is also a tracker-health failure. This
+    covers both an empty inventory and an inventory containing only section
+    dividers; neither is evidence that products are within support.
+
+    Returns a dict: keys eol / approaching / ok / error / unknown / untracked
+    (lists) plus ``max_threshold``.
+    """
     max_threshold = max(thresholds) if thresholds else 90
-    eol, approaching, ok, errors, untracked = [], [], [], [], []
+    eol, approaching, ok, errors, unknown, untracked = [], [], [], [], [], []
 
     for r in results:
-        status = r["status"]
+        status = r.get("status")
         if status == "error":
             errors.append(r)
+        elif status == "unknown":
+            unknown.append(r)
         elif status == "untracked":
             untracked.append(r)
         elif status == "eol":
             eol.append(r)
-        elif status == "approaching" and r["days_remaining"] is not None and r["days_remaining"] <= max_threshold:
-            approaching.append(r)
-        else:
+        elif status == "approaching":
+            if r["days_remaining"] is None or r["days_remaining"] <= max_threshold:
+                approaching.append(r)
+            else:
+                ok.append(r)
+        elif status == "ok":
             ok.append(r)
+        else:
+            # Do not mutate a provider-owned result: formatters should receive
+            # a clear diagnostic while callers retaining the original object
+            # see it unchanged.
+            invalid = dict(r)
+            invalid["message"] = f"Unrecognised provider status: {status!r}"
+            errors.append(invalid)
 
-    approaching.sort(key=lambda x: x["days_remaining"])
-    return eol, approaching, ok, errors, untracked, max_threshold
+    # Dated items soonest-first; undated (None days) stay in the list too,
+    # after the dated ones.
+    approaching.sort(key=lambda x: (x["days_remaining"] is None, x["days_remaining"] or 0))
+    return {
+        "eol": eol,
+        "approaching": approaching,
+        "ok": ok,
+        "error": errors,
+        "unknown": unknown,
+        "untracked": untracked,
+        "max_threshold": max_threshold,
+    }
+
+
+def analyse_results(results, thresholds):
+    """Categorise results and derive the shared alert/health flags.
+
+    - ``has_lifecycle_alerts``: at least one eol/approaching product
+      (undated approaching counts — see :func:`_categorise`);
+    - ``has_health_failures``: at least one error/unknown/invalid-status result,
+      or no product results at all, i.e. the tracker could not verify the
+      inventory.
+
+    Deliberately-untracked products affect neither flag.
+    """
+    cats = _categorise(results, thresholds)
+    cats["has_lifecycle_alerts"] = bool(cats["eol"] or cats["approaching"])
+    cats["empty_inventory"] = not results
+    cats["has_health_failures"] = bool(
+        cats["error"] or cats["unknown"] or cats["empty_inventory"]
+    )
+    return cats
 
 
 # ---------------------------------------------------------------------------
@@ -173,48 +243,80 @@ def _append_notes(lines, r):
 def format_report_text(results, thresholds, today):
     """Format results into a readable plain-text report.
 
-    Returns (report_text, has_alerts).
+    Returns (report_text, has_alerts) where *has_alerts* is True when there
+    are lifecycle alerts (eol/approaching — including undated approaching)
+    OR tracker-health failures (including empty inventories), so
+    ``alerts_only`` delivery can never silently suppress an unverifiable run.
     """
-    eol_items, approaching_items, ok_items, error_items, untracked_items, max_t = _categorise(results, thresholds)
+    a = analyse_results(results, thresholds)
 
     lines = [
         f"End-of-Life Status Report  -  {today}",
         "=" * 52,
     ]
 
-    has_alerts = bool(eol_items or approaching_items)
+    has_alerts = a["has_lifecycle_alerts"] or a["has_health_failures"]
 
-    if eol_items:
+    if a["eol"]:
         lines += ["", "!! ALREADY END OF LIFE", "-" * 42]
-        for r in eol_items:
+        for r in a["eol"]:
             lines.append(f"  * {r['label']}  [{_source_label(r)}]")
             lines.append(f"    {r['message']}")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
-    if approaching_items:
-        lines += ["", f">> APPROACHING END OF LIFE (within {max_t} days)", "-" * 42]
-        for r in approaching_items:
-            lines.append(f"  * {r['label']}  [{_source_label(r)}]")
+    if a["approaching"]:
+        title = f">> APPROACHING END OF LIFE (within {a['max_threshold']} days)"
+        if any(r["days_remaining"] is None for r in a["approaching"]):
+            title += " - includes at-risk entries with no published date"
+        lines += ["", title, "-" * 42]
+        for r in a["approaching"]:
+            if r["days_remaining"] is None:
+                lines.append(f"  * {r['label']}  [at risk, no date]  [{_source_label(r)}]")
+            else:
+                lines.append(f"  * {r['label']}  [{_source_label(r)}]")
             lines.append(f"    {r['message']}")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
-    if ok_items:
+    if a["ok"]:
         lines += ["", "-- No Immediate Concerns", "-" * 42]
-        for r in ok_items:
+        for r in a["ok"]:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
-    if error_items:
-        lines += ["", "?? Errors", "-" * 42]
-        for r in error_items:
+    # Tracker-health failures: the tracker could not verify these products.
+    # Rendered loudly; never folded into the healthy section above.
+    if a["error"]:
+        lines += [
+            "",
+            f"!! TRACKER HEALTH - CHECK ERRORS ({len(a['error'])})",
+            "-" * 42,
+        ]
+        for r in a["error"]:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
 
-    if untracked_items:
+    if a["unknown"]:
+        lines += [
+            "",
+            f"!! TRACKER HEALTH - UNKNOWN STATUS ({len(a['unknown'])})",
+            "-" * 42,
+        ]
+        for r in a["unknown"]:
+            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+
+    if a["empty_inventory"]:
+        lines += [
+            "",
+            "!! TRACKER HEALTH - EMPTY INVENTORY",
+            "-" * 42,
+            "  * No product checks were produced; support health is unknown.",
+        ]
+
+    if a["untracked"]:
         lines += ["", "?? UNTRACKED (no EOL source)", "-" * 42]
-        for r in untracked_items:
+        for r in a["untracked"]:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
             _append_notes(lines, r)
             _append_version_info(lines, r)
@@ -237,9 +339,16 @@ _STATUS_COLOURS = {
     "eol":         {"bg": "#fce4e4", "badge_bg": "#d32f2f", "badge_text": "#fff"},
     "approaching": {"bg": "#fff8e1", "badge_bg": "#f57c00", "badge_text": "#fff"},
     "ok":          {"bg": "#e8f5e9", "badge_bg": "#388e3c", "badge_text": "#fff"},
-    "error":       {"bg": "#f5f5f5", "badge_bg": "#757575", "badge_text": "#fff"},
+    # Tracker-health states use the purple family so an unverifiable row can
+    # never be mistaken for a healthy (green) or lifecycle-risk one.
+    "error":       {"bg": "#ede7f6", "badge_bg": "#6a1b9a", "badge_text": "#fff"},
+    "unknown":     {"bg": "#ede7f6", "badge_bg": "#8e24aa", "badge_text": "#fff"},
     "untracked":   {"bg": "#eceff1", "badge_bg": "#607d8b", "badge_text": "#fff"},
 }
+
+# Banner colour for tracker-health degradation (distinct from the red/orange
+# lifecycle banners and from green all-clear).
+_HEALTH_BANNER_BG = "#6a1b9a"
 
 
 def _badge(status_key, label):
@@ -265,11 +374,14 @@ def _cycle_cell(r):
 
 def _status_label(r, bucket):
     """Render a coloured badge. *bucket* is the category the item was placed in
-    (eol / approaching / ok / error), which may differ from r['status'] when a
-    product is 'approaching' but beyond the configured threshold."""
+    (eol / approaching / ok / error / unknown), which may differ from
+    r['status'] when a product is 'approaching' but beyond the configured
+    threshold."""
     if bucket == "eol":
         return _badge("eol", "END OF LIFE")
     if bucket == "approaching":
+        if r.get("days_remaining") is None:
+            return _badge("approaching", "AT RISK (no date)")
         return _badge("approaching", f'{r["days_remaining"]}d remaining')
     if bucket == "ok":
         if r.get("days_remaining") is not None:
@@ -277,7 +389,9 @@ def _status_label(r, bucket):
         return _badge("ok", "OK")
     if bucket == "untracked":
         return _badge("untracked", "UNTRACKED")
-    return _badge("error", "ERROR")
+    if bucket == "unknown":
+        return _badge("unknown", "UNVERIFIED")
+    return _badge("error", "CHECK FAILED")
 
 
 def _details_html(r):
@@ -336,37 +450,63 @@ def _html_table_rows(items, status_key):
 def format_report_html(results, thresholds, today):
     """Format results into an inline-styled HTML report.
 
-    Returns (html_string, has_alerts).
-    """
-    eol_items, approaching_items, ok_items, error_items, untracked_items, max_t = _categorise(results, thresholds)
-    has_alerts = bool(eol_items or approaching_items)
+    Returns (html_string, has_alerts) where *has_alerts* is True when there
+    are lifecycle alerts (eol/approaching — including undated approaching)
+    OR tracker-health failures (including empty inventories).
 
-    # Summary banner
-    if eol_items and approaching_items:
-        banner_text = f"{len(eol_items)} EOL + {len(approaching_items)} approaching"
-        banner_bg = "#d32f2f"
-    elif eol_items:
-        banner_text = f"{len(eol_items)} product(s) past end of life"
-        banner_bg = "#d32f2f"
-    elif approaching_items:
-        banner_text = f"{len(approaching_items)} product(s) approaching end of life"
-        banner_bg = "#f57c00"
-    else:
-        banner_text = "All products are within support"
-        banner_bg = "#388e3c"
+    Banners are independent and stacked: lifecycle risk renders red/orange,
+    tracker-health degradation always renders a purple banner, and the green
+    all-clear banner appears only when neither is present.
+    """
+    a = analyse_results(results, thresholds)
+    has_alerts = a["has_lifecycle_alerts"] or a["has_health_failures"]
+
+    # Summary banners (one row each; stacked when both dimensions fire).
+    banner_rows = ""
+    if a["has_lifecycle_alerts"]:
+        if a["eol"] and a["approaching"]:
+            life_text = f"{len(a['eol'])} EOL + {len(a['approaching'])} approaching"
+            life_bg = "#d32f2f"
+        elif a["eol"]:
+            life_text = f"{len(a['eol'])} product(s) past end of life"
+            life_bg = "#d32f2f"
+        else:
+            life_text = f"{len(a['approaching'])} product(s) approaching end of life"
+            life_bg = "#f57c00"
+        banner_rows += (
+            '<tr><td style="background-color:{bg};color:#ffffff;padding:12px 24px;'
+            'font-size:15px;font-weight:bold">{t}</td></tr>'
+        ).format(bg=life_bg, t=_esc(life_text))
+    if a["has_health_failures"]:
+        bits = []
+        if a["error"]:
+            bits.append(f"{len(a['error'])} check error(s)")
+        if a["unknown"]:
+            bits.append(f"{len(a['unknown'])} unknown status(es)")
+        if a["empty_inventory"]:
+            bits.append("no products checked")
+        health_text = (
+            "TRACKER HEALTH: " + ", ".join(bits)
+            + " - these products could NOT be verified this run"
+        )
+        banner_rows += (
+            '<tr><td style="background-color:{bg};color:#ffffff;padding:12px 24px;'
+            'font-size:15px;font-weight:bold">{t}</td></tr>'
+        ).format(bg=_HEALTH_BANNER_BG, t=_esc(health_text))
+    if not has_alerts:
+        all_clear = "All products are within support"
+        if a["untracked"]:
+            all_clear += f" ({len(a['untracked'])} untracked)"
+        banner_rows += (
+            '<tr><td style="background-color:#388e3c;color:#ffffff;padding:12px 24px;'
+            'font-size:15px;font-weight:bold">{t}</td></tr>'
+        ).format(t=_esc(all_clear))
 
     # Build table rows in status order
     all_rows = ""
-    if eol_items:
-        all_rows += _html_table_rows(eol_items, "eol")
-    if approaching_items:
-        all_rows += _html_table_rows(approaching_items, "approaching")
-    if ok_items:
-        all_rows += _html_table_rows(ok_items, "ok")
-    if error_items:
-        all_rows += _html_table_rows(error_items, "error")
-    if untracked_items:
-        all_rows += _html_table_rows(untracked_items, "untracked")
+    for bucket in ("eol", "approaching", "ok", "error", "unknown", "untracked"):
+        if a[bucket]:
+            all_rows += _html_table_rows(a[bucket], bucket)
 
     sources_used_html = ", ".join(_esc(s) for s in sorted({_source_label(r) for r in results}))
 
@@ -390,12 +530,8 @@ def format_report_html(results, thresholds, today):
       </td>
     </tr>
 
-    <!-- Banner -->
-    <tr>
-      <td style="background-color:{banner_bg};color:#ffffff;padding:12px 24px;font-size:15px;font-weight:bold">
-        {_esc(banner_text)}
-      </td>
-    </tr>
+    <!-- Banners -->
+    {banner_rows}
 
     <!-- Table -->
     <tr>
@@ -419,7 +555,7 @@ def format_report_html(results, thresholds, today):
     <tr>
       <td style="padding:16px 24px;font-size:12px;color:#888888;border-top:1px solid #e0e0e0">
         Sources: {sources_used_html}
-        &nbsp;|&nbsp; Alert threshold: {_esc(max_t)} days
+        &nbsp;|&nbsp; Alert threshold: {_esc(a['max_threshold'])} days
       </td>
     </tr>
 

@@ -108,7 +108,9 @@ def _provider_foo(entry, today):
             result["status"] = "eol"
             result["message"] = f"EOL {eol} ({abs(days)} days ago)" if days < 0 else f"EOL today ({eol})"
         else:
-            result["status"] = "approaching"      # _categorise demotes to 'ok' if beyond threshold
+            result["status"] = "approaching"
+            # _categorise demotes a *dated far-future* approaching to 'ok';
+            # an undated approaching (days_remaining None) always stays an alert
             result["message"] = f"EOL {eol} ({days} days remaining)"
     return result
 ```
@@ -159,8 +161,8 @@ to shift than a 1.6 MB rendered page.
 ## If you add a new status value
 
 `untracked` is the worked example (added for the `manual` provider). A new status needs
-(all in `eoltracker/report.py`): `_categorise` (new bucket + return tuple), **both**
-`format_report_text` and `format_report_html` (unpack line + a rendering block), and for
+(all in `eoltracker/report.py`): `_categorise` (new bucket in the returned dict), **both**
+`format_report_text` and `format_report_html` (a rendering block / banner decision), and for
 HTML also `_STATUS_COLOURS["<status>"]` and a branch in `_status_label`.
 
 ## Test it (network-free)
