@@ -18,7 +18,7 @@ from datetime import date
 
 from .core import logger
 from .parsers import check_product
-from .report import format_report_text, format_report_html
+from .report import format_report_text, format_report_html, sanitize_text
 from .notify import send_notifications
 
 
@@ -100,7 +100,8 @@ def lambda_handler(event, context):
     if should_notify:
         prefix = "EOL ALERT" if has_alerts else "EOL Report"
         proj_tag = f" [{project}]" if project else ""
-        subject = f"[{prefix}]{proj_tag} Software End-of-Life Status - {today}"
+        subject = sanitize_text(
+            f"[{prefix}]{proj_tag} Software End-of-Life Status - {today}")
         send_notifications(config, report_text, report_html, subject,
                            runtime_overrides=runtime_overrides)
     else:
