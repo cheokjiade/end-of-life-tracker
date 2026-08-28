@@ -13,18 +13,25 @@ handling") and ``eoltracker/notify.py`` for the outcome contract.
 
 Environment variables:
     CONFIG_BUCKET   — S3 bucket containing the config file
-    CONFIG_KEY      — S3 key for the config file (default: eol_config.json)
-    SNS_TOPIC_ARN   — SNS topic ARN for plain-text email notifications
+    CONFIG_KEY      — Optional default S3 key for manual invocations
+    SNS_TOPIC_ARN   — Optional default SNS topic for manual invocations
     SES_FROM_EMAIL  — SES sender for HTML email notifications (optional)
-    SES_TO_EMAILS   — Comma-separated SES recipients (optional)
+    SES_TO_EMAILS   — Optional default comma-separated SES recipients
 """
 
+import json
 import os
+import time
 from datetime import date
 
 from .core import logger
 from .parsers import check_product
-from .report import analyse_results, format_report_text, format_report_html
+from .report import (
+    analyse_results,
+    format_report_html,
+    format_report_text,
+    sanitize_text,
+)
 from .notify import (
     DeliveryFailureError,
     delivery_failed,
@@ -45,7 +52,7 @@ def build_subject(analysis, project, today):
     Lifecycle risk and tracker-health degradation get distinct tags so a
     recipient can tell them apart at a glance:
       - ``[EOL ALERT]``         - eol/approaching products;
-      - ``[TRACKER HEALTH]``    - error/unknown results (check failures);
+      - ``[TRACKER HEALTH]``    - unverifiable results or an empty inventory;
       - both may appear together as ``[EOL ALERT][TRACKER HEALTH]``.
     A run with neither is an informational ``[EOL Report]``.
     """
@@ -56,7 +63,35 @@ def build_subject(analysis, project, today):
         tags.append("TRACKER HEALTH")
     prefix = "[" + "][".join(tags) + "]" if tags else "[EOL Report]"
     proj_tag = f" [{project}]" if project else ""
-    return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
+    return sanitize_text(
+        f"{prefix}{proj_tag} Software End-of-Life Status - {today}")
+
+
+def _emit_delivery_metrics(outcomes):
+    """Emit a durable signal when any required channel is undelivered."""
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    undelivered = [
+        outcome for outcome in outcomes
+        if outcome.get("required") and not outcome.get("delivered")
+    ]
+    if not function_name or not undelivered:
+        return
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "EOLTracker",
+                "Dimensions": [["FunctionName"]],
+                "Metrics": [{
+                    "Name": "RequiredChannelsUndelivered",
+                    "Unit": "Count",
+                }],
+            }],
+        },
+        "FunctionName": function_name,
+        "RequiredChannelsUndelivered": len(undelivered),
+    }
+    print(json.dumps(payload, separators=(",", ":")))
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +117,13 @@ def load_config_from_s3(key=None):
     before any provider runs; malformed individual product entries are logged
     and later surface as error rows instead of aborting the run.
     """
+    key = key or os.environ.get("CONFIG_KEY")
+    if not key:
+        raise ValueError(
+            "no config_key was provided and CONFIG_KEY is not configured")
     import boto3
 
     bucket = os.environ["CONFIG_BUCKET"]
-    key = key or os.environ.get("CONFIG_KEY", "eol_config.a.json")
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     origin = f"s3://{bucket}/{key}"
@@ -130,7 +168,7 @@ def lambda_handler(event, context):
 
     With ``notify_when: "alerts_only"`` a notification is sent for lifecycle
     alerts (eol/approaching, including undated at-risk phases) and for
-    tracker-health failures (error/unknown results).
+    tracker-health failures (including an empty or section-only inventory).
     """
     today = date.today()
     event = event or {}
@@ -168,7 +206,7 @@ def lambda_handler(event, context):
     report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    # alerts_only must still fire on tracker-health failures (error/unknown):
+    # alerts_only must still fire on tracker-health failures:
     # an unverifiable run is never a reason to stay silent.
     should_notify = (
         notify_when == "always"
@@ -185,6 +223,7 @@ def lambda_handler(event, context):
         ) or []
         for line in summarize_outcomes(outcomes).splitlines():
             logger.info("Delivery %s", line)
+        _emit_delivery_metrics(outcomes)
         if delivery_failed(outcomes):
             # No required channel delivered. In Lambda mode this must be an
             # invocation failure so retries/DLQ/alarms engage (R-03); local
@@ -213,6 +252,10 @@ def lambda_handler(event, context):
         # True only when at least one configured channel actually delivered.
         "notified": any(o["delivered"] for o in outcomes),
         "notification_outcomes": outcomes,
+        "required_channels_undelivered": sum(
+            1 for o in outcomes
+            if o.get("required") and not o.get("delivered")
+        ),
     }
 
 

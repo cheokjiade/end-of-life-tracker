@@ -14,7 +14,7 @@ deployed ZIP — audit finding **S-01** in
 The artifact contains exactly:
 
 - `lambda_function.py`
-- every `*.py` under `eoltracker/`
+- every Git-tracked `*.py` under `eoltracker/`
 
 Everything else in the repository is *structurally* excluded because it is
 never collected — there is no exclusion list to fall out of date. Two special
@@ -25,12 +25,20 @@ collection rules keep builds predictable while staying fail-closed:
 | known compiled/junk artifacts (`__pycache__/`, `*.pyc`, `*.pyo`) | skipped silently (never runtime code) |
 | symlink, hard link, Windows junction, or other reparse point | **build refuses to run** (prevents aliased/out-of-repository code inclusion) |
 | hidden directory/file (a path component beginning with `.`) | **build refuses to run** (requires deliberate source placement) |
+| untracked `.py` file | **build refuses to run** (requires deliberate `git add`) |
+| case-only alias of `lambda_function.py` or `eoltracker/` | **build refuses to run** (keeps Git, ZIP, and Python import casing aligned) |
 | any other non-`.py` file | **build refuses to run** (fail closed) |
 | missing `lambda_function.py` or `eoltracker/` | **build refuses to run** |
 
 A new non-Python runtime file therefore cannot enter the artifact unnoticed:
 adding one requires a deliberate change to the allowlist in
 `build_lambda_package.py`.
+
+The builder invokes `git` to establish the source-of-truth file set and must
+run at the root of a Git worktree. Modified tracked files are packaged and
+hashed normally; untracked Python files and tracked Python files missing from
+the working tree fail the build. This makes adding runtime code a deliberate,
+reviewable Git action instead of allowing any local `*.py` file to deploy.
 
 The reparse-point rule is intentionally fail-closed. Checkouts backed by
 OneDrive placeholders, filesystem deduplication, or another projected-file
@@ -89,6 +97,7 @@ and enforces chain-of-custody via `lifecycle.precondition` blocks on
 |---|---|
 | manifest present / schema 1 | artifact never built, or unknown format |
 | input key set == working-tree allowlist | sources added/removed since last build |
+| no unexpected runtime-tree files | hidden files or non-Python files (other than compiled junk) appeared under `eoltracker/` |
 | input hashes == working-tree hashes | source contents edited since last build |
 | ZIP SHA-256 == manifest value | ZIP missing, corrupted, replaced, half-written |
 
@@ -97,7 +106,11 @@ the checked-out runtime sources*, closing the non-clean-workspace hole the
 denylist design had. The working-tree allowlist expectation is computed by
 Terraform itself (`fileset` over `eoltracker/**/*.py` plus the shim), so a
 future drift between Terraform's expectation and the script's allowlist also
-fails loudly rather than silently shipping or dropping files.
+fails loudly rather than silently shipping or dropping files. Terraform keeps
+hidden Python files in its expected set and separately rejects hidden or
+unexpected files, matching the builder's fail-closed policy. Empty hidden
+directories are visible only to the builder (Terraform `fileset` enumerates
+files), but cannot change deployed bytes; the next required build rejects them.
 
 Typical failure messages all end with the same remedy:
 

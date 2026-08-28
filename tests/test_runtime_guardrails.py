@@ -151,7 +151,7 @@ assert validate_config({"products": [{"source": {"k": 1}}]})[0]["severity"] == "
 assert check_product({"_section": "Spring Boot"}, TODAY) is None
 r = check_product({"_section": ""}, TODAY)          # falsy marker = product
 assert r is not None and r["status"] == "error", r  # gated: missing required
-r = check_product({"_section": False, "source": "manual"}, TODAY)
+r = check_product({"_section": False, "source": "manual", "label": "Manual"}, TODAY)
 assert r["status"] == "untracked"
 
 # --- non-dict entries normalize without touching providers ---------------------
