@@ -141,7 +141,8 @@ slug from the product page): `python`, `nodejs`, `go`, `php`, `ruby`, `nginx`,
 `apache-groovy`. If unsure a slug exists, **flag it** rather than invent it.
 
 > Note: `typescript` is NOT currently served at `/api/typescript.json` — track it via
-> `npm_registry` (`package: typescript`) instead.
+> `npm_registry` (`package: typescript`) instead. `generate_config.py` no longer
+> auto-maps it: a `typescript` npm dependency lands in `_skipped_npm_packages`.
 
 **2. `aws_rds_scrape`.** For AWS RDS / Aurora **PostgreSQL minor** versions (endoflife.date
 only tracks majors). `engine` must be `"aurora-postgresql"` or `"rds-postgresql"`.

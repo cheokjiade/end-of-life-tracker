@@ -21,7 +21,7 @@ Mapping strategy:
                    matching tracker entry — catches transitively-managed
                    platforms not declared as explicit <dependency>s.
     Node deps   -> known package names map to endoflife.date entries
-                   (react, vue, angular, next, nuxt, typescript, node,
+                   (react, vue, angular, next, nuxt, node,
                    express); unmapped packages are listed in
                    _skipped_npm_packages for manual review.
 
@@ -259,12 +259,10 @@ _NPM_MAPPINGS = {
                                                         f"Vue {_major(v)}"),
     "@angular/core":               lambda v: _eol_entry("angular", _major(v),
                                                         f"Angular {_major(v)}"),
-    "next":                        lambda v: _eol_entry("nextjs", _major_minor(v),
-                                                        f"Next.js {_major_minor(v)}"),
+    "next":                        lambda v: _eol_entry("nextjs", _major(v),
+                                                        f"Next.js {_major(v)}"),
     "nuxt":                        lambda v: _eol_entry("nuxt", _major(v),
                                                         f"Nuxt {_major(v)}"),
-    "typescript":                  lambda v: _eol_entry("typescript", _major_minor(v),
-                                                        f"TypeScript {_major_minor(v)}"),
     "node":                        lambda v: _eol_entry("nodejs", _major(v),
                                                         f"Node.js {_major(v)}"),
     "express":                     lambda v: _eol_entry("express", _major(v),
