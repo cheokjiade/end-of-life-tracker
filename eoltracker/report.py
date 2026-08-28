@@ -98,8 +98,9 @@ def _source_html(r):
 #
 # Two independent signal dimensions:
 #   * lifecycle risk  - eol / approaching (product lifecycle facts);
-#   * tracker health  - error / unknown (the tracker could NOT verify the
-#     product, so the absence of a warning must never be mistaken for health).
+#   * tracker health  - error / unknown / invalid status / empty inventory
+#     (the tracker could NOT verify the inventory, so the absence of a warning
+#     must never be mistaken for health).
 # 'untracked' is a deliberate config choice ("no automated source") and stays
 # a distinct informational bucket: neither an alert nor a health failure.
 # ---------------------------------------------------------------------------
@@ -116,6 +117,12 @@ def _categorise(results, thresholds):
       - ``error`` (check failed) and ``unknown`` (present but unverifiable)
                                              -> their own health buckets;
       - ``untracked``                      -> its own informational bucket.
+      - any missing/unrecognised status    -> error bucket (provider contract
+        violation; fail closed rather than presenting it as healthy).
+
+    A run with no product results is also a tracker-health failure. This
+    covers both an empty inventory and an inventory containing only section
+    dividers; neither is evidence that products are within support.
 
     Returns a dict: keys eol / approaching / ok / error / unknown / untracked
     (lists) plus ``max_threshold``.
@@ -124,7 +131,7 @@ def _categorise(results, thresholds):
     eol, approaching, ok, errors, unknown, untracked = [], [], [], [], [], []
 
     for r in results:
-        status = r["status"]
+        status = r.get("status")
         if status == "error":
             errors.append(r)
         elif status == "unknown":
@@ -133,12 +140,20 @@ def _categorise(results, thresholds):
             untracked.append(r)
         elif status == "eol":
             eol.append(r)
-        elif status == "approaching" and (
-            r["days_remaining"] is None or r["days_remaining"] <= max_threshold
-        ):
-            approaching.append(r)
-        else:
+        elif status == "approaching":
+            if r["days_remaining"] is None or r["days_remaining"] <= max_threshold:
+                approaching.append(r)
+            else:
+                ok.append(r)
+        elif status == "ok":
             ok.append(r)
+        else:
+            # Do not mutate a provider-owned result: formatters should receive
+            # a clear diagnostic while callers retaining the original object
+            # see it unchanged.
+            invalid = dict(r)
+            invalid["message"] = f"Unrecognised provider status: {status!r}"
+            errors.append(invalid)
 
     # Dated items soonest-first; undated (None days) stay in the list too,
     # after the dated ones.
@@ -159,14 +174,18 @@ def analyse_results(results, thresholds):
 
     - ``has_lifecycle_alerts``: at least one eol/approaching product
       (undated approaching counts — see :func:`_categorise`);
-    - ``has_health_failures``: at least one error/unknown result, i.e. the
-      tracker could not verify part of the inventory.
+    - ``has_health_failures``: at least one error/unknown/invalid-status result,
+      or no product results at all, i.e. the tracker could not verify the
+      inventory.
 
     Deliberately-untracked products affect neither flag.
     """
     cats = _categorise(results, thresholds)
     cats["has_lifecycle_alerts"] = bool(cats["eol"] or cats["approaching"])
-    cats["has_health_failures"] = bool(cats["error"] or cats["unknown"])
+    cats["empty_inventory"] = not results
+    cats["has_health_failures"] = bool(
+        cats["error"] or cats["unknown"] or cats["empty_inventory"]
+    )
     return cats
 
 
@@ -212,8 +231,8 @@ def format_report_text(results, thresholds, today):
 
     Returns (report_text, has_alerts) where *has_alerts* is True when there
     are lifecycle alerts (eol/approaching — including undated approaching)
-    OR tracker-health failures (error/unknown), so ``alerts_only`` delivery
-    can never silently suppress an unverifiable run.
+    OR tracker-health failures (including empty inventories), so
+    ``alerts_only`` delivery can never silently suppress an unverifiable run.
     """
     a = analyse_results(results, thresholds)
 
@@ -272,6 +291,14 @@ def format_report_text(results, thresholds, today):
         ]
         for r in a["unknown"]:
             lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+
+    if a["empty_inventory"]:
+        lines += [
+            "",
+            "!! TRACKER HEALTH - EMPTY INVENTORY",
+            "-" * 42,
+            "  * No product checks were produced; support health is unknown.",
+        ]
 
     if a["untracked"]:
         lines += ["", "?? UNTRACKED (no EOL source)", "-" * 42]
@@ -411,7 +438,7 @@ def format_report_html(results, thresholds, today):
 
     Returns (html_string, has_alerts) where *has_alerts* is True when there
     are lifecycle alerts (eol/approaching — including undated approaching)
-    OR tracker-health failures (error/unknown).
+    OR tracker-health failures (including empty inventories).
 
     Banners are independent and stacked: lifecycle risk renders red/orange,
     tracker-health degradation always renders a purple banner, and the green
@@ -442,6 +469,8 @@ def format_report_html(results, thresholds, today):
             bits.append(f"{len(a['error'])} check error(s)")
         if a["unknown"]:
             bits.append(f"{len(a['unknown'])} unknown status(es)")
+        if a["empty_inventory"]:
+            bits.append("no products checked")
         health_text = (
             "TRACKER HEALTH: " + ", ".join(bits)
             + " - these products could NOT be verified this run"

@@ -32,7 +32,7 @@ def build_subject(analysis, project, today):
     Lifecycle risk and tracker-health degradation get distinct tags so a
     recipient can tell them apart at a glance:
       - ``[EOL ALERT]``         - eol/approaching products;
-      - ``[TRACKER HEALTH]``    - error/unknown results (check failures);
+      - ``[TRACKER HEALTH]``    - unverifiable results or an empty inventory;
       - both may appear together as ``[EOL ALERT][TRACKER HEALTH]``.
     A run with neither is an informational ``[EOL Report]``.
     """
@@ -90,7 +90,7 @@ def lambda_handler(event, context):
 
     With ``notify_when: "alerts_only"`` a notification is sent for lifecycle
     alerts (eol/approaching, including undated at-risk phases) and for
-    tracker-health failures (error/unknown results).
+    tracker-health failures (including an empty or section-only inventory).
     """
     today = date.today()
     event = event or {}
@@ -124,7 +124,7 @@ def lambda_handler(event, context):
     report_text, _ = format_report_text(results, thresholds, today)
     report_html, _ = format_report_html(results, thresholds, today)
 
-    # alerts_only must still fire on tracker-health failures (error/unknown):
+    # alerts_only must still fire on tracker-health failures:
     # an unverifiable run is never a reason to stay silent.
     should_notify = (
         notify_when == "always"

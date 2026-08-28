@@ -137,8 +137,9 @@ assert "(latest)" in lat_out and "&rarr;" not in lat_out
 # ---------------------------------------------------------------------------
 hdr_out, alerts_empty = format_report_html(results=[], thresholds=TH,
                                            today="2026-<b>08</b>-27")
-assert alerts_empty is False
-assert "All products are within support" in hdr_out          # static banner
+assert alerts_empty is True
+assert "TRACKER HEALTH: no products checked" in hdr_out
+assert "All products are within support" not in hdr_out
 assert "2026-&lt;b&gt;08&lt;/b&gt;-27" in hdr_out
 assert "&lt;b&gt;" in hdr_out and "<b>" not in hdr_out
 flattened = hdr_out.replace("\n", "").replace(" ", "")
