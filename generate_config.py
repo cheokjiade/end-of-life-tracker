@@ -21,8 +21,8 @@ Mapping strategy:
                    matching tracker entry — catches transitively-managed
                    platforms not declared as explicit <dependency>s.
     Node deps   -> known package names map to endoflife.date entries
-                   (react, vue, angular, next, nuxt, node,
-                   express); unmapped packages are listed in
+                   (react, vue, angular, next, nuxt, node, express,
+                   ckeditor); unmapped packages are listed in
                    _skipped_npm_packages for manual review.
 
 Usage:
