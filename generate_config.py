@@ -374,7 +374,8 @@ def parse_pom(path):
 # ---------------------------------------------------------------------------
 
 _GRADLE_PATTERN_QUOTED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*([\'"])'
+    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*'
+    r'(?:\(\s*)?(?:platform\s*\(\s*)?([\'"])'
     r'([^:\'"\s]+):([^:\'"\s]+):([^\'"\s]+)\1'
 )
 # Groovy map notation (`group: 'g', name: 'a', version: 'v'`) and the Kotlin
@@ -386,10 +387,38 @@ _GRADLE_PATTERN_MAP = re.compile(
     re.DOTALL,
 )
 _GRADLE_MAP_FIELD = re.compile(r'(group|name|version)\s*[:=]\s*[\'"]([^\'"]*)[\'"]')
+# Plugins blocks: id("g.a") version "v" / id "g.a" version "v" — the id must
+# contain a dot so bare plugin ids like `id 'java'` are ignored — and the
+# Kotlin alias form kotlin("jvm") version "v".
+_GRADLE_PATTERN_PLUGIN_ID = re.compile(
+    r'\bid\s*\(?\s*([\'"])([^\'"\s]*\.[^\'"\s]*)\1\s*\)?\s*'
+    r'version\s*([\'"])([^\'"\s]+)\3'
+)
+_GRADLE_PATTERN_PLUGIN_KOTLIN = re.compile(
+    r'\bkotlin\s*\(\s*([\'"])([^\'"\s]+)\1\s*\)\s*'
+    r'version\s*([\'"])([^\'"\s]+)\3'
+)
+
+
+def _gradle_plugin_coords(plugin_id):
+    """Best-effort Maven coordinates for a Gradle plugin id.
+
+    The full plugin id conventionally names the real plugin artifact's group
+    (org.springframework.boot:spring-boot-gradle-plugin,
+    io.gitlab.arturbosch.detekt:detekt-gradle-plugin, ...); Kotlin plugin ids
+    and aliases all ship inside org.jetbrains.kotlin:kotlin-gradle-plugin.
+    """
+    if plugin_id == "org.jetbrains.kotlin" or plugin_id.startswith("org.jetbrains.kotlin."):
+        return "org.jetbrains.kotlin", "kotlin-gradle-plugin"
+    return plugin_id, plugin_id.rsplit(".", 1)[-1] + "-gradle-plugin"
 
 
 def parse_gradle(path):
-    """Parse build.gradle / build.gradle.kts; return [(g, a, v, "gradle"), ...]."""
+    """Parse build.gradle / build.gradle.kts.
+
+    Returns [(g, a, v, kind), ...] with kind "gradle" for dependencies and
+    "gradle-plugin" for plugins-block entries.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -402,6 +431,12 @@ def parse_gradle(path):
         fields = dict(_GRADLE_MAP_FIELD.findall(m.group(0)))
         if len(fields) == 3:
             deps.append((fields["group"], fields["name"], fields["version"], "gradle"))
+    for m in _GRADLE_PATTERN_PLUGIN_ID.finditer(text):
+        g, a = _gradle_plugin_coords(m.group(2))
+        deps.append((g, a, m.group(4), "gradle-plugin"))
+    for m in _GRADLE_PATTERN_PLUGIN_KOTLIN.finditer(text):
+        deps.append(("org.jetbrains.kotlin", "kotlin-gradle-plugin",
+                     m.group(4), "gradle-plugin"))
     return deps
 
 
