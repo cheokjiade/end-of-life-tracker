@@ -81,12 +81,20 @@ Top-level object:
   "_comment": ["free-text notes; array of strings; ignored by the tracker"],
   "alert_thresholds_days": [30, 60, 90],
   "notify_when": "always",
+  "maven_repositories": [ ... ],   (optional; see below)
   "notifications": [ ... ],
   "products": [ ... ]
 }
 ```
 
 - `alert_thresholds_days`: keep `[30, 60, 90]` unless the inputs imply otherwise.
+- `maven_repositories` (optional): a list of Maven 2 repository base URLs declared in
+  the project's manifests (pom `<repositories>`, Gradle `repositories { }` blocks).
+  `generate_config.py` collects and dedupes them automatically. At load the runtime
+  offers the first 8 (config order) to every `maven_central` entry that has neither
+  an explicit `repository` nor its own `repositories` list, so artifacts hosted
+  outside Maven Central still resolve. Must be a list of non-empty URL strings
+  (anything else is rejected before the run starts).
 - `notify_when`: `"always"` (daily report regardless) or `"alerts_only"` (only when
   something is EOL/approaching — including undated at-risk phases — or the tracker
   reports `error`/`unknown` health failures). Default to `"always"`.
@@ -199,6 +207,14 @@ pinned version is — no EOL is claimed.
   `https://build.shibboleth.net/nexus/content/repositories/releases`). Base
   URL only — no credentials, query string, or fragment (scheme and host are
   lowercased). Omit the field for anything available on Maven Central.
+- Optional `repositories`: a **list** of such base URLs, tried in order when
+  the artifact is not found on Maven Central (first hit wins; the rescued row
+  is labelled "Not on Maven Central; found on \<host\>:"; if nothing is found
+  anywhere the row errors with "not found on Maven Central or N declared
+  repositories"). A config-level `maven_repositories` list is stamped onto
+  `maven_central` entries lacking an explicit `repository` at load time
+  (first 8, config order), so per-entry `repositories` is only needed to
+  override or narrow that fallback.
 
 **6. `npm_registry`.** For npm / JavaScript libraries that publish no EOL dates
 (Material UI, Axios, Redux, Day.js, DOMPurify, and most webjars/frontend deps). Like
@@ -317,15 +333,22 @@ extracted manually (the scanner silently misses it):
   (`tomcat.version`, `kotlin.version`, ...). Deps inside `<dependencyManagement>` are
   parsed as BOM/version **declarations** (kind `managed-dep`); deps with no `<version>`
   (parent/BOM-managed) are recorded as kind `unversioned-dep` and produce **no** tracker
-  entry — add those manually.
+  entry — add those manually. Root-level `<repositories><repository>` URLs are
+  collected into the config-level `maven_repositories` list (whether they enable
+  releases or only snapshots — the runtime normalizes); repositories declared inside
+  `<profiles>` activate conditionally and are deliberately **ignored**.
 - `build.gradle` / `build.gradle.kts`: quoted GAV strings in single or double quotes
   (`implementation 'g:a:v'`), Groovy map notation and kts named args for
   `implementation`/`api`/`compileOnly`/`runtimeOnly`/`classpath` (buildscript blocks)
   (`group: 'g', name: 'a', version: 'v'`), `platform(...)` BOM imports, plugins blocks
   (`id("g.a") version "v"`, `kotlin("jvm") version "v"` — plugin ids are converted to
-  best-effort Maven coordinates), and `libs.*` references resolved against
+  best-effort Maven coordinates), `libs.*` references resolved against
   `libs.versions.toml` (best-effort TOML subset: `[versions]`, `[libraries]`,
-  `[bundles]`; unresolvable aliases are skipped). Groovy `//` and `/* ... */` comments
+  `[bundles]`; unresolvable aliases are skipped), and `url = uri("...")` /
+  `url = "..."` / `url "..."` declarations inside dependency `repositories { }`
+  blocks (including `buildscript { repositories { ... } }` — classpath deps resolve
+  from them; `publishing` repositories are deployment targets and are excluded;
+  `mavenCentral()`/`mavenLocal()`/`google()` declare no URL). Groovy `//` and `/* ... */` comments
   are stripped first while string literals are respected — commented-out dependencies
   are never tracked, and a `//` inside a string (e.g. a repo URL) survives. `test*`
   configurations and `project(...)` / `files(...)` / `fileTree(...)` declarations
