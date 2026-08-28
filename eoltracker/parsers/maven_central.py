@@ -39,8 +39,11 @@ def _normalize_repository(value):
     """Canonical base URL for an optional custom Maven repository override.
 
     Returns None when *value* is absent or blank; otherwise strips
-    surrounding whitespace and exactly one trailing '/'. Raises ValueError
-    for anything that is not an absolute http(s) URL. Pure: no network.
+    surrounding whitespace, lowercases the scheme and host (the path stays
+    case-sensitive), and strips exactly one trailing '/'. Raises ValueError
+    for anything that is not an absolute http(s) URL, that carries
+    credentials, or that includes a query string, fragment, or malformed
+    port. Pure: no network.
     """
     if value is None:
         return None
@@ -52,6 +55,19 @@ def _normalize_repository(value):
     parts = urllib.parse.urlsplit(text)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise ValueError("repository must be an absolute http(s) URL")
+    if parts.username or parts.password:
+        raise ValueError("repository must not contain credentials")
+    if parts.query or parts.fragment:
+        raise ValueError("repository must not include a query or fragment")
+    try:
+        _ = parts.port
+    except ValueError:
+        raise ValueError("repository has an invalid port") from None
+    # Canonical scheme/host case keeps cache keys stable across variants and
+    # makes the Maven Central detection below case-insensitive.
+    parts = parts._replace(
+        scheme=parts.scheme.lower(), netloc=parts.netloc.lower())
+    text = urllib.parse.urlunsplit(parts)
     if text.endswith("/"):
         text = text[:-1]
     return text
@@ -179,8 +195,13 @@ def _provider_maven_central(entry, today):
     if "repository" in entry:
         try:
             repository = _normalize_repository(entry.get("repository"))
-        except ValueError:
-            repository = None
+        except ValueError as exc:
+            # Propagate the specific reason (credentials, query/fragment,
+            # malformed port, ...) instead of a generic complaint; the check
+            # is pure, so this stays a no-network error row.
+            result = _error_result(entry, str(exc))
+            result["source"] = "maven_central"
+            return result
         if repository is None:
             result = _error_result(
                 entry,
@@ -239,7 +260,7 @@ def _provider_maven_central(entry, today):
     else:
         message = f"In use: {version}; latest: {latest_v}"
 
-    return {
+    result = {
         "label": label,
         "product": f"{group}:{artifact}",
         "version": version,
@@ -260,6 +281,11 @@ def _provider_maven_central(entry, today):
         "source": "maven_central",
         "repository": repository,
     }
+    if repository != _MAVEN_REPOSITORY:
+        # Provenance: a custom-repository row must not render under the
+        # "Maven Central" source label; default rows gain no new key.
+        result["source_label"] = where
+    return result
 
 
 SOURCE = "maven_central"

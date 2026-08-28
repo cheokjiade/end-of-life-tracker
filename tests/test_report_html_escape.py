@@ -242,6 +242,49 @@ plain_out, _ = format_report_html([plain_r], TH, TODAY)
 assert "<a " not in plain_out
 assert ">Plain Manual</td>" in plain_out
 
+# ---------------------------------------------------------------------------
+# 5. Per-row source_label override (custom-repository provenance).
+# ---------------------------------------------------------------------------
+
+REPO = "https://build.shibboleth.net/nexus/content/repositories/releases"
+
+# An override label wins over the registry lookup in both formatters: the
+# HTML source cell renders it as the link text and the text report shows it
+# in brackets; neither mentions the default "Maven Central" label.
+maven_row = poisioned(source="maven_central",
+                      source_label="build.shibboleth.net",
+                      product="org.opensaml:opensaml-core-api",
+                      repository=REPO)
+ov_out, _ = format_report_html([maven_row], TH, TODAY)
+assert '>build.shibboleth.net</a>' in ov_out
+assert "Maven Central" not in ov_out
+assert "Sources: build.shibboleth.net" in ov_out
+ov_text, _ = format_report_text([maven_row], TH, TODAY)
+assert "[build.shibboleth.net]" in ov_text
+assert "Maven Central" not in ov_text
+assert "Sources: build.shibboleth.net" in ov_text
+
+# Without the override the same row renders exactly as before.
+plain_maven = poisioned(source="maven_central",
+                        product="org.opensaml:opensaml-core-api",
+                        repository="https://repo1.maven.org/maven2")
+pm_out, _ = format_report_html([plain_maven], TH, TODAY)
+assert '>Maven Central</a>' in pm_out
+assert "build.shibboleth.net" not in pm_out
+pm_text, _ = format_report_text([plain_maven], TH, TODAY)
+assert "[Maven Central]" in pm_text
+assert "build.shibboleth.net" not in pm_text
+
+# The override is provider/config-controlled: escaped in HTML, raw in text.
+evil_label = poisioned(source="maven_central", source_label="repo<u>x</u>",
+                       product="org.opensaml:opensaml-core-api",
+                       repository=REPO)
+evil_out, _ = format_report_html([evil_label], TH, TODAY)
+assert "<u>" not in evil_out
+assert esc("repo<u>x</u>") in evil_out
+evil_text, _ = format_report_text([evil_label], TH, TODAY)
+assert "[repo<u>x</u>]" in evil_text
+
 # Lone UTF-16 surrogates can enter through malformed JSON/provider data.
 # They are replaced at the rendering boundary so UTF-8 report delivery cannot
 # be taken down by one bad field. A surrogate-bearing URL is never linked.

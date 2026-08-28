@@ -79,9 +79,15 @@ def _safe_https_url(url):
 # ---------------------------------------------------------------------------
 
 def _source_label(r):
-    """Render a result's data-source key as a human-readable label."""
+    """Render a result's data-source key as a human-readable label.
+
+    A provider may attach a per-row ``source_label`` override (e.g. a
+    maven_central row resolved from a custom repository); it wins over the
+    registry lookup so provenance stays truthful. The value is provider- or
+    config-controlled and is always escaped downstream.
+    """
     key = r.get("source", "endoflife_date")
-    return SOURCE_LABELS.get(key, key)
+    return r.get("source_label") or SOURCE_LABELS.get(key, key)
 
 
 def _source_html(r):

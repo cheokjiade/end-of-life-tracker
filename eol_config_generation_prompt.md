@@ -181,8 +181,9 @@ pinned version is — no EOL is claimed.
   Maven 2 repository layout, used when the artifact is **not published to
   Maven Central**, e.g. Shibboleth-hosted artifacts (`org.opensaml`,
   `net.shibboleth.*`, repository base
-  `https://build.shibboleth.net/nexus/content/repositories/releases`). Omit
-  the field for anything available on Maven Central.
+  `https://build.shibboleth.net/nexus/content/repositories/releases`). Base
+  URL only — no credentials, query string, or fragment (scheme and host are
+  lowercased). Omit the field for anything available on Maven Central.
 
 **6. `npm_registry`.** For npm / JavaScript libraries that publish no EOL dates
 (Material UI, Axios, Redux, Day.js, DOMPurify, and most webjars/frontend deps). Like

@@ -87,6 +87,25 @@ for bad in ("not-a-url", "ftp://example.com/maven2", "/relative/path",
 print("OK repository normalization")
 
 
+# Credentials, query/fragment, and malformed ports are rejected; scheme and
+# host are canonicalized to lower case while the path keeps its case.
+for bad, why in (
+    ("https://user:secret@example.com/repo", "credentials"),
+    ("https://user@example.com/repo", "credentials"),
+    ("https://example.com/repo?x=1", "query or fragment"),
+    ("https://example.com/repo#frag", "query or fragment"),
+    ("https://h:badport/repo", "port"),
+):
+    try:
+        maven._normalize_repository(bad)
+        raise AssertionError(f"invalid repository accepted: {bad!r}")
+    except ValueError as exc:
+        assert why in str(exc), (bad, str(exc))
+assert maven._normalize_repository("HTTPS://EXAMPLE.com/repo/") == \
+    "https://example.com/repo"
+print("OK repository normalization guards")
+
+
 # Latest lookup: canonical metadata GET + POM HEAD, exact date, cache reuse.
 clear_caches()
 calls = []
@@ -171,6 +190,8 @@ finally:
 assert result["status"] == "ok", result
 assert "release date unknown" in result["message"], result
 assert "not on Maven Central" not in result["message"], result
+# Default-repository rows gain no per-row source-label override.
+assert "source_label" not in result, result
 print("OK confirmed undated POM message")
 
 try:
@@ -297,10 +318,13 @@ assert "build.shibboleth.net" in result["message"], result
 assert "Maven Central" not in result["message"], result
 assert result["repository"] == (
     "https://build.shibboleth.net/nexus/content/repositories/releases")
+# Provenance: a custom-repo row labels itself by host, not "Maven Central".
+assert result["source_label"] == "build.shibboleth.net", result
 print("OK custom repository override")
 
 
-# Invalid repository values fail closed as error rows with zero network calls.
+# Invalid repository values fail closed as error rows with zero network calls,
+# propagating the specific normalization reason (which always names the field).
 calls.clear()
 
 
@@ -309,20 +333,29 @@ def must_not_be_called(request, timeout):
     return FakeResponse(METADATA)
 
 
-try:
-    maven.urllib.request.urlopen = must_not_be_called
-    result = maven._provider_maven_central({
-        "label": "Broken repo",
-        "group": "org.example",
-        "artifact": "widget",
-        "version": "1.0.0",
-        "repository": "not-a-url",
-    }, date(2026, 8, 28))
-finally:
-    maven.urllib.request.urlopen = real_urlopen
+for bad, exact in (
+    ("not-a-url", None),
+    ("https://user:secret@example.com/repo",
+     "repository must not contain credentials"),
+    ("https://example.com/repo?x=1", None),
+    ("https://h:badport/repo", None),
+):
+    try:
+        maven.urllib.request.urlopen = must_not_be_called
+        result = maven._provider_maven_central({
+            "label": "Broken repo",
+            "group": "org.example",
+            "artifact": "widget",
+            "version": "1.0.0",
+            "repository": bad,
+        }, date(2026, 8, 28))
+    finally:
+        maven.urllib.request.urlopen = real_urlopen
 
-assert result["status"] == "error", result
-assert "repository" in result["message"], result
+    assert result["status"] == "error", (bad, result)
+    assert result["message"].startswith("repository"), (bad, result)
+    if exact is not None:
+        assert result["message"] == exact, (bad, result)
 assert calls == [], calls
 print("OK invalid repository is a no-network error")
 
