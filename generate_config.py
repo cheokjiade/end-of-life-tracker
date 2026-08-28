@@ -374,14 +374,18 @@ def parse_pom(path):
 # ---------------------------------------------------------------------------
 
 _GRADLE_PATTERN_QUOTED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
-    r'"([^:"\s]+):([^:"\s]+):([^"\s]+)"'
+    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*([\'"])'
+    r'([^:\'"\s]+):([^:\'"\s]+):([^\'"\s]+)\1'
 )
-_GRADLE_PATTERN_NAMED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*'
-    r'group\s*=\s*"([^"]+)"\s*,\s*name\s*=\s*"([^"]+)"\s*,\s*version\s*=\s*"([^"]+)"',
+# Groovy map notation (`group: 'g', name: 'a', version: 'v'`) and the Kotlin
+# DSL named-args form (`group = "g", ...`) share a field grammar; match the
+# whole three-field statement, then extract the fields by name.
+_GRADLE_PATTERN_MAP = re.compile(
+    r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(?\s*'
+    r'(?:(?:group|name|version)\s*[:=]\s*[\'"][^\'"]*[\'"]\s*,?\s*){3}',
     re.DOTALL,
 )
+_GRADLE_MAP_FIELD = re.compile(r'(group|name|version)\s*[:=]\s*[\'"]([^\'"]*)[\'"]')
 
 
 def parse_gradle(path):
@@ -393,9 +397,11 @@ def parse_gradle(path):
         return []
     deps = []
     for m in _GRADLE_PATTERN_QUOTED.finditer(text):
-        deps.append((m.group(1), m.group(2), m.group(3), "gradle"))
-    for m in _GRADLE_PATTERN_NAMED.finditer(text):
-        deps.append((m.group(1), m.group(2), m.group(3), "gradle"))
+        deps.append((m.group(2), m.group(3), m.group(4), "gradle"))
+    for m in _GRADLE_PATTERN_MAP.finditer(text):
+        fields = dict(_GRADLE_MAP_FIELD.findall(m.group(0)))
+        if len(fields) == 3:
+            deps.append((fields["group"], fields["name"], fields["version"], "gradle"))
     return deps
 
 
