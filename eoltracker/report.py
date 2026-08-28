@@ -30,11 +30,22 @@ from .parsers import SOURCE_LABELS, source_url_for
 # ---------------------------------------------------------------------------
 
 _UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_UTF16_SURROGATES = re.compile(r"[\ud800-\udfff]")
+
+
+def sanitize_text(value):
+    """Return text that can always be encoded as strict UTF-8."""
+    # Python strings can contain isolated UTF-16 surrogate code points after
+    # parsing malformed JSON or receiving provider data. ``html.escape``
+    # preserves them, but a later UTF-8 file write raises UnicodeEncodeError.
+    # Replace them at the rendering boundary so one bad upstream value cannot
+    # prevent delivery of the entire report.
+    return _UTF16_SURROGATES.sub("\ufffd", str(value))
 
 
 def _esc(value):
     """Escape an untrusted dynamic value for interpolation anywhere in HTML."""
-    return html.escape(str(value), quote=True)
+    return html.escape(sanitize_text(value), quote=True)
 
 
 def _safe_https_url(url):
@@ -47,10 +58,13 @@ def _safe_https_url(url):
     """
     if not isinstance(url, str):
         return None
-    if not url or url != url.strip() or _UNSAFE_URL_CHARS.search(url):
+    if (not url or url != url.strip() or _UNSAFE_URL_CHARS.search(url)
+            or _UTF16_SURROGATES.search(url)):
         return None
     try:
         parts = urllib.parse.urlsplit(url)
+        # Accessing .port performs the validation urlsplit defers.
+        _ = parts.port
     except ValueError:
         return None
     if parts.scheme != "https":
@@ -314,7 +328,7 @@ def format_report_text(results, thresholds, today):
         f"Sources: {', '.join(sources_used)}  |  Products checked: {len(results)}",
     ]
 
-    return "\n".join(lines), has_alerts
+    return sanitize_text("\n".join(lines)), has_alerts
 
 
 # ---------------------------------------------------------------------------

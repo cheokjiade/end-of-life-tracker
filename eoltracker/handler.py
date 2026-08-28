@@ -18,7 +18,12 @@ from datetime import date
 
 from .core import logger
 from .parsers import check_product
-from .report import analyse_results, format_report_text, format_report_html
+from .report import (
+    analyse_results,
+    format_report_html,
+    format_report_text,
+    sanitize_text,
+)
 from .notify import send_notifications
 
 
@@ -43,7 +48,8 @@ def build_subject(analysis, project, today):
         tags.append("TRACKER HEALTH")
     prefix = "[" + "][".join(tags) + "]" if tags else "[EOL Report]"
     proj_tag = f" [{project}]" if project else ""
-    return f"{prefix}{proj_tag} Software End-of-Life Status - {today}"
+    return sanitize_text(
+        f"{prefix}{proj_tag} Software End-of-Life Status - {today}")
 
 
 # ---------------------------------------------------------------------------
