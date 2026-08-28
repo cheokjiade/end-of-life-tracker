@@ -63,7 +63,7 @@ Live-check every new or changed automated entry; for a pure re-verification requ
 
 Batch checks per source when practical. If network access is unavailable, do not claim verification: leave existing entries unchanged, omit speculative new entries, and list the exact checks still required.
 
-Keep configs ASCII and strictly valid JSON. Use `_comment` and `_section` instead of JSON comments. Do not alter alert or notification settings unless the user or evidence requires it.
+Keep configs strictly valid JSON. ASCII is the convention (generated configs are pure ASCII); UTF-8 files are accepted — save as UTF-8, and keep `policy_note` text ASCII for the console/SNS report. Use `_comment` and `_section` instead of JSON comments. Do not alter alert or notification settings unless the user or evidence requires it.
 
 ## Validate and report
 
