@@ -135,6 +135,46 @@ def _log_product_findings(findings, origin):
                        f["message"])
 
 
+# Cap on how many config-level maven_repositories are offered per entry.
+_MAX_STAMPED_REPOSITORIES = 8
+
+
+def _stamp_maven_repositories(config, origin):
+    """Offer declared repositories to maven_central entries at load time.
+
+    Configs generated from dependency manifests carry a top-level
+    ``maven_repositories`` list (artifact-repository URLs declared in the
+    manifests). Every ``maven_central`` entry that declares neither an
+    explicit ``repository`` nor its own ``repositories`` list gains
+    ``entry["repositories"]`` = the first 8 URLs in config order, so the
+    provider can fall back to them when an artifact is not found on Maven
+    Central. Entries with an explicit ``repository`` (e.g. Shibboleth) or
+    a hand-written ``repositories`` list are untouched. Validation has
+    already enforced the list-of-strings shape; only counts are logged,
+    never the URLs themselves.
+    """
+    declared = config.get("maven_repositories")
+    if not isinstance(declared, list) or not declared:
+        return
+    if len(declared) > _MAX_STAMPED_REPOSITORIES:
+        logger.warning(
+            "%s: %d maven_repositories declared; offering the first %d only",
+            origin, len(declared), _MAX_STAMPED_REPOSITORIES)
+    offered = declared[:_MAX_STAMPED_REPOSITORIES]
+    stamped = 0
+    for entry in config.get("products") or []:
+        if (isinstance(entry, dict)
+                and entry.get("source") == "maven_central"
+                and "repository" not in entry
+                and "repositories" not in entry):
+            entry["repositories"] = list(offered)
+            stamped += 1
+    if stamped:
+        logger.info(
+            "%s: offered %d declared repositories to %d maven_central "
+            "entries", origin, len(offered), stamped)
+
+
 def load_config_from_s3(key=None):
     """Load product configuration from S3.
 
@@ -145,7 +185,10 @@ def load_config_from_s3(key=None):
     Raises :class:`~eoltracker.validation.ConfigValidationError` for
     structurally unusable configs (bad root/products/thresholds/notifications)
     before any provider runs; malformed individual product entries are logged
-    and later surface as error rows instead of aborting the run.
+    and later surface as error rows instead of aborting the run. After
+    validation, config-level ``maven_repositories`` are stamped onto
+    ``maven_central`` entries lacking an explicit repository (see
+    :func:`_stamp_maven_repositories`).
     """
     key = key or os.environ.get("CONFIG_KEY")
     if not key:
@@ -160,6 +203,7 @@ def load_config_from_s3(key=None):
     config, product_findings = load_validated_config_bytes(
         obj["Body"].read(), origin=origin)
     _log_product_findings(product_findings, origin)
+    _stamp_maven_repositories(config, origin)
     return config
 
 
@@ -170,13 +214,17 @@ def load_config_from_file(path):
     rules as the ``--validate`` linter (see :mod:`eoltracker.validation`),
     then applies :func:`enforce_valid_config` exactly like S3 loading —
     invalid top-level or runtime shapes raise
-    :class:`ConfigValidationError` before providers run.
+    :class:`ConfigValidationError` before providers run. After validation,
+    config-level ``maven_repositories`` are stamped onto ``maven_central``
+    entries lacking an explicit repository (see
+    :func:`_stamp_maven_repositories`).
     """
     with open(path, "rb") as f:
         raw = f.read()
 
     config, product_findings = load_validated_config_bytes(raw, origin=path)
     _log_product_findings(product_findings, path)
+    _stamp_maven_repositories(config, path)
     return config
 
 

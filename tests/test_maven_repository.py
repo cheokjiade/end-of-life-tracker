@@ -1,5 +1,6 @@
 """Network-free canonical Maven repository tests (issue #12)."""
 
+import logging
 import os
 import sys
 import urllib.error
@@ -591,6 +592,214 @@ assert any("/4.2.17.Final/netty-codec-http-4.2.17.Final.pom" in url
 assert any("/4.1.119.Final/netty-codec-http-4.1.119.Final.pom" in url
            for url, _method in calls), calls
 print("OK netty-shaped metadata yields a sane latest")
+
+
+# --- Declared-repository fallback chain --------------------------------------
+#
+# When an artifact is not found on the primary repository, the entry's
+# 'repositories' list is tried in order (handler.py stamps the config-level
+# maven_repositories list onto entries; hand-written configs set the same
+# entry-level key directly). First non-None hit wins.
+
+clear_caches()
+calls.clear()
+FALLBACK = "https://repo.example/custom/"
+
+
+def central_404_fallback_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    if request.full_url.startswith(maven._MAVEN_REPOSITORY):
+        raise http_404(request)
+    if request.full_url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"""<?xml version="1.0" encoding="UTF-8"?>
+<metadata><versioning><release>2.5.0</release></versioning></metadata>
+""")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT",
+    })
+
+
+try:
+    maven.urllib.request.urlopen = central_404_fallback_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://repo.example/custom", result
+assert result["source_label"] == "repo.example", result
+assert result["message"].startswith(
+    "Not on Maven Central; found on repo.example: "), result
+assert "In use: 1.0.0" in result["message"], result
+assert "latest: 2.5.0" in result["message"], result
+# Maven Central was tried first (metadata GET + in-use POM HEAD, both 404),
+# then the chain resolved everything on the declared repository.
+central_calls = [c for c in calls if c[0].startswith(maven._MAVEN_REPOSITORY)]
+assert len(central_calls) == 2, calls
+assert all("repo.example" in c[0] for c in calls[2:]), calls
+print("OK central 404 falls back to a declared repository (in-use found, ok row)")
+
+
+# The whole chain missing -> the error row names the declared repositories;
+# no custom repo produced the result, so no host label override.
+clear_caches()
+calls.clear()
+
+
+def all_404_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = all_404_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "error", result
+assert result["message"] == (
+    "Artifact org.example:widget not found on Maven Central "
+    "or 1 declared repositories"), result
+assert "source_label" not in result, result
+print("OK central+fallback 404s produce the declared-repositories error row")
+
+
+# An unusable URL inside the list is skipped with a logged warning and the
+# chain continues to the next candidate.
+clear_caches()
+calls.clear()
+captured = []
+
+
+class _CaptureHandler(logging.Handler):
+    def emit(self, record):
+        captured.append(record.getMessage())
+
+
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+try:
+    maven.urllib.request.urlopen = central_404_fallback_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": ["not-a-url", FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://repo.example/custom", result
+assert any("skipping declared repository" in m for m in captured), captured
+print("OK invalid URL in the chain logs a warning and the chain continues")
+
+
+# First declared repository hit wins; later candidates are never touched.
+clear_caches()
+calls.clear()
+
+
+def first_fallback_urlopen(request, timeout):
+    calls.append(request.full_url)
+    if request.full_url.startswith(maven._MAVEN_REPOSITORY):
+        raise http_404(request)
+    assert "first.example" in request.full_url, request.full_url
+    if request.full_url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"""<metadata><versioning>
+<release>3.1.0</release></versioning></metadata>""")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT",
+    })
+
+
+try:
+    maven.urllib.request.urlopen = first_fallback_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": ["https://first.example/one",
+                         "https://second.example/two"],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://first.example/one", result
+assert result["source_label"] == "first.example", result
+assert not any("second.example" in u for u in calls), calls
+print("OK first declared repository hit wins; later candidates untouched")
+
+
+# An explicit 'repository' keeps today's single-repo behavior: the chain is
+# not consulted even when it fails.
+clear_caches()
+calls.clear()
+
+
+def shib_only_urlopen(request, timeout):
+    calls.append(request.full_url)
+    assert "build.shibboleth.net" in request.full_url, request.full_url
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = shib_only_urlopen
+    result = maven._provider_maven_central({
+        "label": "OpenSAML Core API",
+        "group": "org.opensaml",
+        "artifact": "opensaml-core-api",
+        "version": "5.1.2",
+        "repository": SHIBBOLETH,
+        "repositories": ["https://unused.example/repo"],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "error", result
+assert "not found on build.shibboleth.net" in result["message"], result
+assert "declared repositories" not in result["message"], result
+assert result["source_label"] == "build.shibboleth.net", result
+assert all("build.shibboleth.net" in u for u in calls), calls
+print("OK explicit repository keeps single-repo behavior (no chain)")
+
+
+# A malformed 'repositories' value (not a list) fails closed with zero
+# network calls, like an invalid explicit 'repository'.
+calls.clear()
+try:
+    maven.urllib.request.urlopen = must_not_be_called
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": "https://repo.example/one",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "error", result
+assert "'repositories' must be a list of repository URLs" in result["message"], result
+assert calls == [], calls
+print("OK malformed 'repositories' value is a no-network error row")
 
 
 clear_caches()

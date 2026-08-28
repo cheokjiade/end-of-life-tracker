@@ -38,7 +38,7 @@ on usage problems.
 Runtime enforcement: every config load (local file or S3) runs
 ``enforce_valid_config`` - structurally unusable top-level/runtime shapes
 (non-object root, bad ``products`` container, invalid thresholds,
-``notify_when``, or notification channels) raise
+``notify_when``, notification channels, or ``maven_repositories``) raise
 :class:`ConfigValidationError` before any provider call. Per-product entry
 problems never reject the load; they are returned as findings (for warning
 logs) and each affected entry later becomes a normalized error row via
@@ -112,6 +112,7 @@ KNOWN_TOP_LEVEL_KEYS = (
     "alert_thresholds_days",
     "notify_when",
     "notifications",
+    "maven_repositories",
 )
 
 
@@ -277,6 +278,20 @@ def validate_config(config):
                 "alert_thresholds_days", "error",
                 "'alert_thresholds_days' must be a non-empty list of "
                 "positive finite numbers"))
+
+    # -- declared maven repositories ----------------------------------------
+    # The runtime stamps this list onto maven_central entries lacking an
+    # explicit repository, so a wrong shape is runtime-critical: reject it
+    # before any provider runs (same fatality as thresholds/channels).
+    if "maven_repositories" in config:
+        maven_repositories = config.get("maven_repositories")
+        if not (isinstance(maven_repositories, list) and all(
+                isinstance(u, str) and u.strip()
+                for u in maven_repositories)):
+            results.append(_finding(
+                "maven_repositories", "error",
+                "'maven_repositories' must be a list of non-empty "
+                "repository URL strings"))
 
     # -- notification frequency --------------------------------------------
     notify_when = config.get("notify_when")

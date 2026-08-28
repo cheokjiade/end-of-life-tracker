@@ -23,6 +23,18 @@ of any Maven 2 repository layout exposing maven-metadata.xml and POM
 Last-Modified headers (e.g. the Shibboleth repository for OpenSAML
 artifacts, which are not published to Maven Central). The default is Maven
 Central.
+
+Entries may instead set a 'repositories' key: a list of such base URLs
+tried in order when the artifact is not found on the primary repository
+(first hit wins; an unusable URL is skipped with a logged warning). A row
+rescued this way carries the provenance prefix
+"Not on Maven Central; found on <host>:" and a source_label of the host;
+if the whole chain yields nothing the row is a not-found error naming the
+declared repositories. generate_config.py emits a config-level
+"maven_repositories" list that handler.py stamps onto entries lacking an
+explicit 'repository' (capped at 8 at load time), so hand-written configs
+can use the same entry-level 'repositories' key directly. An explicit
+'repository' keeps the single-repository behavior with no chain.
 """
 
 import re
@@ -267,7 +279,8 @@ def _provider_maven_central(entry, today):
         return result
 
     repository = _MAVEN_REPOSITORY
-    if "repository" in entry:
+    explicit_repository = "repository" in entry
+    if explicit_repository:
         try:
             repository = _normalize_repository(entry.get("repository"))
         except ValueError as exc:
@@ -287,6 +300,18 @@ def _provider_maven_central(entry, today):
     where = ("Maven Central" if repository == _MAVEN_REPOSITORY
              else urllib.parse.urlsplit(repository).netloc)
 
+    # Fallback chain: declared repositories to try when the artifact is not
+    # found on the primary one. An explicit 'repository' keeps the
+    # single-repository behavior (no chain).
+    fallbacks = entry.get("repositories")
+    if fallbacks is not None and not isinstance(fallbacks, list):
+        result = _error_result(
+            entry, "'repositories' must be a list of repository URLs")
+        result["source"] = "maven_central"
+        return result
+    if explicit_repository:
+        fallbacks = None
+
     try:
         latest = _fetch_maven_latest(group, artifact, repository)
         in_use = _fetch_maven_specific(group, artifact, version, repository)
@@ -299,8 +324,47 @@ def _provider_maven_central(entry, today):
             result["source_label"] = where
         return result
 
+    fell_back = False
+    if not latest and fallbacks:
+        for candidate in fallbacks:
+            try:
+                candidate_repo = _normalize_repository(candidate)
+            except ValueError as exc:
+                logger.warning("%s: skipping declared repository (%s)",
+                               label, exc)
+                continue
+            if not candidate_repo:
+                logger.warning("%s: skipping blank declared repository", label)
+                continue
+            try:
+                candidate_latest = _fetch_maven_latest(
+                    group, artifact, candidate_repo)
+                if not candidate_latest:
+                    continue
+                candidate_in_use = _fetch_maven_specific(
+                    group, artifact, version, candidate_repo)
+            except Exception as exc:
+                logger.warning(
+                    "%s: declared repository lookup failed (%s)",
+                    label, type(exc).__name__)
+                continue
+            repository = candidate_repo
+            latest = candidate_latest
+            in_use = candidate_in_use
+            fell_back = True
+            break
+        if fell_back:
+            where = urllib.parse.urlsplit(repository).netloc
+
     if not latest:
-        result = _error_result(entry, f"Artifact {group}:{artifact} not found on {where}")
+        if fallbacks:
+            result = _error_result(
+                entry,
+                f"Artifact {group}:{artifact} not found on Maven Central "
+                f"or {len(fallbacks)} declared repositories")
+        else:
+            result = _error_result(
+                entry, f"Artifact {group}:{artifact} not found on {where}")
         result["source"] = "maven_central"
         if repository != _MAVEN_REPOSITORY:
             result["source_label"] = where
@@ -318,7 +382,10 @@ def _provider_maven_central(entry, today):
     status = "ok" if (in_use is not None or on_latest) else "unknown"
 
     if on_latest:
-        message = f"On latest {where} release ({latest_v})"
+        if fell_back:
+            message = f"On latest release ({latest_v})"
+        else:
+            message = f"On latest {where} release ({latest_v})"
     elif in_use_date and latest_date:
         days_newer = (latest_date - in_use_date).days
         message = (
@@ -326,11 +393,18 @@ def _provider_maven_central(entry, today):
             f"({latest_date}, {days_newer} days newer)"
         )
     elif in_use is None:
-        message = (
-            f"Version {version} could not be verified on {where} "
-            f"(private build, typo, or repository gap); "
-            f"latest published is {latest_v} ({latest_date_text})"
-        )
+        if fell_back:
+            message = (
+                f"latest published is {latest_v} ({latest_date_text}); "
+                f"version {version} could not be verified there "
+                f"(private build, typo, or repository gap)"
+            )
+        else:
+            message = (
+                f"Version {version} could not be verified on {where} "
+                f"(private build, typo, or repository gap); "
+                f"latest published is {latest_v} ({latest_date_text})"
+            )
     elif in_use_date is None:
         message = (
             f"In use: {version} (release date unknown); "
@@ -338,6 +412,11 @@ def _provider_maven_central(entry, today):
         )
     else:
         message = f"In use: {version}; latest: {latest_v}"
+
+    if fell_back:
+        # Provenance first: this row was rescued from a declared repository,
+        # not found on Maven Central.
+        message = f"Not on Maven Central; found on {where}: {message}"
 
     result = {
         "label": label,
