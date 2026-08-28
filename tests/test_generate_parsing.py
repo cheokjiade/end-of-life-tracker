@@ -8,6 +8,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from generate_config import (
+    _is_dynamic_version,
+    _is_maven_version_range,
     _map_java_dep,
     parse_gradle,
     parse_pom,
@@ -132,6 +134,48 @@ entry = _map_java_dep("org.springframework.boot", "boot-gradle-plugin", "3.4.5")
 assert entry["product"] == "spring-boot", entry
 assert entry["version"] == "3.4", entry
 print("OK plugin coordinates map through the standard java mapping path")
+
+
+# --- E: Maven version ranges and Gradle dynamic versions are skipped --------
+
+assert _is_maven_version_range("[2.16.0,)")
+assert _is_maven_version_range("(1.0,2.0]")
+assert not _is_maven_version_range("2.16.1")
+assert not _is_maven_version_range("")
+assert _is_dynamic_version("2.+")
+assert _is_dynamic_version("1.2.+")
+assert _is_dynamic_version("latest.release")
+assert _is_dynamic_version("latest.integration")
+assert _is_dynamic_version("latest.version")
+assert not _is_dynamic_version("2.16.1")
+print("OK range/dynamic version detection helpers")
+
+for bad in ("[2.16.0,)", "2.+", "latest.release", "latest.integration", "1.2.+"):
+    assert _map_java_dep("commons-io", "commons-io", bad) is None, bad
+print("OK _map_java_dep skips ranges and dynamic versions")
+
+# End-to-end: such declarations parse but produce no doomed maven_central row.
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation 'commons-io:commons-io:[2.16.0,)'
+    implementation 'org.springframework:spring-core:2.+'
+    implementation 'com.example:widget:latest.release'
+    implementation 'com.example:keeper:1.2.3'
+}
+""")
+    deps = parse_gradle(p)
+assert len(deps) == 4, deps
+scan = {
+    "java": [(g, a, v, str(p), kind) for g, a, v, kind in deps],
+    "pom_properties": [],
+    "node": [],
+    "files": [str(p)],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["keeper 1.2.3"], rows
+print("OK ranged/dynamic declarations never become tracker rows")
 
 
 print("OK test_generate_parsing (batch: quotes + map notation)")

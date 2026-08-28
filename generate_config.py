@@ -273,14 +273,33 @@ _NPM_MAPPINGS = {
 }
 
 
+def _is_maven_version_range(version):
+    """True for Maven range syntax: '[2.16.0,)' or '(1.0,2.0]'."""
+    return bool(version) and version[0] in "[(" and version[-1] in "])"
+
+
+def _is_dynamic_version(version):
+    """True for Gradle dynamic versions: '2.+', '1.2.+', 'latest.release', ..."""
+    if not version:
+        return False
+    return (
+        version.endswith("+")
+        or version in ("latest.release", "latest.integration", "latest.version")
+        or ".+" in version
+    )
+
+
 def _map_java_dep(group, artifact, version):
     # Skip artifacts that won't resolve on any public registry: SNAPSHOT
     # builds (in-flight project versions), internal coordinate prefixes,
-    # and ${unresolved.property} placeholders that slipped through.
+    # ${unresolved.property} placeholders that slipped through, Maven
+    # version ranges, and Gradle dynamic versions.
     if (
         version.endswith("-SNAPSHOT")
         or group.startswith("internal.")
         or "${" in version
+        or _is_maven_version_range(version)
+        or _is_dynamic_version(version)
     ):
         return None
     for pred, handler in _JAVA_MAPPINGS:
