@@ -52,6 +52,10 @@ eoltracker/
   parsers/                # one file per provider + __init__.py (auto-registration + dispatch)
   report.py               # _categorise + plain-text and HTML formatters
   notify.py               # notification channels
+  runner.py               # run_checks: bounded-concurrency provider execution, lookup dedupe,
+                          #   Lambda remaining-time budget with configurable reserve (R-04);
+                          #   env knobs EOL_MAX_WORKERS / EOL_TIME_RESERVE_MS /
+                          #   EOL_CHECK_START_GUARD_MS
   handler.py              # config loading, lambda_handler, run_local
 ```
 
@@ -240,6 +244,7 @@ canonical message format and detailed workflow.
 | `eoltracker/parsers/` | One file per provider + `eoltracker/parsers/__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
 | `eoltracker/report.py` | Categorizer + plain-text and HTML formatters |
 | `eoltracker/notify.py` | Notification channels (console / html_file / SNS / SES) |
+| `eoltracker/runner.py` | Bounded-concurrency check execution, per-invocation lookup dedupe, and the Lambda time-budget reserve (R-04) |
 | `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |
 | `eol_config.<project>.json` | Per-project product lists (gitignored; `eol_config.sample.json` is the template) |
 | `eol_config_generation_prompt.md` | The canonical config-generation/extraction spec |

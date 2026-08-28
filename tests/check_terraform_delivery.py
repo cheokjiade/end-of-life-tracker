@@ -25,6 +25,10 @@ assert 'resource "aws_cloudwatch_metric_alarm" "lambda_errors"' in main
 assert 'resource "aws_cloudwatch_metric_alarm" "required_delivery_failures"' in main
 assert 'metric_name         = "RequiredChannelsUndelivered"' in main
 assert 'resource "aws_cloudwatch_metric_alarm" "lambda_failure_dlq_not_empty"' in main
+assert 'resource "aws_cloudwatch_metric_alarm" "partial_runs"' in main
+assert 'metric_name         = "PartialRuns"' in main
+assert 'namespace           = "EOLTracker"' in main
+assert 'var.lambda_timeout * 1000 > var.eol_time_reserve_ms + var.eol_check_start_guard_ms' in main
 assert 'resource "aws_sns_topic" "ops_alerts"' in main
 assert 'output "ops_topic_arn"' in outputs
 

@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker import handler as handler_mod
+from eoltracker import runner as runner_mod
 from eoltracker.parsers import check_product
 from eoltracker.parsers.maven_central import (
     _MAVEN_LATEST_CACHE,
@@ -354,7 +355,7 @@ def _run_handler(config, product_results):
     cfg = dict(config)
     cfg["products"] = [{"source": "fake", "_idx": i} for i in range(len(product_results))]
     with mock.patch.object(handler_mod, "load_config_from_s3", return_value=cfg), \
-         mock.patch.object(handler_mod, "check_product",
+         mock.patch.object(runner_mod, "check_product",
                            side_effect=lambda entry, today, index=None: product_results[entry["_idx"]]), \
          mock.patch.object(handler_mod, "send_notifications", side_effect=fake_send):
         response = handler_mod.lambda_handler({}, None)
