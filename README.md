@@ -12,8 +12,8 @@ Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [3
 - Configurable alert thresholds (e.g. warn at 30, 60, 90 days before EOL)
 - Multiple output channels: console, HTML file, SNS (plain text email), SES (HTML email)
 - HTML reports include per-row source attribution and are written to `reports/<project>/<year>/<month>/<day>/` with a timestamp in the filename (e.g. `reports/a/2026/05/04/eol_report_a_2026-05-04_1132.html`)
-- Product list is stored in S3 — update what you track without redeploying the Lambda
-- Runs daily via CloudWatch Events (schedule is configurable)
+- Product lists are stored in S3, one per project (`projects/<project>/eol_config.json`) — update what you track without redeploying the Lambda
+- Runs on per-project EventBridge schedules (each project has its own configurable cron expression)
 - AWS-docs scraper has built-in defenses against page changes: header-name validation, row-count sanity check, and a runtime canary that fails loudly if the page structure drifts
 
 ## Quick Start — Run Locally
@@ -22,8 +22,8 @@ Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [3
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/cheokjiade/endoflife-tracker.git
-cd endoflife-tracker
+git clone https://github.com/cheokjiade/end-of-life-tracker.git
+cd end-of-life-tracker
 
 # 2. Copy the sample config and edit it
 cp eol_config.sample.json eol_config.json
@@ -72,7 +72,7 @@ The HTML report is generated alongside the console output if configured, written
 
 ## Configuration
 
-The config file (`eol_config.json`) controls everything. In Lambda, it lives in S3; locally, it's read from the filesystem.
+The config file controls everything. Locally it is read from the filesystem; in a deployment each project's copy lives in S3 at `projects/<project>/eol_config.json`.
 
 ### Products
 
@@ -211,9 +211,9 @@ destinations.
 
 ### Prerequisites
 
-- [Terraform](https://www.terraform.io/downloads) >= 1.0
+- [Terraform](https://www.terraform.io/downloads) >= 1.3.0
 - AWS CLI configured with appropriate credentials
-- An email address to receive SNS alerts
+- An email address per project to receive that project's SNS alerts
 
 ### Steps
 
@@ -225,7 +225,8 @@ cd terraform
 
 # 1. Create your variables file
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — set your bucket name and notification email
+# Edit terraform.tfvars — set your bucket name and the projects map
+# (one entry per project: its config_path, notification email, schedule)
 
 # 2. Lint every project config you are about to distribute (network-free)
 python ../lambda_function.py --validate ../eol_config.a.json
@@ -241,53 +242,122 @@ rerun step 0 after any change under `eoltracker/`. See
 [docs/packaging.md](docs/packaging.md) for how packaging and verification work.
 
 After deployment:
-- **Confirm both SNS subscriptions** — check your email for confirmation links
-  for the per-project report topic and, when `ops_notification_email` is set,
-  the operational alarm topic. `terraform output ops_topic_arn` identifies the
-  latter if confirmation needs troubleshooting.
-- The Lambda runs daily at 8:00 AM UTC by default (configurable via `schedule_expression`)
-- The config file is uploaded to S3 automatically and is **versioned** — see `terraform/README.md` for provider pinning/lockfile updates and the point-in-time config rollback runbook
+- **Confirm every SNS subscription** — AWS emails each project's
+  `notification_email` a report-topic confirmation link. When
+  `ops_notification_email` is set, confirm that operational-topic link too;
+  `terraform output ops_topic_arn` identifies the alarm topic.
+- Each project gets its own EventBridge rule running on its `schedule_expression` (default: daily at 8:00 AM UTC).
+- Terraform uploads each project's `config_path` file to `projects/<project>/eol_config.json` in the config bucket — one object per project. There is no root-level `eol_config.json` object and no global `CONFIG_KEY`.
+- Useful outputs for operating the deployment: `lambda_function_name`,
+  `config_bucket`, `config_file_keys` (project → exact S3 key),
+  `config_object_version_ids`, `sns_topic_arns`, `ops_topic_arn`, and
+  `schedule_rule_names`.
+- Config objects are **versioned**. See `terraform/README.md` for the provider
+  lockfile workflow and the point-in-time rollback runbook.
 
 ### Updating tracked products
 
-Update the config in S3 — no redeployment needed:
+Product lists are updated in place in S3 — no redeployment needed. Each project has exactly one config object whose key is `projects/<project>/eol_config.json`; the authoritative map of project → key comes from the `config_file_keys` Terraform output (run from `terraform/`). Always operate on the exact key for the project you want:
 
 ```bash
-# Download current config
-aws s3 cp s3://your-bucket-name/eol_config.json .
+# Discover the per-project keys
+terraform output -json config_file_keys
 
-# Edit it...
+# Download the current config for one project
+aws s3 cp s3://<config-bucket>/projects/<project>/eol_config.json \
+  eol_config.<project>.local.json
 
-# Upload
-aws s3 cp eol_config.json s3://your-bucket-name/eol_config.json
+# Edit eol_config.<project>.local.json ...
+
+# Validate before uploading — malformed structure aborts that project's next run
+python lambda_function.py --validate eol_config.<project>.local.json
+
+# Optional smoke run against live data sources
+python lambda_function.py eol_config.<project>.local.json
+
+# Upload back to the project's exact key
+aws s3 cp eol_config.<project>.local.json \
+  s3://<config-bucket>/projects/<project>/eol_config.json
 ```
 
-Or update it via the S3 console.
+Verify the upload took effect with a [manual invocation](#manual-invocation) carrying the same `config_key`.
+
+Two caveats:
+
+- A later `terraform apply` re-uploads each project's local `config_path` file (Terraform compares a content hash against the live object), so manual edits made via console or CLI will be overwritten. Treat the repository file as the source of truth.
+- Bucket versioning is enabled and Terraform exposes each last-applied object
+  version. Follow `terraform/README.md` to validate and promote an older version
+  without deleting history.
+
+#### Recovering a broken config
+
+If an upload turns out to be wrong, follow the point-in-time S3 rollback runbook
+in `terraform/README.md`. A downloaded known-good copy can also be uploaded to
+the same project key, creating another recoverable current version:
+
+```bash
+aws s3 cp <known-good-copy>.json \
+  s3://<config-bucket>/projects/<project>/eol_config.json
+```
+
+Or update it via the S3 console — navigate to `projects/<project>/eol_config.json`, not to a root-level `eol_config.json`.
 
 ### Terraform variables
 
+Top-level variables (`terraform/variables.tf`):
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `config_bucket_name` | Yes | - | S3 bucket name (globally unique) |
-| `notification_email` | Yes | - | Email for SNS alerts |
+| `projects` | Yes | - | Map of project name → per-project settings (see next table) |
+| `config_bucket_name` | Yes | - | S3 bucket name for the config files (globally unique) |
+| `project_name` | No | `eol-checker` | Prefix for shared resources: Lambda function name, IAM role, log group |
 | `aws_region` | No | `eu-west-1` | AWS region |
-| `schedule_expression` | No | `cron(0 8 * * ? *)` | CloudWatch cron schedule |
-| `ses_from_email` | No | `""` | SES sender address (if using SES) |
-| `ses_to_emails` | No | `""` | Comma-separated SES recipients |
-| `ops_notification_email` | No | `""` | Email subscribed to operational alarms (Lambda failures, partial required-channel delivery, dead-letter queue); confirmation required; empty = ops topic without a subscription |
+| `lambda_timeout` | No | `60` | Lambda timeout in seconds |
+| `lambda_memory` | No | `128` | Lambda memory in MB |
+| `eol_max_workers` | No | `4` | Maximum concurrent provider checks |
+| `eol_time_reserve_ms` | No | `15000` | Milliseconds reserved for rendering and delivery |
+| `eol_check_start_guard_ms` | No | `18000` | Additional time required before starting a provider check |
+| `ses_from_email` | No | `""` | Verified SES sender shared across all projects; empty disables SES |
+| `ops_notification_email` | No | `""` | Email subscribed to Lambda, partial-run, partial-delivery, and dead-letter queue alarms; confirmation required; empty creates the ops topic without a subscription |
+
+Per-project settings — one entry per project under `projects`:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `config_path` | Yes | - | Local config file path relative to repo root; uploaded to `projects/<project>/eol_config.json` |
+| `notification_email` | Yes | - | Email that receives the subscription confirmation for this project's SNS topic |
+| `schedule_expression` | No | `cron(0 8 * * ? *)` | Daily 8:00 AM UTC by default |
+| `ses_to_emails` | No | `""` | Comma-separated SES recipients delivered via the schedule's event payload |
 
 ### Runtime routing values
 
+Terraform sets shared environment variables on the function; there are no
+per-project environment variables:
+
 | Variable | Purpose |
 |----------|---------|
-| `CONFIG_BUCKET` | S3 bucket containing the config file |
-| `CONFIG_KEY` | Optional default S3 key for manual invocations; scheduled Terraform events provide `config_key` in their payload instead |
-| `SNS_TOPIC_ARN` | Optional default SNS topic for manual invocations; scheduled Terraform events provide `sns_topic_arn` in their payload instead |
-| `SES_FROM_EMAIL` | SES sender (optional, can also be set in config) |
-| `SES_TO_EMAILS` | Optional default SES recipients for manual invocations; scheduled Terraform events provide `ses_to_emails` in their payload |
+| `CONFIG_BUCKET` | S3 bucket containing every project's config file |
+| `SES_FROM_EMAIL` | Fallback SES sender (may be empty; the notification config wins) |
 | `EOL_MAX_WORKERS` | Concurrent provider checks (default `4`) |
 | `EOL_TIME_RESERVE_MS` | Time kept for rendering and delivery (default `15000`) |
 | `EOL_CHECK_START_GUARD_MS` | Extra time required before starting a check (default `18000`) |
+
+In particular, Terraform sets **no** `CONFIG_KEY`, `SNS_TOPIC_ARN`, or `SES_TO_EMAILS`. Per-project routing instead arrives in each EventBridge rule's input payload (`project`, `config_key`, `sns_topic_arn`, `ses_to_emails`) — see `aws_cloudwatch_event_target.lambda` in `terraform/main.tf` and `lambda_handler` in `eoltracker/handler.py`.
+
+When a routing value is absent from both the event and the config entry, the
+handler falls back to its optional environment variable. The config key has no
+built-in default:
+
+| Value | Resolution order |
+|-------|------------------|
+| Config key | event `config_key` → `CONFIG_KEY` env var → clear configuration error |
+| SNS topic ARN | config entry `topic_arn` → event `sns_topic_arn` → `SNS_TOPIC_ARN` env var |
+| SES sender / recipients | config entry `from_email` / `to_emails` → event overrides → `SES_FROM_EMAIL` / `SES_TO_EMAILS` env vars |
+
+Under the default Terraform layout `CONFIG_KEY`, `SNS_TOPIC_ARN`, and
+`SES_TO_EMAILS` remain unset, so scheduled runs use the exact values carried by
+their per-project event payloads. `SES_FROM_EMAIL` is the one optional shared
+routing fallback Terraform may populate.
 
 ### Provider execution budget
 
@@ -308,39 +378,85 @@ whose Lambda timeout cannot fit the configured reserve plus start guard.
 
 ### Manual invocation
 
-Trigger the Lambda outside its schedule:
+To trigger a run outside its schedule, invoke the shared function with the same per-project values the EventBridge rule itself would pass. Start from the Terraform outputs (run from `terraform/`):
 
 ```bash
+terraform output -raw lambda_function_name    # shared function name
+terraform output -json config_file_keys       # project -> S3 key
+terraform output -json sns_topic_arns         # project -> topic ARN
+```
+
+Create an `event.json` matching the schedule's target shape:
+
+```json
+{
+  "project": "<project>",
+  "config_key": "projects/<project>/eol_config.json",
+  "sns_topic_arn": "<per-project-sns-topic-arn>",
+  "ses_to_emails": ""
+}
+```
+
+- `config_key` must be the exact `projects/<project>/eol_config.json` value from `config_file_keys` — it is never inferred.
+- An empty string behaves like an absent value, so `"ses_to_emails": ""` simply defers to whatever SES settings the config carries; use it when you do not want an event-level override.
+
+Invoke and print the response:
+
+```bash
+FUNCTION=$(terraform output -raw lambda_function_name)
+
+# Preferred — fileb:// always sends the file's raw bytes
 aws lambda invoke \
-  --function-name eol-checker \
+  --function-name "$FUNCTION" \
+  --payload fileb://event.json \
+  response.json && cat response.json
+
+# Inline equivalent — AWS CLI v2 needs the binary-format flag here
+aws lambda invoke \
+  --function-name "$FUNCTION" \
   --cli-binary-format raw-in-base64-out \
-  --payload '{"config_key":"projects/<project>/eol_config.json","project":"<project>"}' \
+  --payload '{"project":"<project>","config_key":"projects/<project>/eol_config.json"}' \
   response.json && cat response.json
 ```
 
-An empty payload is accepted only when `CONFIG_KEY` is configured explicitly;
-Terraform's multi-project deployment intentionally does not choose a default
-project.
+AWS CLI v2 treats an inline `--payload` string as base64-encoded binary unless
+`--cli-binary-format raw-in-base64-out` is supplied. `fileb://` bypasses that
+setting and sends the JSON file's raw bytes.
+
+A successful invocation returns a JSON object in `response.json` with
+`"statusCode": 200`, your `"project"` name, and counts of checked products and
+alerts. On failure, inspect the `/aws/lambda/<function-name>` CloudWatch Logs
+log group.
+
+**Do not invoke with `--payload '{}'`.** Terraform sets no `CONFIG_KEY` and the
+multi-project handler intentionally chooses no default project, so an empty
+payload fails with a clear missing-config-key error while scheduled runs
+continue using their own event payloads.
 
 ## Architecture
 
 ```
-CloudWatch Events (daily cron)
-        |
+EventBridge schedule rules (one per project, cron-driven)
+        |  input payload: {project, config_key,
+        |                  sns_topic_arn, ses_to_emails}
         v
-  AWS Lambda (Python 3.12)
+  Shared AWS Lambda (Python 3.12)
         |
-        +-- reads config from S3
-        +-- per product, dispatches to a provider:
-        |     +-- endoflife_date  -> https://endoflife.date/api/{product}.json
-        |     +-- aws_rds_scrape  -> docs.aws.amazon.com release calendars
+        +-- loads config: s3://<config-bucket>/<config_key>
+        |     (= projects/<project>/eol_config.json)
+        +-- dispatches each product entry by its "source" to a provider:
+        |     +-- endoflife_date -> https://endoflife.date/api/{product}.json
+        |     +-- aws_rds_scrape -> docs.aws.amazon.com release calendars
+        |     +-- ... other registry sources (see eoltracker/parsers/)
         +-- categorises: EOL / Approaching / OK
         |
-        +---> SNS (plain-text email)
+        +---> this project's SNS topic (plain-text email)
         +---> SES (HTML email)
-        +---> HTML file (reports/ locally; explicit /tmp path in Lambda)
+        +---> HTML file (dated reports/ tree locally; explicit /tmp path in Lambda)
         +---> Console (CloudWatch Logs)
 ```
+
+Environment variables carry only shared settings (`CONFIG_BUCKET`, `SES_FROM_EMAIL`); everything per-project travels in the event payload.
 
 ### Adding a new data source
 
