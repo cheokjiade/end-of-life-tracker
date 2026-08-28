@@ -41,6 +41,14 @@ Mapping strategy:
                    _skipped_npm_packages for manual review (vue bare-major
                    specs like '^3' are skipped there too — no such cycle).
 
+Complete picture vs runnable set:
+    products stays the deduped runnable set (first declaration wins).
+    Every parsed declaration (tracked, duplicate, skipped, or unmapped)
+    is additionally recorded in the top-level _discovered_dependencies
+    list (records: decl, file, kind, outcome) so the generated config
+    shows the complete picture of what the manifests contained, not just
+    what runs. Section markers are not declarations and get no record.
+
 Usage:
     python generate_config.py <folder> [--name PROJECT] [--output FILE]
 
@@ -346,31 +354,57 @@ def _strip_classifier_ext(version):
     return version or None
 
 
+def _map_java_dep_with_reason(group, artifact, version):
+    """Map (group, artifact, version) to (entry, None) or (None, reason).
+
+    Applies exactly the skip conditions of _map_java_dep, but returns a
+    standardized reason string alongside the None so generate_config can
+    record WHY a declaration produced no tracker row in
+    _discovered_dependencies. Reasons mirror the checks in order:
+    'classifier variant (duplicates the base artifact)', 'no version
+    (parent/BOM-managed)', 'SNAPSHOT version', 'internal group',
+    'unresolved property placeholder', 'maven version range',
+    'gradle dynamic version', and 'known-untracked test dependency' when
+    the matched handler opts out (junit & co).
+    """
+    if ":" in (version or ""):
+        return None, "classifier variant (duplicates the base artifact)"
+    version = _strip_classifier_ext(version)
+    if not version:
+        return None, "no version (parent/BOM-managed)"
+    if version.endswith("-SNAPSHOT"):
+        return None, "SNAPSHOT version"
+    if group.startswith("internal."):
+        return None, "internal group"
+    if "${" in version:
+        return None, "unresolved property placeholder"
+    if _is_maven_version_range(version):
+        return None, "maven version range"
+    if _is_dynamic_version(version):
+        return None, "gradle dynamic version"
+    for pred, handler in _JAVA_MAPPINGS:
+        if pred(group, artifact):
+            entry = handler(group, artifact, version)
+            if entry is None:
+                return None, "known-untracked test dependency"
+            return entry, None
+    return None, "known-untracked test dependency"
+
+
 def _map_java_dep(group, artifact, version):
     """Map (group, artifact, version) to a tracker entry, or None to skip.
 
-    Skips anything no public registry resolves as written: SNAPSHOT builds
-    (in-flight project versions), internal coordinate prefixes,
-    ${unresolved.property} placeholders, classifier variants ('1.0:test-jar'
-    — they duplicate the base artifact), Maven version ranges including
-    unterminated ones ('[2.0,'), and Gradle dynamic versions ('2.+',
-    'latest', '1.0+eap'). Ext suffixes ('1.0@jar') are truncated to the
-    plain version before mapping.
+    Thin wrapper over _map_java_dep_with_reason, kept with its original
+    signature for existing callers and tests. Skips anything no public
+    registry resolves as written: SNAPSHOT builds (in-flight project
+    versions), internal coordinate prefixes, ${unresolved.property}
+    placeholders, classifier variants ('1.0:test-jar' - they duplicate the
+    base artifact), Maven version ranges including unterminated ones
+    ('[2.0,'), and Gradle dynamic versions ('2.+', 'latest', '1.0+eap').
+    Ext suffixes ('1.0@jar') are truncated to the plain version before
+    mapping.
     """
-    version = _strip_classifier_ext(version)
-    if (
-        not version
-        or version.endswith("-SNAPSHOT")
-        or group.startswith("internal.")
-        or "${" in version
-        or _is_maven_version_range(version)
-        or _is_dynamic_version(version)
-    ):
-        return None
-    for pred, handler in _JAVA_MAPPINGS:
-        if pred(group, artifact):
-            return handler(group, artifact, version)
-    return None
+    return _map_java_dep_with_reason(group, artifact, version)[0]
 
 
 def _map_npm_dep(name, version):
@@ -396,11 +430,15 @@ def parse_pom(path):
     """Parse pom.xml; return (deps, properties, source_path).
 
     deps:       list of (group, artifact, version, kind) — kind in
-                {"parent", "dep", "managed-dep", "unversioned-dep"}:
+                {"parent", "dep", "managed-dep", "unversioned-dep",
+                "test-scope-dep", "provided-scope-dep", "system-scope-dep"}:
                 versioned deps inside a <dependencyManagement> block are
                 "managed-dep" (BOM/version declarations, not direct usage);
                 deps lacking a <version> (parent/BOM-managed) are
-                "unversioned-dep" with version None.
+                "unversioned-dep" with version None; deps with a test,
+                provided, or system <scope> carry that scope kind. All
+                kinds are recorded for _discovered_dependencies; only
+                "dep" and "managed-dep" map to tracker entries.
     properties: dict of property name -> resolved value
     """
     try:
@@ -466,6 +504,10 @@ def parse_pom(path):
             g, a, v = t(dep, "groupId"), t(dep, "artifactId"), t(dep, "version")
             scope = t(dep, "scope") or "compile"
             if scope in ("test", "provided", "system"):
+                # Non-runtime scope: recorded (with its scope kind) so the
+                # complete picture shows it, but never mapped to a row.
+                if g and a:
+                    deps.append((g, a, resolve(v), f"{scope}-scope-dep"))
                 continue
             if g and a and v:
                 deps.append((g, a, resolve(v), kind))
@@ -839,23 +881,53 @@ def _entry_key(entry):
     )
 
 
+def _discovered_record(decl, fname, kind, outcome):
+    """One _discovered_dependencies entry: a parsed declaration + outcome."""
+    return {"decl": decl, "file": fname, "kind": kind, "outcome": outcome}
+
+
+def _discovered_summary(records):
+    """One-line _comment tally of the _discovered_dependencies outcomes."""
+    def count(prefix):
+        return sum(1 for r in records if r["outcome"].startswith(prefix))
+    return (f"Declarations discovered: {len(records)} "
+            f"(tracked {count('tracked: ')}, duplicates {count('duplicate-of: ')}, "
+            f"skipped {count('skipped: ')}, unmapped {count('unmapped: ')}) "
+            "- see _discovered_dependencies for the complete picture.")
+
+
 def generate_config(scan, project_name):
-    """Build an EOL config dict from scan results."""
+    """Build an EOL config dict from scan results.
+
+    products is the deduped runnable set (first declaration wins); every
+    parsed declaration is additionally recorded in
+    config["_discovered_dependencies"] with decl/file/kind/outcome, so the
+    config carries the complete picture of the scanned manifests.
+    """
     products = []
     seen_keys = set()
+    kept_by_key = {}
     skipped_npm = []
+    records = []
 
     def add(entry, comment=None):
+        """Append entry unless its key was seen; return (added, dup_label).
+
+        On a duplicate, returns the kept (first) entry's label so the
+        caller can record 'duplicate-of: <label>'.
+        """
         if entry is None:
-            return False
+            return False, None
         if comment:
             entry.setdefault("_comment", comment)
         key = _entry_key(entry)
         if key in seen_keys:
-            return False
+            kept = kept_by_key.get(key) or {}
+            return False, kept.get("label")
         seen_keys.add(key)
+        kept_by_key[key] = entry
         products.append(entry)
-        return True
+        return True, None
 
     # --- POM property-driven platform versions --------------------------------
     if scan["pom_properties"]:
@@ -865,38 +937,82 @@ def generate_config(scan, project_name):
                 if prop_name in props:
                     v = props[prop_name]
                     entry = mapper(v)
-                    add(entry, comment=f"From {os.path.basename(src)} (<{prop_name}>{v}</{prop_name}>)")
+                    fname = os.path.basename(src)
+                    decl = f"{prop_name}={v}"
+                    if entry is None:
+                        records.append(_discovered_record(
+                            decl, fname, "property", "skipped: unmapped property"))
+                        continue
+                    added, dup_label = add(
+                        entry,
+                        comment=f"From {fname} (<{prop_name}>{v}</{prop_name}>)")
+                    if added:
+                        records.append(_discovered_record(
+                            decl, fname, "property", f"tracked: {entry['label']}"))
+                    else:
+                        records.append(_discovered_record(
+                            decl, fname, "property", f"duplicate-of: {dup_label}"))
 
     # --- Java/Maven dependencies ---------------------------------------------
     if scan["java"]:
         added_section = False
         for g, a, v, src, kind in scan["java"]:
+            decl = f"{g}:{a}:{v or ''}"
+            fname = os.path.basename(src)
             if kind == "unversioned-dep" or not v:
                 # No version to check (parent/BOM-managed); skipped for now.
+                records.append(_discovered_record(
+                    decl, fname, kind,
+                    "skipped: no version (parent/BOM-managed)"))
                 continue
-            entry = _map_java_dep(g, a, v)
+            if kind in ("test-scope-dep", "provided-scope-dep", "system-scope-dep"):
+                scope = kind[:-len("-scope-dep")]
+                records.append(_discovered_record(
+                    decl, fname, kind, f"skipped: {scope} scope"))
+                continue
+            entry, skip_reason = _map_java_dep_with_reason(g, a, v)
             if entry is None:
+                records.append(_discovered_record(
+                    decl, fname, kind, f"skipped: {skip_reason}"))
                 continue
             if not added_section:
                 products.append({"_section": "=== Java dependencies ==="})
                 added_section = True
-            comment = f"From {os.path.basename(src)} ({g}:{a}:{v})"
-            add(entry, comment=comment)
+            comment = f"From {fname} ({g}:{a}:{v})"
+            added, dup_label = add(entry, comment=comment)
+            if added:
+                records.append(_discovered_record(
+                    decl, fname, kind, f"tracked: {entry['label']}"))
+            else:
+                records.append(_discovered_record(
+                    decl, fname, kind, f"duplicate-of: {dup_label}"))
 
     # --- npm dependencies ----------------------------------------------------
     if scan["node"]:
         added_section = False
         for name, v, src in scan["node"]:
+            decl = f"{name}@{v or ''}"
+            fname = os.path.basename(src)
             entry = _map_npm_dep(name, v)
             if entry is None:
                 # Track unmapped for the user's review
                 if name not in {"react-dom"}:  # known-no-mapping
-                    skipped_npm.append({"name": name, "version": v, "source": os.path.basename(src)})
+                    skipped_npm.append({"name": name, "version": v, "source": fname})
+                outcome = ("skipped: bare-major vue spec (no minor cycle published)"
+                           if name == "vue"
+                           else "unmapped: see _skipped_npm_packages")
+                records.append(_discovered_record(decl, fname, "npm", outcome))
                 continue
             if not added_section:
                 products.append({"_section": "=== npm dependencies ==="})
                 added_section = True
-            add(entry, comment=f"From {os.path.basename(src)} ({name}@{v})")
+            added, dup_label = add(entry, comment=f"From {fname} ({name}@{v})")
+            if added:
+                records.append(_discovered_record(
+                    decl, fname, "npm", f"tracked: {entry['label']}"))
+            else:
+                records.append(_discovered_record(
+                    decl, fname, "npm", f"duplicate-of: {dup_label}"))
 
     # --- Infer transitive platforms from detected ones -----------------------
     # Spring Boot's release train pairs each Boot minor with a Spring Security
@@ -932,12 +1048,14 @@ def generate_config(scan, project_name):
             f"Auto-generated by generate_config.py on {date.today()}.",
             f"Files scanned: {len(scan['files'])}.",
             f"Tracker entries: {sum(1 for p in products if not p.get('_section'))}.",
+            *([_discovered_summary(records)] if records else []),
             "",
             "REVIEW THIS FILE BEFORE DEPLOYING — auto-mapping is best-effort.",
             "Common things to check:",
             "  - Java distribution (amazon-corretto vs eclipse-temurin vs oracle-jdk)",
             "  - 'Latest patch not found' warnings indicate version pins not on Maven Central",
-            "  - Skipped npm packages (see _skipped_npm_packages below) need manual entries",
+            "  - Skipped npm packages (see _skipped_npm_packages below) need manual entries;",
+            "    every parsed declaration and its outcome is in _discovered_dependencies",
             "",
             "Run with:  python lambda_function.py " + f"eol_config.{project_name}.json",
         ],
@@ -953,6 +1071,8 @@ def generate_config(scan, project_name):
 
     if skipped_npm:
         config["_skipped_npm_packages"] = skipped_npm
+    if records:
+        config["_discovered_dependencies"] = records
 
     return config
 

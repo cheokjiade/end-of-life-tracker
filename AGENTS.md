@@ -153,6 +153,7 @@ drifts). In brief:
   any harness can follow it directly.
 - `generate_config.py` is the deterministic scanner for clean dependency
   manifests (Maven / Gradle / npm) — no LLM required.
+- Generated configs carry `_discovered_dependencies` (every parsed declaration with its outcome) alongside the deduped runnable `products`.
 - `docs/updating-a-config.md` is the refresh workflow: diff new evidence against
   the existing config and patch it, preserving human curation. Never regenerate
   an existing config wholesale.

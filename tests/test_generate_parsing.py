@@ -229,8 +229,8 @@ assert ("org.springframework.boot", "spring-boot-starter-parent", "3.3.4", "pare
 assert ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "managed-dep") in deps, deps
 assert ("org.springframework.boot", "spring-boot-starter-web", None, "unversioned-dep") in deps, deps
 assert ("commons-io", "commons-io", "2.16.1", "dep") in deps, deps
-assert not any(a == "junit" for _, a, _, _ in deps), deps
-print("OK namespaced pom: parent/managed-dep/unversioned-dep/dep kinds, test scope skipped")
+assert ("junit", "junit", "4.13.2", "test-scope-dep") in deps, deps
+print("OK namespaced pom: parent/managed-dep/unversioned-dep/dep kinds, test scope recorded")
 
 POM_PLAIN = """<project>
   <dependencyManagement>

@@ -343,6 +343,43 @@ The scanner is a heuristic regex/JSON/XML pass, not a build — after running it
 output against the inputs and hand-map whatever it missed. Do not assume silence means
 absence.
 
+### _discovered_dependencies (the complete picture)
+
+A generated config carries two views: `products` is the **deduped runnable set** (first
+declaration wins), and the top-level `_discovered_dependencies` list records **every**
+parsed declaration (tracked, duplicate, skipped, or unmapped) so nothing the manifests
+contained is silently dropped (section dividers are not declarations and get no record).
+The `_comment` header includes a one-line tally, e.g. `Declarations discovered: 16
+(tracked 6, duplicates 1, skipped 8, unmapped 1)`. Review it after generation: every
+`skipped:`/`unmapped:`/`duplicate-of:` record is a potential manual entry. When building a
+config by hand (the LLM path below), keep the runnable set clean the same way and list
+non-tracked declarations for review instead of dropping them.
+
+Record shape:
+
+```json
+{"decl": "io.netty:netty-codec-http:4.1.111.Final", "file": "pom.xml",
+ "kind": "dep", "outcome": "tracked: netty-codec-http 4.1.111.Final"}
+```
+
+- `decl`: the declaration string - `g:a:v` (Maven/Gradle; empty version slot for
+  version-less deps), `name@version` (npm), `<prop-name>=<value>` (pom properties).
+- `file`: base name of the manifest the declaration came from.
+- `kind`: `parent`, `dep`, `managed-dep`, `unversioned-dep`, `test-scope-dep`,
+  `provided-scope-dep`, `system-scope-dep`, `gradle`, `gradle-plugin`, `gradle-catalog`,
+  `property`, `npm`.
+- `outcome`, one of:
+  - `tracked: <label>` - a `products` row exists with that label;
+  - `duplicate-of: <label>` - same dedup key as an earlier declaration; the first one wins;
+  - `skipped: <reason>` - standardized reasons: `maven version range`, `gradle dynamic
+    version`, `SNAPSHOT version`, `unresolved property placeholder`, `internal group`,
+    `no version (parent/BOM-managed)`, `classifier variant (duplicates the base artifact)`,
+    `bare-major vue spec (no minor cycle published)`, `known-untracked test dependency`,
+    or the non-runtime scope itself (`test scope`, `provided scope`, `system scope`);
+  - `unmapped: see _skipped_npm_packages` - npm package with no mapping; the package and
+    version are detailed in `_skipped_npm_packages` (`react-dom` is a known no-mapping
+    alias of `react` and appears only here).
+
 ### Real-world document patterns
 
 Confluence/wiki EOL tables and inventories are messy. Handle these consistently:
