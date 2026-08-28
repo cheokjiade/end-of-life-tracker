@@ -197,15 +197,18 @@ canonical message format and detailed workflow.
 - **Stdlib only** across the `eoltracker/` package (`boto3` is imported lazily
   inside the S3/SNS/SES paths in `eoltracker/notify.py` and
   `eoltracker/handler.py`). No third-party dependencies.
-- **Keep configs ASCII.** `load_config_from_file` reads bytes and requires
-  ASCII-only JSON (cp1252 (Windows) locale-safety), and **every load — local
-  or S3 — enforces the `eoltracker.validation` schema**: invalid top-level or
-  runtime shapes (`products` container, `alert_thresholds_days`,
-  `notify_when`, notification channels) are rejected before any provider
-  call. Malformed individual product entries do not abort the run; they
-  become `error` rows while valid products continue.
+- **Config files: ASCII or UTF-8.** Config loading decodes bytes explicitly
+  (never locale-dependent): pure ASCII is always accepted (ASCII is a UTF-8
+  subset), UTF-8 with or without a BOM is accepted — hand-edited configs may
+  contain UTF-8 characters — and any other encoding is rejected with a clear
+  re-save-as-UTF-8 error, so the old cp1252 (Windows) locale hazard is gone.
+  **Every load — local or S3 — enforces the `eoltracker.validation` schema**:
+  invalid top-level or runtime shapes (`products` container,
+  `alert_thresholds_days`, `notify_when`, notification channels) are rejected
+  before any provider call. Malformed individual product entries do not abort
+  the run; they become `error` rows while valid products continue.
   `json.dump(..., ensure_ascii=True)` (the default) keeps generated configs
-  safe.
+  pure ASCII.
 - **`eol_config.*.json` and `reports/` are gitignored** (except
   `eol_config.sample.json`, the template). Per-project configs and generated
   reports are local artifacts.
@@ -228,7 +231,7 @@ canonical message format and detailed workflow.
 - **Run locally:** `python lambda_function.py <config.json>`, or `./run.sh` /
   `.\run.ps1` (interactive config picker).
 - **`policy_note`** (optional, any config entry) is a short ASCII observation of
-  a product's release/support policy. `check_product` copies it onto the result
+  a product's release/support policy (config files themselves may be UTF-8). `check_product` copies it onto the result
   and both formatters render it as a muted sub-line (HTML: a `&#9432;` marker;
   text: `Policy:`). Use it for no-EOL-date platform/infra items where a blank
   EOL date is misleading.

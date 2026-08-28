@@ -406,16 +406,19 @@ def _check_notifications(notifications, results):
 def load_config_json_bytes(raw):
     """Parse raw bytes into a config dict, reporting decode/json failures.
 
-    Decoding intentionally requires ASCII so non-ASCII configs are flagged
-    locally instead of failing later inside load_config_from_file's plain
-    open() (e.g. under cp1252 Windows locales - keep configs ASCII).
+    Decoding is explicit, never locale-dependent: pure ASCII is always
+    accepted (ASCII is a UTF-8 subset), UTF-8 with or without a BOM is
+    accepted so hand-edited configs may contain Unicode, and any other
+    encoding (UTF-16, cp1252/ANSI bytes) fails with a precise error instead
+    of silently mis-decoding under a platform default open() (e.g. cp1252
+    Windows locales).
     """
     try:
-        text = raw.decode("ascii")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ValueError(
-            "config file is not ASCII-only "
-            f"({exc})") from exc
+            "config file is not valid UTF-8 (or ASCII); re-save the file as "
+            f"UTF-8 ({exc})") from exc
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:

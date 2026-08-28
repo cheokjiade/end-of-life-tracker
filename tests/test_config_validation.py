@@ -269,17 +269,32 @@ errs = errors(findings)
 assert [e["path"] for e in errs] == ["config"], findings
 assert "UTF-8" in errs[0]["message"] or "ASCII" in errs[0]["message"], findings
 
-# Valid UTF-8 can still be unsafe on Windows' locale-dependent plain open().
-# Keep deployable configs ASCII-only, as documented in AGENTS.md.
+# Valid UTF-8 is accepted: decoding is explicit (utf-8-sig), never
+# locale-dependent, so hand-edited configs may contain Unicode characters.
 utf8_non_ascii = tmpfile(
     "non-ascii.json",
-    json.dumps({"products": [{"source": "manual", "label": "caf\u00e9"}]},
-               ensure_ascii=False).encode("utf-8"),
+    json.dumps(
+        {"products": [{"source": "manual", "label": "caf\u00e9 \u2014 policy"}]},
+        ensure_ascii=False).encode("utf-8"),
 )
-findings = validate_config_file(utf8_non_ascii)
+assert not validate_config_file(utf8_non_ascii), validate_config_file(utf8_non_ascii)
+assert validate_main([utf8_non_ascii]) == 0
+
+# A leading UTF-8 BOM is tolerated (utf-8-sig strips it).
+utf8_bom = tmpfile(
+    "bom.json",
+    b"\xef\xbb\xbf" + json.dumps(
+        {"products": [{"source": "manual", "label": "caf\u00e9 \u2014 policy"}]},
+        ensure_ascii=False).encode("utf-8"),
+)
+assert not validate_config_file(utf8_bom), validate_config_file(utf8_bom)
+
+# Raw invalid UTF-8 (lone cp1252 em-dash byte) fails with an actionable error.
+bad_utf8 = tmpfile("bad-utf8.json", b'{"products": []}\x97')
+findings = validate_config_file(bad_utf8)
 errs = errors(findings)
 assert [e["path"] for e in errs] == ["config"], findings
-assert "ASCII-only" in errs[0]["message"], findings
+assert "not valid UTF-8" in errs[0]["message"], findings
 
 missing = os.path.join(tmpdir, "nope.json")
 findings = validate_config_file(missing)

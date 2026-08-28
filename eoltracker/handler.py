@@ -166,11 +166,11 @@ def load_config_from_s3(key=None):
 def load_config_from_file(path):
     """Load product configuration from a local file (for testing).
 
-    Reads bytes and enforces the same ASCII-only + JSON rules as the
-    ``--validate`` linter (see :mod:`eoltracker.validation`), then applies
-    :func:`enforce_valid_config` exactly like S3 loading — invalid top-level
-    or runtime shapes raise :class:`ConfigValidationError` before providers
-    run.
+    Reads bytes and enforces the same encoding (ASCII or UTF-8) + JSON
+    rules as the ``--validate`` linter (see :mod:`eoltracker.validation`),
+    then applies :func:`enforce_valid_config` exactly like S3 loading —
+    invalid top-level or runtime shapes raise
+    :class:`ConfigValidationError` before providers run.
     """
     with open(path, "rb") as f:
         raw = f.read()
