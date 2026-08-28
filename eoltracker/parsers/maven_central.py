@@ -163,6 +163,7 @@ def _provider_maven_central(entry, today):
 
     latest_v = latest["v"]
     latest_date = latest["released"]
+    latest_date_text = str(latest_date) if latest_date else "date unknown"
     in_use_date = in_use["released"] if in_use else None
     on_latest = latest_v == version
 
@@ -182,12 +183,12 @@ def _provider_maven_central(entry, today):
     elif in_use is None:
         message = (
             f"Version {version} not on Maven Central (private build?); "
-            f"latest published is {latest_v} ({latest_date})"
+            f"latest published is {latest_v} ({latest_date_text})"
         )
     elif in_use_date is None:
         message = (
             f"In use: {version} (release date unknown); "
-            f"latest: {latest_v} ({latest_date})"
+            f"latest: {latest_v} ({latest_date_text})"
         )
     else:
         message = f"In use: {version}; latest: {latest_v}"

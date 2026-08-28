@@ -152,6 +152,24 @@ assert "release date unknown" in result["message"], result
 assert "not on Maven Central" not in result["message"], result
 print("OK confirmed undated POM message")
 
+try:
+    maven._fetch_maven_latest = lambda *_args: {
+        "v": "2.0.0", "released": None}
+    maven._fetch_maven_specific = lambda *_args: {
+        "v": "1.0.0", "released": None}
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven._fetch_maven_latest = real_latest
+    maven._fetch_maven_specific = real_specific
+assert "latest: 2.0.0 (date unknown)" in result["message"], result
+assert "None" not in result["message"], result
+print("OK undated latest message")
+
 
 # Repository path components are quoted; coordinates cannot alter the host.
 base = maven._artifact_base_url("org.example space", "widget/name")
