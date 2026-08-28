@@ -48,6 +48,11 @@ resource "terraform_data" "validate_eol_config" {
 
   triggers_replace = [
     filesha256("${path.module}/../${each.value.config_path}"),
+    filesha256("${path.module}/../lambda_function.py"),
+    sha256(join("", [
+      for rel in sort(fileset("${path.module}/../eoltracker", "**/*.py")) :
+      filesha256("${path.module}/../eoltracker/${rel}")
+    ])),
   ]
 
   provisioner "local-exec" {
@@ -182,16 +187,27 @@ locals {
   package_manifest_sha256 = try(local.package_manifest.artifact.sha256, "")
 
   # Allowlist expectations derived from the working tree itself: the shim plus
-  # every *.py under eoltracker/. Must stay in lockstep with the allowlist in
-  # build_lambda_package.py; a drift between the two fails plan loudly here.
+  # every *.py under eoltracker/. Hidden Python files remain in this set so a
+  # stale manifest cannot hide them; the builder itself rejects them. The
+  # second list mirrors the builder's fail-closed handling of hidden and
+  # unexpected non-Python files (apart from documented compiled junk).
+  runtime_tree_files = fileset("${path.module}/../eoltracker", "**")
   expected_runtime_files = sort(concat(
     ["lambda_function.py"],
     formatlist("eoltracker/%s", [
       for f in fileset("${path.module}/../eoltracker", "**/*.py") : f
-      if length(regexall("(?i)(^|/)__pycache__/", f)) == 0 &&
-      length(regexall("(^|/)\\.", f)) == 0
+      if length(regexall("(?i)(^|/)__pycache__/", f)) == 0
     ]),
   ))
+  unexpected_runtime_files = sort([
+    for f in local.runtime_tree_files : f
+    if length(regexall("(?i)(^|/)__pycache__/", f)) == 0 &&
+    length(regexall("(?i)\\.(pyc|pyo)$", f)) == 0 &&
+    (
+      length(regexall("(^|/)\\.", f)) > 0 ||
+      length(regexall("\\.py$", f)) == 0
+    )
+  ])
 }
 
 resource "aws_lambda_function" "eol_checker" {
@@ -218,6 +234,11 @@ resource "aws_lambda_function" "eol_checker" {
     precondition {
       condition     = sort(keys(local.package_manifest_inputs)) == local.expected_runtime_files
       error_message = "Runtime file set differs from the built manifest: sources were added or removed since 'python build_lambda_package.py build' last ran. Rebuild the artifact."
+    }
+
+    precondition {
+      condition     = length(local.unexpected_runtime_files) == 0
+      error_message = "Unexpected or hidden files exist under eoltracker/: ${join(", ", local.unexpected_runtime_files)}. Remove them before rebuilding or applying."
     }
 
     precondition {

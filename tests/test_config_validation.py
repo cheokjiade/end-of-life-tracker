@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker.validation import main as validate_main
 from eoltracker.validation import VALID_ENGINES, validate_config, validate_config_file
-from eoltracker.parsers.aws_rds import _AWS_DOCS_URLS
+from eoltracker.parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -99,11 +99,28 @@ for source, missing, present in (
     res = validate_config({"products": [entry_ok]})
     assert not errors(res), (source, res)
 
-# manual entries carry no mandatory fields (may be untracked-on-purpose)
-assert not errors(validate_config({"products": [{"source": "manual"}]}))
+# manual entries are watch-only by design, but still need a report label.
+assert by_path(errors(validate_config({
+    "products": [{"source": "manual"}]})), "products[0].label")
+assert not errors(validate_config({
+    "products": [{"source": "manual", "label": "Vendor tool"}]}))
+
+# npm can watch the registry's latest release without an in-use version.
+assert not errors(validate_config({"products": [{
+    "source": "npm_registry", "package": "example-pkg",
+}]}))
+
+# Optional display fields are safe only as non-blank strings.
+for field in ("label", "policy_note", "reference_url"):
+    for bad in ("", "   ", 42, True, []):
+        res = validate_config({"products": [{
+            "product": "python", "version": "3.13", field: bad,
+        }]})
+        assert by_path(errors(res), f"products[0].{field}"), (field, bad, res)
 
 # --- aws_rds_scrape engine guard -------------------------------------------
 assert set(VALID_ENGINES) == set(_AWS_DOCS_URLS)
+assert DEFAULT_ENGINE in VALID_ENGINES
 res = validate_config({
     "products": [
         {"source": "aws_rds_scrape", "engine": "mysql", "version": "17.5"}]
@@ -113,11 +130,14 @@ assert by_path(errors(res), "products[0].engine"), res
 # --- thresholds -------------------------------------------------------------
 # 'one' keeps the otherwise-empty products list from raising its own error.
 one = [{"label": "A", "source": "manual"}]
-for bad in ([], [], [0], [-30], ["soon"], [True]):
+for bad in ([], [0], [-30], ["soon"], [True], [float("inf")], [float("nan")]):
     res = validate_config({"alert_thresholds_days": bad, "products": one})
     assert by_path(errors(res), "alert_thresholds_days"), (bad, res)
 assert not errors(validate_config({
     "alert_thresholds_days": [30, 90], "products": one,
+}))
+assert not errors(validate_config({
+    "alert_thresholds_days": [10 ** 400], "products": one,
 }))
 
 # --- notify_when ------------------------------------------------------------
@@ -150,6 +170,9 @@ valid_channels = validate_config({"products": one, "notifications": [
      "to_emails": ["team@example.com"]},
 ]})
 assert not errors(valid_channels)
+
+empty_notifications = validate_config({"products": one, "notifications": []})
+assert by_path(warnings(empty_notifications), "notifications"), empty_notifications
 
 # env-var / event-payload fallbacks surface as warnings, never errors
 fallback = validate_config({"products": one, "notifications": [
@@ -185,7 +208,7 @@ def tmpfile(name, data):
     return p
 
 good = tmpfile("good.json", json.dumps(
-    {"products": [{"source": "manual"}]}).encode("ascii"))
+    {"products": [{"source": "manual", "label": "Vendor tool"}]}).encode("ascii"))
 assert not validate_config_file(good)
 
 bad_json = tmpfile("bad.json", b"{oops")
@@ -226,5 +249,15 @@ proc = subprocess.run(
     capture_output=True, text=True, cwd=ROOT)
 assert proc.returncode == 0, proc.stdout + proc.stderr
 assert "VALID" in proc.stdout
+
+proc = subprocess.run(
+    [sys.executable, "lambda_function.py", "--validate=eol_config.sample.json"],
+    capture_output=True, text=True, cwd=ROOT)
+assert proc.returncode == 0, proc.stdout + proc.stderr
+
+proc = subprocess.run(
+    [sys.executable, "lambda_function.py", "--validate="],
+    capture_output=True, text=True, cwd=ROOT)
+assert proc.returncode == 2, proc.stdout + proc.stderr
 
 print("OK test_config_validation")
