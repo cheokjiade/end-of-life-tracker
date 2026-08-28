@@ -314,15 +314,25 @@ extracted manually (the scanner silently misses it):
   (parent/BOM-managed) are recorded as kind `unversioned-dep` and produce **no** tracker
   entry — add those manually.
 - `build.gradle` / `build.gradle.kts`: quoted GAV strings in single or double quotes
-  (`implementation 'g:a:v'`), Groovy map notation and kts named args
+  (`implementation 'g:a:v'`), Groovy map notation and kts named args for
+  `implementation`/`api`/`compileOnly`/`runtimeOnly`/`classpath` (buildscript blocks)
   (`group: 'g', name: 'a', version: 'v'`), `platform(...)` BOM imports, plugins blocks
   (`id("g.a") version "v"`, `kotlin("jvm") version "v"` — plugin ids are converted to
   best-effort Maven coordinates), and `libs.*` references resolved against
   `libs.versions.toml` (best-effort TOML subset: `[versions]`, `[libraries]`,
-  `[bundles]`; unresolvable aliases are skipped).
+  `[bundles]`; unresolvable aliases are skipped). Groovy `//` and `/* ... */` comments
+  are stripped first while string literals are respected — commented-out dependencies
+  are never tracked, and a `//` inside a string (e.g. a repo URL) survives. `test*`
+  configurations and `project(...)` / `files(...)` / `fileTree(...)` declarations
+  match nothing.
 - Versions that never produce entries (no public registry resolves them): `-SNAPSHOT`,
-  `${property}` placeholders, Maven ranges (`[2.0,)`), and Gradle dynamic versions
-  (`2.+`, `latest.release`, `latest.integration`).
+  `${property}` placeholders, Maven ranges (`[2.0,)`) including unterminated ones
+  (`[2.16.0`), classifier variants (`1.0:test-jar` — a classifier jar duplicates the
+  base artifact; track the base coordinates instead), and Gradle dynamic versions —
+  anything containing `+` (`2.+`, `1.0+eap`; NOTE this deliberately also skips semver
+  build-metadata versions like `1.2.3+build.5`), bare `latest`, and `latest.release` /
+  `latest.integration`. An ext suffix (`1.0@jar`) is truncated to the plain version
+  (`1.0`).
 - `package.json`: `dependencies`/`devDependencies`/`engines.node`; known packages map to
   endoflife.date entries, the rest land in `_skipped_npm_packages`.
 

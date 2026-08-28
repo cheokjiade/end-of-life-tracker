@@ -8,9 +8,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from generate_config import (
+    _GRADLE_PATTERN_QUOTED,
     _is_dynamic_version,
     _is_maven_version_range,
     _map_java_dep,
+    _strip_gradle_comments,
     parse_gradle,
     parse_pom,
     parse_version_catalog,
@@ -333,6 +335,178 @@ with tempfile.TemporaryDirectory() as tmp:
     deps = parse_gradle(p, (aliases, bundles))
 assert deps == [("org.apache.commons", "commons-lang3", "3.14.0", "gradle-catalog")], deps
 print("OK parse_gradle resolves a passed-in catalog directly")
+
+
+# --- H: classpath map notation (buildscript blocks) --------------------------
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+buildscript {
+    dependencies {
+        classpath group: 'com.g', name: 'a', version: '1.0'
+        classpath 'io.spring.gradle:dependency-management-plugin:1.1.5'
+    }
+}
+""")
+    deps = parse_gradle(p)
+assert ("com.g", "a", "1.0", "gradle") in deps, deps
+assert ("io.spring.gradle", "dependency-management-plugin", "1.1.5", "gradle") in deps, deps
+assert len(deps) == 2, deps
+print("OK classpath matches both quoted and map-notation forms")
+
+
+# --- I: classifier / ext version suffixes ------------------------------------
+
+assert _map_java_dep("com.example", "lib", "1.0:test-jar") is None
+entry = _map_java_dep("com.example", "lib", "1.0@jar")
+assert entry is not None and entry["version"] == "1.0", entry
+assert _map_java_dep("com.example", "lib", "@jar") is None
+print("OK classifier variants skipped; @ext truncated to the plain version")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation 'com.example:lib:1.0:test-jar'
+    implementation 'g:a:1.0@jar'
+    implementation 'g:b:@jar'
+}
+""")
+    deps = parse_gradle(p)
+assert len(deps) == 3, deps
+scan = {
+    "java": [(g, a, v, str(p), kind) for g, a, v, kind in deps],
+    "pom_properties": [],
+    "node": [],
+    "files": [str(p)],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["a 1.0"], rows
+assert rows[0]["version"] == "1.0", rows
+print("OK classifier decls produce no row; @ext row carries the bare version")
+
+
+# --- J: comment stripping ----------------------------------------------------
+
+assert _strip_gradle_comments('// implementation "g:a:v"') == ""
+assert _strip_gradle_comments('implementation "g:a:v" // upgraded') == 'implementation "g:a:v" '
+assert _strip_gradle_comments('/* implementation "g:a:v" */') == " "
+assert _strip_gradle_comments("/* unterminated to eof") == ""
+stripped = _strip_gradle_comments("// don't ship 'g:a:v'\nimplementation 'g:c:v'")
+assert stripped == "\nimplementation 'g:c:v'", repr(stripped)
+print("OK _strip_gradle_comments handles line/block comments, strings, apostrophes")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    // implementation 'com.example:old-lib:1.0'
+    implementation "g:a:v" // upgraded
+    /* implementation "g:b:v" */
+    maven { url = uri("https://plugins.gradle.org/m2/") }
+}
+""")
+    stripped = _strip_gradle_comments(p.read_text(encoding="utf-8"))
+    assert 'uri("https://plugins.gradle.org/m2/")' in stripped, stripped
+    deps = parse_gradle(p)
+assert deps == [("g", "a", "v", "gradle")], deps
+print("OK commented-out deps yield nothing; URLs inside strings survive")
+
+
+# --- K: hardened range/dynamic filters ---------------------------------------
+
+assert _is_maven_version_range("[2.16.0")   # unterminated range
+assert _is_maven_version_range("[2.16.0,)")
+assert _is_maven_version_range("(1.0,2.0]")
+assert not _is_maven_version_range("2.16.1")
+assert not _is_maven_version_range("")
+assert _is_dynamic_version("latest")          # bare
+assert _is_dynamic_version("latest.release")
+assert _is_dynamic_version("latest.integration")
+assert _is_dynamic_version("1.0+eap")         # gradle '+eap' selector
+assert _is_dynamic_version("2.+")
+assert _is_dynamic_version("1.2.+")
+assert _is_dynamic_version("1.2.3+build.5")   # documented trade-off
+assert not _is_dynamic_version("2.16.1")
+assert not _is_dynamic_version("3.0.0-M1")
+print("OK hardened range/dynamic detection: bare latest, '+', unterminated ranges")
+
+for bad in ("latest", "1.0+eap", "[2.16.0", "(1.0,", "1.2.3+build.5",
+            "[2.16.0,)", "2.+", "latest.release", "latest.integration", "1.2.+"):
+    assert _map_java_dep("commons-io", "commons-io", bad) is None, bad
+print("OK _map_java_dep skips bare latest, '+' versions, unterminated ranges")
+
+for good in ("2.16.0", "3.0.0-M1", "1.0-alpha", "33.4.0-jre", "2.21"):
+    entry = _map_java_dep("commons-io", "commons-io", good)
+    assert entry is not None and entry["version"] == good, (good, entry)
+print("OK legit positives still map: 3.0.0-M1, 1.0-alpha, 33.4.0-jre, 2.21")
+
+
+# --- L: test-* configurations and non-dependency declarations ----------------
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testCompileOnly 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
+    testApi 'com.example:testapi-dep:1.0'
+    testFixturesImplementation 'com.example:fixtures-dep:1.0'
+    implementation project(":sub")
+    implementation files("libs/local.jar")
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [], deps
+print("OK test* configurations and project/files/fileTree decls match nothing")
+
+# Word-boundary pin: lowercase variants would otherwise slip through on case
+# luck alone (testimplementation contains 'implementation', testapi 'api').
+assert _GRADLE_PATTERN_QUOTED.search("testapi 'g:a:v'") is None
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle",
+               "testapi 'g:a:v'\n"
+               "testimplementation group: 'g', name: 'a', version: 'v'\n")
+    deps = parse_gradle(p)
+assert deps == [], deps
+print("OK word-boundary guard pins test-config exclusion beyond case luck")
+
+
+# --- M: quoted + map-notation declarations of the same GAV dedupe ------------
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation 'commons-io:commons-io:2.16.1'
+    implementation group: 'commons-io', name: 'commons-io', version: '2.16.1'
+}
+""")
+    deps = parse_gradle(p)
+assert len(deps) == 2, deps
+scan = {
+    "java": [(g, a, v, str(p), kind) for g, a, v, kind in deps],
+    "pom_properties": [],
+    "node": [],
+    "files": [str(p)],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["commons-io 2.16.1"], rows
+print("OK quoted + map-notation decls of the same GAV dedupe to one row")
+
+
+# --- N: mismatched quote pairs never match -----------------------------------
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+dependencies {
+    implementation "com.example:mixed:a:1.0'
+    implementation 'com.example:mixed:b:1.0"
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [], deps
+print("OK mixed-quote strings never match")
 
 
 print("OK test_generate_parsing (batch: quotes + map notation)")

@@ -25,8 +25,10 @@ Mapping strategy:
                    groups (org.opensaml, net.shibboleth.*) are emitted
                    against the Shibboleth repository, not Maven Central.
                    Versions that no registry resolves — -SNAPSHOT,
-                   ${property} placeholders, Maven ranges ([2.0,)), and
-                   Gradle dynamic versions (2.+, latest.*) — are skipped.
+                   ${property} placeholders, Maven ranges ([2.0,) or an
+                   unterminated [2.0), classifier variants (1.0:ext), and
+                   Gradle dynamic versions (2.+, 1.0+eap, latest.*) — are
+                   skipped; ext suffixes (1.0@jar) are truncated to 1.0.
     Gradle plugin ids -> best-effort Maven coordinates, then the normal
                    java mapping (kind "gradle-plugin").
     POM props   -> known names (tomcat.version, netty.version, logback.version,
@@ -287,28 +289,59 @@ _NPM_MAPPINGS = {
 
 
 def _is_maven_version_range(version):
-    """True for Maven range syntax: '[2.16.0,)' or '(1.0,2.0]'."""
-    return bool(version) and version[0] in "[(" and version[-1] in "])"
+    """True for Maven range syntax: '[2.16.0,)' or '(1.0,2.0]'.
+
+    Unterminated ranges count too: a version that merely starts with '['
+    or '(' (e.g. '[2.16.0') resolves nowhere and is skipped as well.
+    """
+    return bool(version) and version[0] in "[("
 
 
 def _is_dynamic_version(version):
-    """True for Gradle dynamic versions: '2.+', '1.2.+', 'latest.release', ..."""
+    """True for Gradle dynamic versions: '2.+', '1.0+eap', 'latest',
+    'latest.release', ...
+
+    Any version containing '+' counts as dynamic, because Gradle uses '+'
+    in open-ended selectors ('2.+', '1.0+eap'). Trade-off: semver
+    build-metadata versions like '1.2.3+build.5' are skipped too — rare in
+    dependency manifests, and a skipped pin is safer than a tracker row
+    doomed to mismatch every cycle lookup.
+    """
     if not version:
         return False
-    return (
-        version.endswith("+")
-        or version in ("latest.release", "latest.integration", "latest.version")
-        or ".+" in version
-    )
+    return "+" in version or version == "latest" or version.startswith("latest.")
+
+
+def _strip_classifier_ext(version):
+    """Normalize gradle GAV suffixes on a version string.
+
+    '1.0:test-jar' (a 4th colon field = classifier) -> None: the classifier
+    variant duplicates the base artifact and no registry resolves the
+    joined string as written. '1.0@jar' (ext suffix) -> '1.0'. Returns None
+    when nothing usable remains (e.g. '@jar' alone).
+    """
+    if ":" in version:
+        return None
+    if "@" in version:
+        version = version.split("@", 1)[0]
+    return version or None
 
 
 def _map_java_dep(group, artifact, version):
-    # Skip artifacts that won't resolve on any public registry: SNAPSHOT
-    # builds (in-flight project versions), internal coordinate prefixes,
-    # ${unresolved.property} placeholders that slipped through, Maven
-    # version ranges, and Gradle dynamic versions.
+    """Map (group, artifact, version) to a tracker entry, or None to skip.
+
+    Skips anything no public registry resolves as written: SNAPSHOT builds
+    (in-flight project versions), internal coordinate prefixes,
+    ${unresolved.property} placeholders, classifier variants ('1.0:test-jar'
+    — they duplicate the base artifact), Maven version ranges including
+    unterminated ones ('[2.0,'), and Gradle dynamic versions ('2.+',
+    'latest', '1.0+eap'). Ext suffixes ('1.0@jar') are truncated to the
+    plain version before mapping.
+    """
+    version = _strip_classifier_ext(version)
     if (
-        version.endswith("-SNAPSHOT")
+        not version
+        or version.endswith("-SNAPSHOT")
         or group.startswith("internal.")
         or "${" in version
         or _is_maven_version_range(version)
@@ -428,16 +461,73 @@ def parse_pom(path):
 # Gradle parser (regex — covers the common patterns, not every edge case)
 # ---------------------------------------------------------------------------
 
+def _strip_gradle_comments(text):
+    """Remove // line comments and /* ... */ block comments from gradle
+    sources, leaving quoted strings untouched (Groovy and Kotlin share the
+    same comment and quoting grammar for this purpose).
+
+    A '//' inside a string literal must survive — dependency coordinates and
+    maven { url = uri("https://...") } blocks — and, conversely, an
+    apostrophe inside a comment ("don't ship this") must not open a string
+    that swallows following code. Backslash escapes inside strings are
+    honoured. Line comments are removed up to (and keeping) the newline;
+    block comments collapse to a single space, since every pattern below
+    spans whitespace. Unterminated comments run to end of text.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    quote = None
+    while i < n:
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and text[i + 1:i + 2] == "/":
+            nl = text.find("\n", i)
+            if nl == -1:
+                break
+            i = nl
+            continue
+        if ch == "/" and text[i + 1:i + 2] == "*":
+            end = text.find("*/", i + 2)
+            if end == -1:
+                break
+            out.append(" ")
+            i = end + 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+# The (?<!\w) guard pins configuration-name matching to word starts, so test
+# configurations (testImplementation, testApi, ...) and any longer word that
+# merely contains a configuration name never match — independent of case.
 _GRADLE_PATTERN_QUOTED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*'
+    r'(?<!\w)(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*'
     r'(?:\(\s*)?(?:platform\s*\(\s*)?([\'"])'
     r'([^:\'"\s]+):([^:\'"\s]+):([^\'"\s]+)\1'
 )
 # Groovy map notation (`group: 'g', name: 'a', version: 'v'`) and the Kotlin
 # DSL named-args form (`group = "g", ...`) share a field grammar; match the
-# whole three-field statement, then extract the fields by name.
+# whole three-field statement, then extract the fields by name. classpath
+# (buildscript blocks) uses the same notation as the dependency
+# configurations.
 _GRADLE_PATTERN_MAP = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(?\s*'
+    r'(?<!\w)(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
     r'(?:(?:group|name|version)\s*[:=]\s*[\'"][^\'"]*[\'"]\s*,?\s*){3}',
     re.DOTALL,
 )
@@ -471,6 +561,11 @@ def _gradle_plugin_coords(plugin_id):
 def parse_gradle(path, catalog=None):
     """Parse build.gradle / build.gradle.kts.
 
+    Groovy/Kotlin // line comments and /* ... */ block comments are stripped
+    first (string literals are respected, so a // inside a dependency string
+    or a maven { url = uri("https://...") } block survives), so
+    commented-out dependencies never produce entries.
+
     Returns [(g, a, v, kind), ...] with kind "gradle" for dependencies,
     "gradle-plugin" for plugins-block entries, and "gradle-catalog" for
     libs.* references resolved against `catalog` (the (aliases, bundles)
@@ -481,6 +576,7 @@ def parse_gradle(path, catalog=None):
     except OSError as exc:
         print(f"  ! read error on {path}: {exc}", file=sys.stderr)
         return []
+    text = _strip_gradle_comments(text)
     deps = []
     for m in _GRADLE_PATTERN_QUOTED.finditer(text):
         deps.append((m.group(2), m.group(3), m.group(4), "gradle"))
