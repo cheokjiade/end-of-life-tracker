@@ -17,6 +17,9 @@ terraform/.terraform/
 terraform/.terraform.lock.hcl
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
+
+# Allowlisted Lambda artifact + manifest (build_lambda_package.py; rebuildable)
+terraform/build/
 terraform/lambda.zip
 terraform/terraform.tfvars
 

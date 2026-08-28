@@ -171,6 +171,9 @@ You can enable multiple channels simultaneously.
 ### Steps
 
 ```bash
+# 0. Build the Lambda artifact from the runtime allowlist
+python build_lambda_package.py build
+
 cd terraform
 
 # 1. Create your variables file
@@ -181,6 +184,11 @@ cp terraform.tfvars.example terraform.tfvars
 terraform init
 terraform apply
 ```
+
+The ZIP contains only `lambda_function.py` and the `eoltracker/` package.
+Terraform fails plan/apply unless that artifact is byte-for-byte current, so
+rerun step 0 after any change under `eoltracker/`. See
+[docs/packaging.md](docs/packaging.md) for how packaging and verification work.
 
 After deployment:
 - **Confirm the SNS subscription** — check your email for a confirmation link from AWS
