@@ -105,6 +105,17 @@ Supported notification types (include only what the inputs call for):
 `console` · `html_file` (needs `path`) · `sns` (optional `topic_arn`) ·
 `ses` (optional `from_email`, `to_emails: [...]`).
 
+SNS and SES are required delivery paths by default; console and `html_file`
+are optional. Add boolean `required` only when the source material explicitly
+overrides that default (for example `{"type": "sns", "required": false}`).
+
+`html_file` is local-only by default: inside the AWS Lambda deployment a
+relative `path` (or any absolute path outside `/tmp`) makes that channel skip
+with a warning. Only emit an explicit absolute `/tmp/...` path when a caller
+asks for in-Lambda scratch output — `/tmp` there is ephemeral, so durable
+AWS-hosted reports should use SNS/SES or S3 instead. Local runs keep writing
+under `reports/<project>/<year>/<month>/<day>/`.
+
 ### Product entry shapes — one per source
 
 **1. `endoflife_date` (default — omit `source`).** For languages, runtimes, OS/distros,

@@ -4,16 +4,24 @@ Configuration is loaded from an S3 JSON file so products can be updated
 without redeploying the Lambda. Alerts are sent via SNS, SES, console, or
 HTML file (multiple channels can be enabled at once).
 
+On AWS Lambda a failed delivery is an invocation failure: when every required
+channel ends up undelivered (all errored or skipped), the handler
+raises ``DeliveryFailureError`` so Lambda's asynchronous retries, dead-letter
+queue, and CloudWatch alarms engage. Locally, runs print the per-channel
+outcomes and never raise. See README ("Delivery outcomes and failure
+handling") and ``eoltracker/notify.py`` for the outcome contract.
+
 Environment variables:
     CONFIG_BUCKET   — S3 bucket containing the config file
-    CONFIG_KEY      — S3 key for the config file (default: eol_config.json)
-    SNS_TOPIC_ARN   — SNS topic ARN for plain-text email notifications
+    CONFIG_KEY      — Optional default S3 key for manual invocations
+    SNS_TOPIC_ARN   — Optional default SNS topic for manual invocations
     SES_FROM_EMAIL  — SES sender for HTML email notifications (optional)
-    SES_TO_EMAILS   — Comma-separated SES recipients (optional)
+    SES_TO_EMAILS   — Optional default comma-separated SES recipients
 """
 
 import json
 import os
+import time
 from datetime import date
 
 from .core import logger
@@ -24,7 +32,13 @@ from .report import (
     format_report_text,
     sanitize_text,
 )
-from .notify import send_notifications
+from .notify import (
+    DeliveryFailureError,
+    delivery_failed,
+    running_in_lambda,
+    send_notifications,
+    summarize_outcomes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +66,33 @@ def build_subject(analysis, project, today):
         f"{prefix}{proj_tag} Software End-of-Life Status - {today}")
 
 
+def _emit_delivery_metrics(outcomes):
+    """Emit a durable signal when any required channel is undelivered."""
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    undelivered = [
+        outcome for outcome in outcomes
+        if outcome.get("required") and not outcome.get("delivered")
+    ]
+    if not function_name or not undelivered:
+        return
+    payload = {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": "EOLTracker",
+                "Dimensions": [["FunctionName"]],
+                "Metrics": [{
+                    "Name": "RequiredChannelsUndelivered",
+                    "Unit": "Count",
+                }],
+            }],
+        },
+        "FunctionName": function_name,
+        "RequiredChannelsUndelivered": len(undelivered),
+    }
+    print(json.dumps(payload, separators=(",", ":")))
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -63,10 +104,13 @@ def load_config_from_s3(key=None):
     pass it via the invocation event so a single Lambda can fan out across
     many per-project config files.
     """
+    key = key or os.environ.get("CONFIG_KEY")
+    if not key:
+        raise ValueError(
+            "no config_key was provided and CONFIG_KEY is not configured")
     import boto3
 
     bucket = os.environ["CONFIG_BUCKET"]
-    key = key or os.environ.get("CONFIG_KEY", "eol_config.a.json")
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     return json.loads(obj["Body"].read().decode("utf-8"))
@@ -138,10 +182,32 @@ def lambda_handler(event, context):
         or analysis["has_health_failures"]
     )
 
+    outcomes = []
     if should_notify:
         subject = build_subject(analysis, project, today)
-        send_notifications(config, report_text, report_html, subject,
-                           runtime_overrides=runtime_overrides)
+        outcomes = send_notifications(
+            config, report_text, report_html, subject,
+            runtime_overrides=runtime_overrides,
+        ) or []
+        for line in summarize_outcomes(outcomes).splitlines():
+            logger.info("Delivery %s", line)
+        _emit_delivery_metrics(outcomes)
+        if delivery_failed(outcomes):
+            # No required channel delivered. In Lambda mode this must be an
+            # invocation failure so retries/DLQ/alarms engage (R-03); local
+            # runs just surface the summary and continue.
+            if running_in_lambda():
+                required_failures = [o for o in outcomes if o.get("required")]
+                raise DeliveryFailureError(
+                    "all required notification channels failed to deliver: "
+                    + "; ".join(
+                        "{}: {}".format(o["channel"],
+                                        "skipped: " + o["detail"] if o["skipped"]
+                                        else o["error"] or o["detail"])
+                        for o in required_failures
+                    )
+                )
+            logger.error("All required notification channels failed to deliver")
     else:
         logger.info("No alerts and notify_when=alerts_only — skipping notification")
 
@@ -151,7 +217,13 @@ def lambda_handler(event, context):
         "checked": len(results),
         "has_alerts": analysis["has_lifecycle_alerts"],
         "has_health_failures": analysis["has_health_failures"],
-        "notified": should_notify,
+        # True only when at least one configured channel actually delivered.
+        "notified": any(o["delivered"] for o in outcomes),
+        "notification_outcomes": outcomes,
+        "required_channels_undelivered": sum(
+            1 for o in outcomes
+            if o.get("required") and not o.get("delivered")
+        ),
     }
 
 
@@ -163,7 +235,8 @@ def run_local(config_path):
     """Run a check against a local config file and dispatch notifications.
 
     Holds the body of the original ``__main__`` block so the shim's CLI and
-    any caller can invoke it directly.
+    any caller can invoke it directly. Local runs never raise on delivery
+    failure; per-channel outcomes are printed instead.
     """
     config = load_config_from_file(config_path)
 
@@ -178,4 +251,10 @@ def run_local(config_path):
 
     subject = build_subject(analysis, None, today)
 
-    send_notifications(config, report_text, report_html, subject)
+    outcomes = send_notifications(config, report_text, report_html, subject)
+    print("Notification channels:")
+    print(summarize_outcomes(outcomes))
+    if delivery_failed(outcomes):
+        print("WARNING: no required notification channel delivered; see details above.")
+        return outcomes
+    return outcomes

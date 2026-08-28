@@ -345,6 +345,11 @@ def _run_handler(config, product_results):
 
     def fake_send(cfg, report_text, report_html, subject, runtime_overrides=None):
         captured["subject"] = subject
+        return [{
+            "channel": "console", "required": False, "attempted": True,
+            "delivered": True, "skipped": False, "error": None,
+            "detail": "captured", "output": None,
+        }]
 
     cfg = dict(config)
     cfg["products"] = [{"source": "fake", "_idx": i} for i in range(len(product_results))]
