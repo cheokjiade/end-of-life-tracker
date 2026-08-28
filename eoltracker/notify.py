@@ -70,13 +70,13 @@ def _under_tmp(path_str):
 
     Works purely on string shape (no filesystem access): normalises forward
     slashes, collapses separators and ``..`` segments, then accepts the path
-    only when its normalised form equals or starts with the configured root
-    followed by a separator (so ``/tmpfoo`` can never qualify). Backslashes
+    only when its normalised form starts with the configured root followed by
+    a separator (so bare ``/tmp`` and ``/tmpfoo`` can never qualify). Backslashes
     are treated as ordinary characters converted to separators, which lets a
     test retarget the root without platform surprises.
     """
     norm = posixpath.normpath(path_str.replace("\\\\", "/").replace("\\", "/"))
-    return norm == LAMBDA_TMP_ROOT or norm.startswith(LAMBDA_TMP_ROOT + "/")
+    return norm.startswith(LAMBDA_TMP_ROOT + "/")
 
 
 def _exc_summary(exc):
@@ -177,6 +177,9 @@ def _notify_sns(report_text, subject, notif_config, runtime_overrides=None, **_k
     routing omissions are configuration problems surfaced as 'skipped'.
     """
     overrides = runtime_overrides or {}
+    if notif_config.get("topic_arn") and overrides.get("sns_topic_arn"):
+        logger.warning(
+            "SNS config routing overrides the invocation routing value")
     topic_arn = (
         notif_config.get("topic_arn")
         or overrides.get("sns_topic_arn")
@@ -204,6 +207,12 @@ def _notify_ses(report_html, subject, notif_config, runtime_overrides=None, **_k
     unconfigured. Logs carry a recipient COUNT only — never addresses.
     """
     overrides = runtime_overrides or {}
+    if (notif_config.get("from_email") and overrides.get("ses_from_email")):
+        logger.warning(
+            "SES config sender overrides the invocation routing value")
+    if notif_config.get("to_emails") and overrides.get("ses_to_emails"):
+        logger.warning(
+            "SES config recipients override the invocation routing value")
     from_email = (
         notif_config.get("from_email")
         or overrides.get("ses_from_email")

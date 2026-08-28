@@ -91,10 +91,15 @@ section_only = load_rejected({"products": [
 assert any(f["path"] == "products" for f in section_only.findings), section_only
 
 one = [{"label": "A", "source": "manual"}]
-for bad_thresholds in ([], [0], [-5], ["soon"], [True], {}, "soon"):
+for bad_thresholds in (
+        [], [0], [-5], ["soon"], [True], [float("inf")], [float("nan")],
+        {}, "soon"):
     exc = load_rejected({"alert_thresholds_days": bad_thresholds, "products": one})
     assert any(f["path"] == "alert_thresholds_days" for f in exc.findings), \
         (bad_thresholds, exc)
+assert not validate_config({
+    "alert_thresholds_days": [10 ** 400], "products": one,
+})
 
 exc = load_rejected({"notify_when": "sometimes", "products": one})
 assert any(f["path"] == "notify_when" for f in exc.findings), exc
@@ -146,7 +151,7 @@ assert validate_config({"products": [{"source": {"k": 1}}]})[0]["severity"] == "
 assert check_product({"_section": "Spring Boot"}, TODAY) is None
 r = check_product({"_section": ""}, TODAY)          # falsy marker = product
 assert r is not None and r["status"] == "error", r  # gated: missing required
-r = check_product({"_section": False, "source": "manual"}, TODAY)
+r = check_product({"_section": False, "source": "manual", "label": "Manual"}, TODAY)
 assert r["status"] == "untracked"
 
 # --- non-dict entries normalize without touching providers ---------------------
@@ -207,7 +212,7 @@ try:
     assert r["status"] == "error" and "RuntimeError" in r["message"], r
     assert r["label"] == "Boom" and r["source"] == "synthetic", r
     assert "sekrit-token" not in r["message"], r   # non-secret diagnostics only
-    assert "see run logs" in r["message"], r
+    assert "see run logs" not in r["message"], r
     captured = io.StringIO()
     log_handler = logging.StreamHandler(captured)
     handler_mod.logger.addHandler(log_handler)
@@ -238,6 +243,10 @@ try:
         r = check_product({"label": "H", "source": hostile}, TODAY)
         assert r["status"] == "error", (hostile, r)
         assert "source" in r["message"], (hostile, r)
+        assert r["source"] == "unknown", (hostile, r)
+        text, _ = format_report_text([r], [30, 60, 90], TODAY)
+        html, _ = format_report_html([r], [30, 60, 90], TODAY)
+        assert "H" in text and "H" in html, (hostile, text)
 
     # --- optional-version npm entry still reaches its provider ----------------
     seen = {}

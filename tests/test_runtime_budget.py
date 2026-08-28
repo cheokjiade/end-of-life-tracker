@@ -137,7 +137,7 @@ dupes = [
     {"source": "endoflife_date", "product": "python", "version": "3.9",
      "label": "Beta runtime", "policy_note": "Team-approved upgrade cadence."},
     {"source": "endoflife_date", "product": "python", "version": "3.9",
-     "label": 42, "policy_note": 123},
+     "label": "Legacy runtime", "policy_note": "Legacy upgrade cadence."},
     {"source": "endoflife_date", "product": "nginx", "version": "1.25",
      "label": "Web proxy"},
 ]
@@ -151,10 +151,11 @@ alpha, beta, legacy, web = results
 assert alpha["label"] == "Alpha runtime"
 assert beta["label"] == "Beta runtime"
 assert beta["policy_note"] == "Team-approved upgrade cadence."
-assert legacy["label"] == 42 and legacy["policy_note"] == 123
+assert legacy["label"] == "Legacy runtime"
+assert legacy["policy_note"] == "Legacy upgrade cadence."
 assert "policy_note" not in alpha and "policy_note" not in web
 assert [r["label"] for r in results] == [
-    "Alpha runtime", "Beta runtime", 42, "Web proxy"]
+    "Alpha runtime", "Beta runtime", "Legacy runtime", "Web proxy"]
 print("OK lookup dedupe executes once and re-stamps curated fields")
 
 # Fields that affect a provider lookup must keep groups separate.
