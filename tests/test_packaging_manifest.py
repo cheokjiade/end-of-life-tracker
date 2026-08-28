@@ -7,7 +7,7 @@ tree: exact allowlist membership, byte-for-byte reproducibility, refusal of
 unexpected files, and detection of stale/tampered artifacts.
 """
 
-import os, sys, json, zipfile, tempfile, subprocess
+import os, sys, json, zipfile, tempfile, subprocess, stat
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 main_tf = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
 assert '__pycache__' in main_tf and 'regexall("(?i)(^|/)__pycache__/", f)' in main_tf
 assert 'regexall("(^|/)\\\\.", f)' in main_tf
+assert 'unexpected_runtime_files' in main_tf
 assert 'try(filebase64sha256(local.package_zip_path), "")' in main_tf
 
 
@@ -30,6 +31,11 @@ def make_repo(root: Path) -> None:
     (root / "eoltracker" / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "eoltracker" / "parsers" / "__init__.py").write_text(
         "REGISTRY = {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "--", "lambda_function.py", "eoltracker"],
+        check=True,
+    )
 
 
 with tempfile.TemporaryDirectory() as td:
@@ -191,6 +197,17 @@ with tempfile.TemporaryDirectory() as td:
     (hidden / "shadow.py").unlink()
     hidden.rmdir()
 
+    # An otherwise valid Python module must not enter a deployable artifact
+    # until it has been deliberately added to Git.
+    untracked = repo / "eoltracker" / "untracked.py"
+    untracked.write_text("SHOULD_NOT_SHIP = True\n", encoding="utf-8")
+    try:
+        pkg.collect_runtime_sources(repo)
+        raise AssertionError("untracked Python runtime source accepted")
+    except pkg.PackagingError as exc:
+        assert "untracked runtime source" in str(exc), exc
+    untracked.unlink()
+
     outside_hard = td / "outside-hard.py"
     outside_hard.write_text("ALIASED = True\n", encoding="utf-8")
     hard_alias = repo / "eoltracker" / "alias_hard.py"
@@ -230,5 +247,33 @@ with tempfile.TemporaryDirectory() as td:
             assert "linked/reparse-point" in str(exc), exc
 
 print("OK fail-closed collection rules")
+
+# A POSIX directory's link count includes its own entry and each child
+# directory's parent entry. Simulate that portable metadata shape so the hard
+# link guard is proven to apply only to regular files, even on Windows CI.
+class _DirectoryMetadata:
+    st_mode = stat.S_IFDIR | 0o755
+    st_nlink = 7
+    st_file_attributes = 0
+
+
+original_lstat = pkg.os.lstat
+pkg.os.lstat = lambda *args, **kwargs: _DirectoryMetadata()
+try:
+    pkg._reject_link(Path("ordinary-directory"), "runtime package")
+finally:
+    pkg.os.lstat = original_lstat
+
+with tempfile.TemporaryDirectory() as td:
+    repo = Path(td) / "repo"
+    repo.mkdir()
+    (repo / "EOLTRACKER").mkdir()
+    try:
+        pkg._assert_exact_path_case(repo, Path("eoltracker"))
+        raise AssertionError("case-only runtime package alias accepted")
+    except pkg.PackagingError as exc:
+        assert "path casing differs" in str(exc), exc
+
+print("OK link-count and path-casing rules")
 
 print("OK test_packaging_manifest")
