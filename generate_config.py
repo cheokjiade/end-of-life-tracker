@@ -940,6 +940,149 @@ def parse_package_json(path):
 
 
 # ---------------------------------------------------------------------------
+# Transitive-resolution output parsers (pure; network-free and tool-free)
+#
+# Feeds --resolve-transitive: the real sources are parsed, never hand-rolled
+# — mvn dependency:list output, gradle eolDumpDeps init-script output, and
+# npm package-lock.json (which needs no tool at all).
+# ---------------------------------------------------------------------------
+
+# One `mvn dependency:list` line: group:artifact:type:version:scope
+# (:classifier), optionally preceded by a "[INFO] "-style log prefix. Every
+# field must be non-empty and free of colons/whitespace for the line to
+# match; anything else (headers, blank lines, download progress) is ignored.
+_MVN_GAV_LINE_RE = re.compile(
+    r"^(?:\[[A-Z][A-Z ]*\]\s*)?"
+    r"([^:\s]+):([^:\s]+):([^:\s]+):([^:\s]+):([^:\s]+)(?::([^:\s]+))?\s*$"
+)
+
+
+def parse_mvn_dependency_list(text):
+    """Parse `mvn dependency:list -DoutputFile=...` text -> [(g, a, v)].
+
+    Matches only strict 5-field (group:artifact:type:version:scope) or
+    6-field (...:classifier) lines. Test-scoped entries are dropped (the
+    tracker follows runtime classpaths, not test trees); 6-field lines have
+    their classifier component stripped (a classifier jar duplicates the
+    base artifact); duplicates are deduped keeping first occurrence.
+    Header noise ("The following files have been resolved"), empty or
+    garbage lines, and lines with empty fields are ignored. Pure,
+    order-stable.
+    """
+    deps = []
+    seen = set()
+    for raw in text.splitlines():
+        m = _MVN_GAV_LINE_RE.match(raw.strip())
+        if not m:
+            continue
+        g, a, _type, v, scope, _classifier = m.groups()
+        if scope == "test":
+            continue
+        if (g, a, v) not in seen:
+            seen.add((g, a, v))
+            deps.append((g, a, v))
+    return deps
+
+
+# One eolDumpDeps output line: "<configuration>:<group>:<artifact>:<version>".
+# Every segment must be non-empty and colon-free; anything else (Gradle
+# warnings, "<configuration>:UNRESOLVED" markers, blank lines) is ignored.
+_GRADLE_DUMP_LINE_RE = re.compile(r"^[^:\s]+:[^:\s]+:[^:\s]+:[^:\s]+$")
+
+
+def parse_gradle_dump(text):
+    """Parse the eolDumpDeps init-script stdout -> [(g, a, v)].
+
+    Lines have the shape "<config-name>:<group>:<artifact>:<version>"; the
+    configuration-name prefix is stripped. Skips lines containing
+    "UNRESOLVED" (a configuration whose resolution failed), lines that are
+    not 4 colon-separated segments, and entries whose version is missing,
+    "NONE" or "null" (case-insensitive; Gradle prints these for
+    unresolvable module versions). Duplicates deduped; pure, order-stable.
+    """
+    deps = []
+    seen = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or "UNRESOLVED" in line:
+            continue
+        if not _GRADLE_DUMP_LINE_RE.match(line):
+            continue
+        _cfg, g, a, v = line.split(":")
+        if v.lower() in ("none", "null"):
+            continue
+        if (g, a, v) not in seen:
+            seen.add((g, a, v))
+            deps.append((g, a, v))
+    return deps
+
+
+def parse_npm_lockfile(path):
+    """Parse a package-lock.json; return [(name, version)].
+
+    Supports lockfileVersion 2/3 (the "packages" mapping keyed by
+    "node_modules/..." paths — the package name is the last path segment,
+    @scope/pkg keys keep their scope) and lockfileVersion 1 (the legacy
+    "dependencies" tree, recursed including nested installs). The "" root
+    entry, entries without a usable version, and link:/file: resolved
+    entries are skipped — a linked or local path is not a registry version
+    to track (so is any ':'-bearing version: npm:/git aliases). Parsed with
+    stdlib json; a malformed or unreadable lockfile prints one warning to
+    stderr and returns [] (never raises). Order-stable, deduped on
+    (name, version).
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        print(f"  ! parse error in {path}: {exc}", file=sys.stderr)
+        return []
+    if not isinstance(data, dict):
+        print(f"  ! unexpected package-lock.json shape in {path}", file=sys.stderr)
+        return []
+    deps = []
+    seen = set()
+
+    def add(name, version):
+        if (not name or not version or ":" in version
+                or version.startswith(("link:", "file:"))):
+            return
+        if (name, version) not in seen:
+            seen.add((name, version))
+            deps.append((name, version))
+
+    packages = data.get("packages")
+    if isinstance(packages, dict):
+        # lockfileVersion 2/3: "packages" keyed by "node_modules/..." paths.
+        for key, entry in packages.items():
+            if not key or not isinstance(entry, dict):
+                continue  # "" is the root entry
+            resolved = str(entry.get("resolved") or "")
+            if resolved.startswith(("link:", "file:")):
+                continue
+            segments = [s for s in key.split("/") if s]
+            if not segments:
+                continue
+            if len(segments) >= 2 and segments[-2].startswith("@"):
+                name = f"{segments[-2]}/{segments[-1]}"
+            else:
+                name = segments[-1]
+            add(name, entry.get("version"))
+    elif isinstance(data.get("dependencies"), dict):
+        # lockfileVersion 1: legacy "dependencies" tree, nested installs too.
+        def walk(node):
+            for name, info in node.items():
+                if not isinstance(info, dict):
+                    continue
+                add(name, info.get("version"))
+                nested = info.get("dependencies")
+                if isinstance(nested, dict):
+                    walk(nested)
+        walk(data["dependencies"])
+    return deps
+
+
+# ---------------------------------------------------------------------------
 # Folder scanning
 # ---------------------------------------------------------------------------
 
