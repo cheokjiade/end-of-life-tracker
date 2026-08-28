@@ -160,7 +160,7 @@ def validate_config(config):
 
     # -- alert thresholds ---------------------------------------------------
     thresholds = config.get("alert_thresholds_days")
-    if thresholds is not None:
+    if "alert_thresholds_days" in config:
         valid = isinstance(thresholds, list) and len(thresholds) > 0 and all(
             isinstance(t, (int, float))
             and not isinstance(t, bool)
@@ -179,14 +179,14 @@ def validate_config(config):
 
     # -- notification frequency --------------------------------------------
     notify_when = config.get("notify_when")
-    if notify_when is not None and notify_when not in NOTIFY_WHEN_VALUES:
+    if "notify_when" in config and notify_when not in NOTIFY_WHEN_VALUES:
         results.append(_finding(
             "notify_when", "error",
             "'notify_when' must be one of: " + ", ".join(NOTIFY_WHEN_VALUES)))
 
     # -- notification channels ---------------------------------------------
     notifications = config.get("notifications")
-    if notifications is not None:
+    if "notifications" in config:
         if not isinstance(notifications, list):
             results.append(_finding(
                 "notifications", "error", "'notifications' must be a list"))

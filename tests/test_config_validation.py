@@ -130,7 +130,9 @@ assert by_path(errors(res), "products[0].engine"), res
 # --- thresholds -------------------------------------------------------------
 # 'one' keeps the otherwise-empty products list from raising its own error.
 one = [{"label": "A", "source": "manual"}]
-for bad in ([], [0], [-30], ["soon"], [True], [float("inf")], [float("nan")]):
+for bad in (
+    None, [], [0], [-30], ["soon"], [True], [float("inf")], [float("nan")]
+):
     res = validate_config({"alert_thresholds_days": bad, "products": one})
     assert by_path(errors(res), "alert_thresholds_days"), (bad, res)
 assert not errors(validate_config({
@@ -141,8 +143,9 @@ assert not errors(validate_config({
 }))
 
 # --- notify_when ------------------------------------------------------------
-res = validate_config({"notify_when": "sometimes", "products": one})
-assert by_path(errors(res), "notify_when"), res
+for bad_notify_when in (None, "sometimes"):
+    res = validate_config({"notify_when": bad_notify_when, "products": one})
+    assert by_path(errors(res), "notify_when"), res
 for good in ("always", "alerts_only"):
     assert not errors(validate_config({"notify_when": good, "products": one}))
 
@@ -181,6 +184,9 @@ for bad_required in ("true", 1, None, [], {}):
 
 empty_notifications = validate_config({"products": one, "notifications": []})
 assert by_path(warnings(empty_notifications), "notifications"), empty_notifications
+
+null_notifications = validate_config({"products": one, "notifications": None})
+assert by_path(errors(null_notifications), "notifications"), null_notifications
 
 # env-var / event-payload fallbacks surface as warnings, never errors
 fallback = validate_config({"products": one, "notifications": [
