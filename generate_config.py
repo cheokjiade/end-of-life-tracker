@@ -4,9 +4,17 @@ Scans a folder for Maven, Gradle, and Node manifests; emits an
 eol_config.<project>.json file suitable for use with lambda_function.py.
 
 Supported formats:
-    pom.xml             — Maven (multi-module supported via rglob)
-    *.gradle.kts        — Gradle Kotlin DSL
-    build.gradle        — Gradle Groovy DSL (same regex patterns)
+    pom.xml             — Maven (multi-module supported via rglob); versioned
+                          deps map, <dependencyManagement> declarations are
+                          tagged managed-dep, version-less deps are tagged
+                          unversioned-dep (recorded, not mapped)
+    *.gradle.kts        — Gradle Kotlin DSL: quoted GAV strings (optionally
+                          wrapped in platform(...)), named-arg form, plugins
+                          blocks, and libs.* version-catalog references
+    build.gradle        — Gradle Groovy DSL (same patterns; ' or " quotes,
+                          map notation)
+    libs.versions.toml  — Gradle version catalogs, resolved into
+                          "gradle-catalog" entries (best-effort TOML subset)
     package.json        — Node (skips node_modules)
 
 Mapping strategy:
@@ -16,6 +24,11 @@ Mapping strategy:
                    else falls back to maven_central staleness. Shibboleth
                    groups (org.opensaml, net.shibboleth.*) are emitted
                    against the Shibboleth repository, not Maven Central.
+                   Versions that no registry resolves — -SNAPSHOT,
+                   ${property} placeholders, Maven ranges ([2.0,)), and
+                   Gradle dynamic versions (2.+, latest.*) — are skipped.
+    Gradle plugin ids -> best-effort Maven coordinates, then the normal
+                   java mapping (kind "gradle-plugin").
     POM props   -> known names (tomcat.version, netty.version, logback.version,
                    quartz.version, kotlin.version, java.version) produce the
                    matching tracker entry — catches transitively-managed
@@ -455,11 +468,13 @@ def _gradle_plugin_coords(plugin_id):
     return plugin_id, plugin_id.rsplit(".", 1)[-1] + "-gradle-plugin"
 
 
-def parse_gradle(path):
+def parse_gradle(path, catalog=None):
     """Parse build.gradle / build.gradle.kts.
 
-    Returns [(g, a, v, kind), ...] with kind "gradle" for dependencies and
-    "gradle-plugin" for plugins-block entries.
+    Returns [(g, a, v, kind), ...] with kind "gradle" for dependencies,
+    "gradle-plugin" for plugins-block entries, and "gradle-catalog" for
+    libs.* references resolved against `catalog` (the (aliases, bundles)
+    pair returned by parse_version_catalog).
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -479,7 +494,135 @@ def parse_gradle(path):
     for m in _GRADLE_PATTERN_PLUGIN_KOTLIN.finditer(text):
         deps.append(("org.jetbrains.kotlin", "kotlin-gradle-plugin",
                      m.group(4), "gradle-plugin"))
+    if catalog:
+        aliases, bundles = catalog
+        for g, a, v in _resolve_catalog_refs(text, aliases, bundles):
+            deps.append((g, a, v, "gradle-catalog"))
     return deps
+
+
+# ---------------------------------------------------------------------------
+# Gradle version catalogs (libs.versions.toml) — best-effort TOML subset:
+# only the [versions]/[libraries]/[bundles] tables with quoted-string values.
+# ---------------------------------------------------------------------------
+
+_CATALOG_REF_RE = re.compile(r"\blibs\.([A-Za-z0-9_.\-]+)")
+_TOML_FIELD_RE = re.compile(r'([A-Za-z0-9_.\-]+)\s*=\s*(?:\'([^\']*)\'|"([^"]*)")')
+
+
+def _norm_alias(alias):
+    """Normalize a catalog alias/reference for matching: TOML 'commons-lang3'
+    and code reference 'commons.lang3' both -> 'commons.lang3'."""
+    return re.sub(r"[-_]", ".", alias.lower())
+
+
+def _strip_toml_comment(line):
+    """Drop a trailing TOML comment, respecting quoted strings."""
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch == "#":
+            break
+        else:
+            out.append(ch)
+            if ch in "\"'":
+                quote = ch
+    return "".join(out)
+
+
+def _toml_inline_fields(value):
+    """Extract key = "string" pairs from a TOML inline-table blob."""
+    value = re.sub(
+        r"version\s*=\s*\{\s*ref\s*=\s*([\'\"])([^\'\"]+)\1\s*\}",
+        r'version.ref = "\2"', value)
+    return {k: (m or n) for k, m, n in _TOML_FIELD_RE.findall(value)}
+
+
+def parse_version_catalog(path):
+    """Parse a libs.versions.toml catalog; return (aliases, bundles).
+
+    aliases: normalized alias -> (group, artifact, version). Aliases with no
+    resolvable version (unknown version.ref, no module/group) are skipped.
+    bundles: normalized bundle name -> list of normalized aliases. TOML
+    support is a best-effort subset: no multi-line arrays, no nested inline
+    tables beyond version = { ref = "..." }.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"  ! read error on {path}: {exc}", file=sys.stderr)
+        return {}, {}
+
+    section = None
+    versions = {}
+    libraries = {}
+    bundles = {}
+    for raw in text.splitlines():
+        line = _strip_toml_comment(raw).strip()
+        if not line:
+            continue
+        m = re.match(r"^\[([A-Za-z0-9_.\-]+)\]$", line)
+        if m:
+            section = m.group(1).lower()
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*=\s*(.+)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip()
+        if section == "versions":
+            sm = re.match(r"^[\'\"]([^\'\"]*)[\'\"]$", value)
+            if sm:
+                versions[key] = sm.group(1)
+        elif section == "libraries":
+            fields = _toml_inline_fields(value)
+            if fields:
+                libraries[key] = fields
+        elif section == "bundles":
+            if value.startswith("[") and value.endswith("]"):
+                bundles[key] = re.findall(r"[\'\"]([^\'\"]+)[\'\"]", value)
+
+    aliases = {}
+    for alias, fields in libraries.items():
+        module = fields.get("module", "")
+        if ":" in module:
+            group, artifact = module.split(":", 1)
+        else:
+            group, artifact = fields.get("group", ""), fields.get("name", "")
+        version = fields.get("version") or versions.get(fields.get("version.ref", ""))
+        if not (group and artifact and version):
+            continue
+        aliases[_norm_alias(alias)] = (group, artifact, version)
+
+    norm_bundles = {
+        _norm_alias(name): [_norm_alias(member) for member in members]
+        for name, members in bundles.items()
+    }
+    return aliases, norm_bundles
+
+
+def _resolve_catalog_refs(text, aliases, bundles):
+    """Yield (g, a, v) for every resolvable libs.* reference in gradle text.
+
+    libs.versions.* and libs.plugins.* references are ignored; libs.bundles.N
+    expands to the bundle's aliases. Unresolvable references are skipped.
+    """
+    for m in _CATALOG_REF_RE.finditer(text):
+        seg = m.group(1).lower()
+        if seg.startswith("versions.") or seg.startswith("plugins."):
+            continue
+        if seg.startswith("bundles."):
+            for alias in bundles.get(_norm_alias(seg[len("bundles."):]), []):
+                gav = aliases.get(alias)
+                if gav:
+                    yield gav
+            continue
+        gav = aliases.get(_norm_alias(seg))
+        if gav:
+            yield gav
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +667,18 @@ def scan_folder(folder):
     node_deps = []          # list of (name, version, source_file)
     files_seen = []
 
+    # Gradle version catalogs first, so build scripts can resolve their
+    # libs.* references against them (multiple catalogs merge, last wins).
+    catalog_aliases = {}
+    catalog_bundles = {}
+    for p in sorted(folder.rglob("libs.versions.toml")):
+        files_seen.append(str(p))
+        aliases, bundles = parse_version_catalog(p)
+        catalog_aliases.update(aliases)
+        catalog_bundles.update(bundles)
+    catalog = ((catalog_aliases, catalog_bundles)
+               if catalog_aliases or catalog_bundles else None)
+
     for p in sorted(folder.rglob("pom*.xml")):
         files_seen.append(str(p))
         deps, props = parse_pom(p)
@@ -535,7 +690,7 @@ def scan_folder(folder):
     for pattern in ("*.gradle.kts", "build.gradle"):
         for p in sorted(folder.rglob(pattern)):
             files_seen.append(str(p))
-            for g, a, v, kind in parse_gradle(p):
+            for g, a, v, kind in parse_gradle(p, catalog):
                 java_deps.append((g, a, v, str(p), kind))
 
     for p in sorted(folder.rglob("package.json")):

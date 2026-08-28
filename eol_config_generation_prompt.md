@@ -302,6 +302,34 @@ Apply this decision order per component you find:
    add an ASCII `policy_note` describing its release/support policy. Verify the claim before
    writing. Do not add notes to ordinary libraries.
 
+### Static scanner coverage (generate_config.py)
+
+For clean dependency folders, `python generate_config.py <folder> --name <project>` parses
+these manifest forms automatically; anything the manifests use outside this list must be
+extracted manually (the scanner silently misses it):
+
+- `pom.xml`: versioned `<dependency>`s at any depth, `<parent>`, and POM properties
+  (`tomcat.version`, `kotlin.version`, ...). Deps inside `<dependencyManagement>` are
+  parsed as BOM/version **declarations** (kind `managed-dep`); deps with no `<version>`
+  (parent/BOM-managed) are recorded as kind `unversioned-dep` and produce **no** tracker
+  entry — add those manually.
+- `build.gradle` / `build.gradle.kts`: quoted GAV strings in single or double quotes
+  (`implementation 'g:a:v'`), Groovy map notation and kts named args
+  (`group: 'g', name: 'a', version: 'v'`), `platform(...)` BOM imports, plugins blocks
+  (`id("g.a") version "v"`, `kotlin("jvm") version "v"` — plugin ids are converted to
+  best-effort Maven coordinates), and `libs.*` references resolved against
+  `libs.versions.toml` (best-effort TOML subset: `[versions]`, `[libraries]`,
+  `[bundles]`; unresolvable aliases are skipped).
+- Versions that never produce entries (no public registry resolves them): `-SNAPSHOT`,
+  `${property}` placeholders, Maven ranges (`[2.0,)`), and Gradle dynamic versions
+  (`2.+`, `latest.release`, `latest.integration`).
+- `package.json`: `dependencies`/`devDependencies`/`engines.node`; known packages map to
+  endoflife.date entries, the rest land in `_skipped_npm_packages`.
+
+The scanner is a heuristic regex/JSON/XML pass, not a build — after running it, diff its
+output against the inputs and hand-map whatever it missed. Do not assume silence means
+absence.
+
 ### Real-world document patterns
 
 Confluence/wiki EOL tables and inventories are messy. Handle these consistently:
