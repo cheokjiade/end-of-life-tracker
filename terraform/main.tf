@@ -3,8 +3,10 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+      source = "hashicorp/aws"
+      # Narrow minor-line constraint; the committed .terraform.lock.hcl pins
+      # the exact build. See README.md before changing either.
+      version = "~> 5.100.0"
     }
   }
 }
@@ -30,6 +32,34 @@ resource "aws_s3_bucket_public_access_block" "config" {
   restrict_public_buckets = true
 }
 
+# Versioning gives every config object point-in-time recovery. It is the
+# rollback mechanism documented in README.md — do not add lifecycle rules
+# that expire noncurrent versions of this bucket.
+resource "aws_s3_bucket_versioning" "config" {
+  bucket = aws_s3_bucket.config.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "terraform_data" "validate_eol_config" {
+  for_each = var.projects
+
+  triggers_replace = [
+    filesha256("${path.module}/../${each.value.config_path}"),
+    filesha256("${path.module}/../lambda_function.py"),
+    sha256(join("", [
+      for rel in sort(fileset("${path.module}/../eoltracker", "**/*.py")) :
+      filesha256("${path.module}/../eoltracker/${rel}")
+    ])),
+  ]
+
+  provisioner "local-exec" {
+    command = "python \"${path.module}/../lambda_function.py\" --validate \"${path.module}/../${each.value.config_path}\""
+  }
+}
+
 resource "aws_s3_object" "eol_config" {
   for_each     = var.projects
   bucket       = aws_s3_bucket.config.id
@@ -37,6 +67,11 @@ resource "aws_s3_object" "eol_config" {
   source       = "${path.module}/../${each.value.config_path}"
   etag         = filemd5("${path.module}/../${each.value.config_path}")
   content_type = "application/json"
+
+  depends_on = [
+    aws_s3_bucket_versioning.config,
+    terraform_data.validate_eol_config,
+  ]
 }
 
 # ──────────────────────────────────────────────

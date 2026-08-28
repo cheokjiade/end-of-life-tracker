@@ -19,6 +19,8 @@ a verified manifest (see `docs/packaging.md`).
 | I want to... | Read / run |
 |---|---|
 | Generate or update a config with an AI coding agent | Invoke `manage-eol-config` in Codex/OpenCode or `eol-config` in Claude Code; canonical instructions: `.agents/skills/manage-eol-config/SKILL.md` |
+| Validate a config structurally (network-free) | `python lambda_function.py --validate <config.json>` |
+| Update Terraform providers, handle the lockfile, or roll back an S3 config | `terraform/README.md` |
 | Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
@@ -222,6 +224,7 @@ canonical message format and detailed workflow.
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
+| `terraform/README.md` | Provider pinning + dependency-lock update workflow, S3 config rollback runbook |
 | `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
 | `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
 | `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |

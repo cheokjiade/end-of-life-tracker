@@ -30,6 +30,8 @@ _AWS_DOCS_URLS = {
     ),
 }
 
+DEFAULT_ENGINE = "aurora-postgresql"
+
 _AWS_HEADING_TEXT = {
     "aurora-postgresql": "Release calendar for Aurora PostgreSQL minor versions",
     "rds-postgresql": "Release calendar for Amazon RDS for PostgreSQL minor versions",
@@ -186,7 +188,7 @@ def _scrape_aws_rds_calendar(engine):
 
 def _provider_aws_rds_scrape(entry, today):
     """Look up AWS RDS/Aurora minor-version EOL by scraping AWS docs."""
-    engine = entry.get("engine", "aurora-postgresql")
+    engine = entry.get("engine", DEFAULT_ENGINE)
     version = str(entry.get("version", ""))
     label = entry.get("label", f"{engine} {version}")
 
