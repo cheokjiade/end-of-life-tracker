@@ -28,7 +28,6 @@ Usage:
 
 Examples:
     python generate_config.py "project-b" --name b
-    python generate_config.py ssg-frontend --name frontend
 """
 
 import argparse
@@ -147,7 +146,7 @@ _JAVA_MAPPINGS = [
         },
     ),
     (
-        lambda g, a: g.startswith("org.jetbrains.kotlin"),
+        lambda g, a: g == "org.jetbrains.kotlin",
         lambda g, a, v: _eol_entry("kotlin", _major_minor(v),
                                    f"Kotlin {_major_minor(v)}"),
     ),
