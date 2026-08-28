@@ -136,6 +136,9 @@ for bad in ([], [0], [-30], ["soon"], [True], [float("inf")], [float("nan")]):
 assert not errors(validate_config({
     "alert_thresholds_days": [30, 90], "products": one,
 }))
+assert not errors(validate_config({
+    "alert_thresholds_days": [10 ** 400], "products": one,
+}))
 
 # --- notify_when ------------------------------------------------------------
 res = validate_config({"notify_when": "sometimes", "products": one})
