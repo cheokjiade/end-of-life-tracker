@@ -161,11 +161,20 @@ only tracks majors). `engine` must be `"aurora-postgresql"` or `"rds-postgresql"
 - `sdk`: as named in the AWS matrix, e.g. `"SDK for Java"`, `"SDK for JavaScript"`,
   `"SDK for Python (Boto3)"`. `major`: e.g. `"2.x"`, `"1.x"`.
 
-**4. `jackson_lifecycle`.** For the FasterXML Jackson library, by branch.
+**4. `jackson_lifecycle`.** For the FasterXML Jackson library, by branch — one entry
+**per artifact** (carry `group` and `artifact`), never one collapsed row per branch.
 
 ```json
-{"source": "jackson_lifecycle", "version": "2.18", "label": "Jackson 2.18"}
+{"source": "jackson_lifecycle", "group": "com.fasterxml.jackson.core",
+ "artifact": "jackson-databind", "version": "2.18", "label": "Jackson Databind 2.18"}
 ```
+
+- `version`: the branch, `major.minor` (e.g. `2.18`).
+- `label`: `"Jackson <Artifact> <major.minor>"`, where `<Artifact>` is derived from
+  the artifact id (`jackson-databind` → `Databind`, `jackson-bom` → `BOM`,
+  `jackson-annotations` → `Annotations`). Two artifacts on the same branch are two
+  separate rows — `com.fasterxml.jackson.core:jackson-annotations:2.21` is
+  `Jackson Annotations 2.21`, which is separate from `Jackson BOM 2.21`.
 
 **5. `maven_central`.** For Java/Kotlin libraries that publish **no lifecycle data**
 (Apache Commons, Netty, Logback, Quartz, jsoup, OkHttp, etc.). Reports how stale the
@@ -256,7 +265,9 @@ Apply this decision order per component you find:
    - Strip semver range operators and build metadata: `^18.2.0`, `>=1.4 <2`,
      `1.2.3-SNAPSHOT` → take the base release (`18` or `18.2`, `1.2`).
 2. **Java/Kotlin library with a lifecycle source?** Spring* / Tomcat / Log4j / Kotlin /
-   Scala → `endoflife_date`. Jackson (`com.fasterxml.jackson*`) → `jackson_lifecycle`.
+   Scala → `endoflife_date`. Jackson (`com.fasterxml.jackson*`) → `jackson_lifecycle`,
+   one entry **per artifact** (with `group`/`artifact` keys and a
+   `Jackson <Artifact> <major.minor>` label).
    AWS SDK (`software.amazon.awssdk` = v2, `com.amazonaws:aws-java-sdk*` = v1) →
    `aws_sdk_lifecycle`.
 3. **Any other Java/Kotlin library?** → `maven_central` with full `group`/`artifact`/`version`.

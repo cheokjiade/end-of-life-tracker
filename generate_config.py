@@ -91,6 +91,15 @@ _SHIBBOLETH_REPOSITORY = (
     "https://build.shibboleth.net/nexus/content/repositories/releases")
 
 
+def _jackson_artifact_title(artifact):
+    """'jackson-databind' -> 'Databind'; 'jackson-bom' -> 'BOM'; 'foo' -> 'Foo'."""
+    body = artifact[len("jackson-"):] if artifact.startswith("jackson-") else artifact
+    part = body.split("-", 1)[0] if body else artifact
+    if part.lower() == "bom":
+        return "BOM"
+    return part.capitalize() if part else artifact
+
+
 def _shibboleth_mc_entry(group, artifact, version):
     entry = _mc_entry(group, artifact, version, f"{artifact} {version}")
     entry["repository"] = _SHIBBOLETH_REPOSITORY
@@ -140,9 +149,11 @@ _JAVA_MAPPINGS = [
     (
         lambda g, a: g.startswith("com.fasterxml.jackson"),
         lambda g, a, v: {
-            "source":  "jackson_lifecycle",
-            "version": _major_minor(v),
-            "label":   f"Jackson {_major_minor(v)}",
+            "source":   "jackson_lifecycle",
+            "group":    g,
+            "artifact": a,
+            "version":  _major_minor(v),
+            "label":    f"Jackson {_jackson_artifact_title(a)} {_major_minor(v)}",
         },
     ),
     (
