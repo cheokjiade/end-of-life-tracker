@@ -7,12 +7,14 @@ Supported formats:
     pom.xml             — Maven (multi-module supported via rglob); versioned
                           deps map, <dependencyManagement> declarations are
                           tagged managed-dep, version-less deps are tagged
-                          unversioned-dep (recorded, not mapped)
+                          unversioned-dep (recorded, not mapped); root-level
+                          <repositories> URLs are collected
     *.gradle.kts        — Gradle Kotlin DSL: quoted GAV strings (optionally
                           wrapped in platform(...)), named-arg form, plugins
-                          blocks, and libs.* version-catalog references
+                          blocks, libs.* version-catalog references, and
+                          dependency `repositories { }` block URLs
     build.gradle        — Gradle Groovy DSL (same patterns; ' or " quotes,
-                          map notation)
+                          map notation, repositories block URLs)
     libs.versions.toml  — Gradle version catalogs, resolved into
                           "gradle-catalog" entries (best-effort TOML subset)
     package.json        — Node (skips node_modules)
@@ -32,6 +34,14 @@ Mapping strategy:
                    truncated to 1.0.
     Gradle plugin ids -> best-effort Maven coordinates, then the normal
                    java mapping (kind "gradle-plugin").
+    Declared repos -> artifact-repository URLs (pom <repositories>,
+                   gradle `repositories { }` blocks; publishing blocks and
+                   profile-conditional pom repositories ignored) are
+                   collected, deduped, and emitted as the config-level
+                   "maven_repositories" key — the runtime stamps them onto
+                   maven_central entries lacking an explicit 'repository'
+                   as fallback lookups when an artifact is not on Maven
+                   Central.
     POM props   -> known names (tomcat.version, netty.version, logback.version,
                    quartz.version, kotlin.version, java.version) produce the
                    matching tracker entry — catches transitively-managed
@@ -440,7 +450,7 @@ def _t(elem, name, ns=_POM_NS):
 
 
 def parse_pom(path):
-    """Parse pom.xml; return (deps, properties, source_path).
+    """Parse pom.xml; return (deps, properties, repositories).
 
     deps:       list of (group, artifact, version, kind) — kind in
                 {"parent", "dep", "managed-dep", "unversioned-dep",
@@ -453,12 +463,17 @@ def parse_pom(path):
                 kinds are recorded for _discovered_dependencies; only
                 "dep" and "managed-dep" map to tracker entries.
     properties: dict of property name -> resolved value
+    repositories: URLs from root-level <repositories><repository> children.
+                Snapshot and releases-disabled repositories are collected
+                too — the runtime normalizes and picks — but repositories
+                declared inside <profiles> (which activate conditionally)
+                are deliberately ignored.
     """
     try:
         tree = ET.parse(path)
     except ET.ParseError as exc:
         print(f"  ! parse error in {path}: {exc}", file=sys.stderr)
-        return [], {}
+        return [], {}, []
 
     root = tree.getroot()
     # Detect namespace by inspecting root tag
@@ -528,7 +543,18 @@ def parse_pom(path):
                 # Parent/BOM-managed: no version of its own to check.
                 deps.append((g, a, None, "unversioned-dep"))
 
-    return deps, props
+    # Root-level declared artifact repositories. Only direct <repositories>
+    # children of the project root count: profile-conditional repositories
+    # are skipped (see docstring).
+    repos = []
+    repos_node = root.find(f"{ns}repositories")
+    if repos_node is not None:
+        for repo in repos_node.findall(f"{ns}repository"):
+            url = t(repo, "url")
+            if url:
+                repos.append(url)
+
+    return deps, props, repos
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +643,16 @@ _GRADLE_PATTERN_PLUGIN_KOTLIN = re.compile(
     r'\bkotlin\s*\(\s*([\'"])([^\'"\s]+)\1\s*\)\s*'
     r'version\s*([\'"])([^\'"\s]+)\3'
 )
+# Repository URL declarations inside a `repositories { ... }` block, in the
+# three forms Gradle accepts: `url = uri("...")` (Kotlin DSL and Groovy),
+# `url = "..."` (direct assignment), and the Groovy shorthand `url "..."`.
+_GRADLE_REPO_URL_RE = re.compile(
+    r'\burl\s*(?:=\s*uri\s*\(\s*|=\s*|\s+)'
+    r'([\'"])([^\'"]+)\1\s*\)?'
+)
+# The keyword opening the block whose `{` was just reached (dotted names
+# allowed, e.g. project.repositories); used while scanning nesting.
+_GRADLE_BLOCK_NAME_RE = re.compile(r"([A-Za-z_][\w.]*)\s*\{\Z")
 
 
 def _gradle_plugin_coords(plugin_id):
@@ -669,6 +705,87 @@ def parse_gradle(path, catalog=None):
         for g, a, v in _resolve_catalog_refs(text, aliases, bundles):
             deps.append((g, a, v, "gradle-catalog"))
     return deps
+
+
+def _repositories_blocks(text):
+    """Yield (body, inside_publishing) for every `repositories { ... }` block.
+
+    One quote-aware pass over the text tracks which keyword opened each
+    brace, so braces inside string literals never break the nesting count
+    and nested blocks (maven { url = uri("...") }) stay contained within
+    their parent's body. *body* is the text between the braces of every
+    block opened by `repositories`; *inside_publishing* reports whether any
+    enclosing block was opened by `publishing` — a publishing repository is
+    a deployment target, not a dependency source. buildscript repositories
+    are dependency repositories (classpath deps resolve from them) and are
+    yielded normally. An unterminated block yields the remaining text.
+    """
+    stack = []      # (block keyword, index just past its `{`)
+    blocks = []
+    i = 0
+    n = len(text)
+    quote = None
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            m = _GRADLE_BLOCK_NAME_RE.search(text[max(0, i - 64):i + 1])
+            stack.append((m.group(1) if m else "", i + 1))
+            i += 1
+            continue
+        if ch == "}" and stack:
+            name, start = stack.pop()
+            if name == "repositories":
+                inside_publishing = any(
+                    keyword == "publishing" for keyword, _pos in stack)
+                blocks.append((text[start:i], inside_publishing))
+        i += 1
+    return blocks
+
+
+def _gradle_repo_urls(text):
+    """Artifact-repository URLs declared in dependency `repositories` blocks.
+
+    Matches `url = uri("...")`, `url = "..."`, and `url "..."` in every
+    non-publishing `repositories { ... }` block. mavenCentral(),
+    mavenLocal() and google() declare no URL and yield nothing. Pure;
+    order-stable and deduplicated.
+    """
+    urls = []
+    for body, inside_publishing in _repositories_blocks(text):
+        if inside_publishing:
+            continue
+        for m in _GRADLE_REPO_URL_RE.finditer(body):
+            url = m.group(2).strip()
+            if url and url not in urls:
+                urls.append(url)
+    return urls
+
+
+def parse_gradle_repositories(path):
+    """Return the artifact-repository URLs declared in a gradle build file.
+
+    Comments are stripped first (a commented-out repositories block is
+    ignored); see :func:`_gradle_repo_urls` for the matched forms and the
+    publishing exclusion.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"  ! read error on {path}: {exc}", file=sys.stderr)
+        return []
+    return _gradle_repo_urls(_strip_gradle_comments(text))
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +952,7 @@ def scan_folder(folder):
     java_deps = []          # list of (group, artifact, version, source_file, kind)
     pom_properties = []     # list of (props_dict, source_file)
     node_deps = []          # list of (name, version, source_file)
+    declared_repos = []     # declared artifact-repo URLs (order-stable, deduped)
     files_seen = []
 
     # Gradle version catalogs first, so build scripts can resolve their
@@ -851,17 +969,23 @@ def scan_folder(folder):
 
     for p in sorted(folder.rglob("pom*.xml")):
         files_seen.append(str(p))
-        deps, props = parse_pom(p)
+        deps, props, repos = parse_pom(p)
         for g, a, v, kind in deps:
             java_deps.append((g, a, v, str(p), kind))
         if props:
             pom_properties.append((props, str(p)))
+        for url in repos:
+            if url not in declared_repos:
+                declared_repos.append(url)
 
     for pattern in ("*.gradle.kts", "build.gradle"):
         for p in sorted(folder.rglob(pattern)):
             files_seen.append(str(p))
             for g, a, v, kind in parse_gradle(p, catalog):
                 java_deps.append((g, a, v, str(p), kind))
+            for url in parse_gradle_repositories(p):
+                if url not in declared_repos:
+                    declared_repos.append(url)
 
     for p in sorted(folder.rglob("package.json")):
         if "node_modules" in p.parts:
@@ -874,6 +998,7 @@ def scan_folder(folder):
         "java":           java_deps,
         "pom_properties": pom_properties,
         "node":           node_deps,
+        "repositories":   declared_repos,
         "files":          files_seen,
     }
 
@@ -1066,6 +1191,7 @@ def generate_config(scan, project_name):
             add(inferred_entry)
 
     # --- Build config --------------------------------------------------------
+    maven_repos = scan.get("repositories") or []
     config = {
         "_comment": [
             f"EOL config for the {project_name} project.",
@@ -1078,6 +1204,11 @@ def generate_config(scan, project_name):
             "Common things to check:",
             "  - Java distribution (amazon-corretto vs eclipse-temurin vs oracle-jdk)",
             "  - 'Latest patch not found' warnings indicate version pins not on Maven Central",
+            *([
+                "  - maven_repositories lists the artifact repos declared in the manifests;",
+                "    at load the runtime offers them (first 8, config order) as fallback",
+                "    lookups to maven_central entries without an explicit 'repository'",
+            ] if maven_repos else []),
             "  - Skipped npm packages (see _skipped_npm_packages below) need manual entries;",
             "    every parsed declaration and its outcome is in _discovered_dependencies",
             "",
@@ -1093,6 +1224,11 @@ def generate_config(scan, project_name):
         "products": products,
     }
 
+    if maven_repos:
+        # Config-level, not per-entry: handler.py stamps this list onto
+        # maven_central entries lacking an explicit 'repository' at load
+        # time (single source of truth, capped there).
+        config["maven_repositories"] = list(maven_repos)
     if skipped_npm:
         config["_skipped_npm_packages"] = skipped_npm
     if records:
@@ -1127,6 +1263,7 @@ def main():
     print(f"  Java/Maven dep decls : {len(scan['java'])}")
     print(f"  POM property files   : {len(scan['pom_properties'])}")
     print(f"  npm dep decls        : {len(scan['node'])}")
+    print(f"  Repositories declared: {len(scan['repositories'])}")
 
     config = generate_config(scan, project_name)
     real_products = [p for p in config["products"] if not p.get("_section")]

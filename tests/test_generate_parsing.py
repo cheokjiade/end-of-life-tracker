@@ -225,7 +225,8 @@ POM_NAMESPACED = """<?xml version="1.0" encoding="UTF-8"?>
 
 with tempfile.TemporaryDirectory() as tmp:
     p = _write(tmp, "pom.xml", POM_NAMESPACED)
-    deps, props = parse_pom(p)
+    deps, props, repos = parse_pom(p)
+    assert repos == [], repos
 assert ("org.springframework.boot", "spring-boot-starter-parent", "3.3.4", "parent") in deps, deps
 assert ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "managed-dep") in deps, deps
 assert ("org.springframework.boot", "spring-boot-starter-web", None, "unversioned-dep") in deps, deps
@@ -254,7 +255,8 @@ POM_PLAIN = """<project>
 
 with tempfile.TemporaryDirectory() as tmp:
     p = _write(tmp, "pom.xml", POM_PLAIN)
-    deps, props = parse_pom(p)
+    deps, props, repos = parse_pom(p)
+    assert repos == [], repos
 assert ("io.netty", "netty-bom", "4.1.111.Final", "managed-dep") in deps, deps
 assert ("ch.qos.logback", "logback-classic", None, "unversioned-dep") in deps, deps
 print("OK non-namespaced pom: managed-dep and unversioned-dep kinds")
