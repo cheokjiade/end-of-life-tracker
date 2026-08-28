@@ -330,7 +330,12 @@ def _t(elem, name, ns=_POM_NS):
 def parse_pom(path):
     """Parse pom.xml; return (deps, properties, source_path).
 
-    deps:       list of (group, artifact, version, kind) — kind in {"parent","dep"}
+    deps:       list of (group, artifact, version, kind) — kind in
+                {"parent", "dep", "managed-dep", "unversioned-dep"}:
+                versioned deps inside a <dependencyManagement> block are
+                "managed-dep" (BOM/version declarations, not direct usage);
+                deps lacking a <version> (parent/BOM-managed) are
+                "unversioned-dep" with version None.
     properties: dict of property name -> resolved value
     """
     try:
@@ -375,15 +380,33 @@ def parse_pom(path):
         if pg and pa and pv:
             deps.append((pg, pa, resolve(pv), "parent"))
 
-    # Walk all <dependencies> blocks (both top-level and inside <dependencyManagement>)
+    # Walk all <dependencies> blocks, tagging the kind. root.iter() loses
+    # parenting, so build a parent map to tell whether a block is enclosed
+    # in a <dependencyManagement> declaration.
+    parent_map = {child: parent for parent in root.iter() for child in parent}
+
+    def _enclosed_in(elem, tag):
+        p = parent_map.get(elem)
+        while p is not None:
+            if p.tag == tag:
+                return True
+            p = parent_map.get(p)
+        return False
+
     for deps_node in root.iter(f"{ns}dependencies"):
+        kind = ("managed-dep"
+                if _enclosed_in(deps_node, f"{ns}dependencyManagement")
+                else "dep")
         for dep in deps_node.findall(f"{ns}dependency"):
             g, a, v = t(dep, "groupId"), t(dep, "artifactId"), t(dep, "version")
             scope = t(dep, "scope") or "compile"
             if scope in ("test", "provided", "system"):
                 continue
             if g and a and v:
-                deps.append((g, a, resolve(v), "dep"))
+                deps.append((g, a, resolve(v), kind))
+            elif g and a:
+                # Parent/BOM-managed: no version of its own to check.
+                deps.append((g, a, None, "unversioned-dep"))
 
     return deps, props
 
@@ -578,6 +601,9 @@ def generate_config(scan, project_name):
     if scan["java"]:
         added_section = False
         for g, a, v, src, kind in scan["java"]:
+            if kind == "unversioned-dep" or not v:
+                # No version to check (parent/BOM-managed); skipped for now.
+                continue
             entry = _map_java_dep(g, a, v)
             if entry is None:
                 continue

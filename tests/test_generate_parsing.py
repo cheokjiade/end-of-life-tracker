@@ -178,4 +178,98 @@ assert [r["label"] for r in rows] == ["keeper 1.2.3"], rows
 print("OK ranged/dynamic declarations never become tracker rows")
 
 
+# --- F: POM dependency kinds (managed / unversioned) ------------------------
+
+POM_NAMESPACED = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.4</version>
+  </parent>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.17.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.16.1</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "pom.xml", POM_NAMESPACED)
+    deps, props = parse_pom(p)
+assert ("org.springframework.boot", "spring-boot-starter-parent", "3.3.4", "parent") in deps, deps
+assert ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "managed-dep") in deps, deps
+assert ("org.springframework.boot", "spring-boot-starter-web", None, "unversioned-dep") in deps, deps
+assert ("commons-io", "commons-io", "2.16.1", "dep") in deps, deps
+assert not any(a == "junit" for _, a, _, _ in deps), deps
+print("OK namespaced pom: parent/managed-dep/unversioned-dep/dep kinds, test scope skipped")
+
+POM_PLAIN = """<project>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>4.1.111.Final</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "pom.xml", POM_PLAIN)
+    deps, props = parse_pom(p)
+assert ("io.netty", "netty-bom", "4.1.111.Final", "managed-dep") in deps, deps
+assert ("ch.qos.logback", "logback-classic", None, "unversioned-dep") in deps, deps
+print("OK non-namespaced pom: managed-dep and unversioned-dep kinds")
+
+# End-to-end: unversioned deps never map (would crash/doom); managed deps keep
+# the current behaviour (jackson-bom -> its own jackson_lifecycle row).
+scan = {
+    "java": [
+        ("org.springframework.boot", "spring-boot-starter-web", None,
+         "pom.xml", "unversioned-dep"),
+        ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "pom.xml", "managed-dep"),
+    ],
+    "pom_properties": [],
+    "node": [],
+    "files": ["pom.xml"],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["Jackson BOM 2.17"], rows
+print("OK generate_config skips unversioned deps, keeps managed-dep mapping")
+
+
 print("OK test_generate_parsing (batch: quotes + map notation)")
