@@ -54,7 +54,7 @@ an error, not a best guess. And endoflife.date is **inconsistent about granulari
 - Major-only cycles: `postgresql` → `"16"`, `nodejs` → `"20"`, `react` → `"18"`,
   `angular` → `"17"`, `redis` (older) — a single integer.
 - Major.minor cycles: `python` → `"3.13"`, `go` → `"1.23"`, `spring-boot` → `"3.3"`,
-  `nginx` → `"1.27"`, `terraform` → `"1.11"`, `ubuntu` → `"24.04"`.
+  `nginx` → `"1.27"`, `terraform` → `"1.11"`, `ubuntu` → `"24.04"`, `vue` → `"3.5"`.
 
 You cannot reliably know which granularity a given product uses from memory. So your
 job is to produce a **best-guess cycle string AND flag it for verification** (see the

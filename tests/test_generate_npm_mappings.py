@@ -50,4 +50,20 @@ assert entry["version"] == "16", entry
 assert entry["label"] == "Next.js 16", entry
 print("OK next range spec is cleaned to a bare major")
 
+
+# Vue cycles on endoflife.date are major.minor ("3.5", "3.4", "2.7", ... —
+# verified live against /api/vue.json; no bare-major cycle exists), so a
+# major-only version string missed the actual cycle.
+entry = _map_npm_dep("vue", "3.5.3")
+assert "source" not in entry, entry
+assert entry["product"] == "vue", entry
+assert entry["version"] == "3.5", entry
+assert entry["label"] == "Vue 3.5", entry
+print("OK vue 3.5.3 maps to vue major.minor cycle 3.5")
+
+entry = _map_npm_dep("vue", "2.7.16")
+assert entry["version"] == "2.7", entry
+assert entry["label"] == "Vue 2.7", entry
+print("OK vue 2.7.16 maps to vue major.minor cycle 2.7")
+
 print("OK test_generate_npm_mappings")

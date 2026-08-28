@@ -268,8 +268,8 @@ _NPM_MAPPINGS = {
     "react":                       lambda v: _eol_entry("react", _major(v),
                                                         f"React {_major(v)}"),
     "react-dom":                   lambda v: None,           # tracked via 'react'
-    "vue":                         lambda v: _eol_entry("vue", _major(v),
-                                                        f"Vue {_major(v)}"),
+    "vue":                         lambda v: _eol_entry("vue", _major_minor(v),
+                                                         f"Vue {_major_minor(v)}"),
     "@angular/core":               lambda v: _eol_entry("angular", _major(v),
                                                         f"Angular {_major(v)}"),
     "next":                        lambda v: _eol_entry("nextjs", _major(v),
