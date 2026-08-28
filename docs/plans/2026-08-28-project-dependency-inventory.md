@@ -520,7 +520,7 @@ checks.
 
 ## OpenCode worktree orchestration
 
-Implementation uses `openrouter/z-ai/glm-5.3-flash` with OpenCode's `max`
+Implementation uses `opencode-go/glm-5.3-flash` with OpenCode's `max`
 reasoning variant. Agents receive explicit repository-data egress approval,
 must read the applicable canonical skill, work only in their assigned Git
 worktree, stage only owned paths, commit verified batches, and never push.
