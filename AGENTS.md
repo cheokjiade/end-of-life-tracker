@@ -259,3 +259,18 @@ canonical message format and detailed workflow.
 | `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
 | `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
 | `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |
+| `docs/agents/` | Per-repo config the engineering skills read: issue tracker, triage labels, domain docs |
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on `cheokjiade/end-of-life-tracker`, operated via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) with no renames. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: read CONTEXT.md (created lazily by the grill-with-docs skill) + `docs/adr/` before exploring — proceed silently if absent; `AGENTS.md` is the de facto context doc until then. See `docs/agents/domain.md`.
