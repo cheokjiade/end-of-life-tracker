@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import generate_config
 from generate_config import _map_java_dep
 
 
@@ -40,5 +41,35 @@ assert "source" not in entry, entry
 assert entry["product"] == "kotlin", entry
 assert entry["version"] == "1.9", entry
 print("OK kotlin-gradle-plugin maps to endoflife_date kotlin 1.9")
+
+
+# OpenSAML / Shibboleth groups are emitted as maven_central entries pointed
+# at the Shibboleth repository, with an ASCII policy note and no product key.
+entry = _map_java_dep("org.opensaml", "opensaml-core-api", "5.1.2")
+assert entry["source"] == "maven_central", entry
+assert entry["repository"] == generate_config._SHIBBOLETH_REPOSITORY, entry
+assert "policy_note" in entry and entry["policy_note"].isascii(), entry
+assert entry["label"] == "opensaml-core-api 5.1.2", entry
+assert "product" not in entry, entry
+print("OK opensaml-core-api maps to the Shibboleth repository")
+
+entry = _map_java_dep("net.shibboleth.utilities", "java-support", "8.4.0")
+assert entry["source"] == "maven_central", entry
+assert entry["artifact"] == "java-support", entry
+assert entry["repository"] == generate_config._SHIBBOLETH_REPOSITORY, entry
+assert "product" not in entry, entry
+print("OK java-support maps to the Shibboleth repository")
+
+entry = _map_java_dep("net.shibboleth.intl", "lib", "1.0.0")
+assert entry["repository"] == generate_config._SHIBBOLETH_REPOSITORY, entry
+print("OK net.shibboleth.* prefix maps to the Shibboleth repository")
+
+
+# Generic fallback deps stay plain Maven Central entries: no repository key.
+entry = _map_java_dep("org.example", "widget", "1.0.0")
+assert entry["source"] == "maven_central", entry
+assert "repository" not in entry, entry
+assert "policy_note" not in entry, entry
+print("OK generic fallback entry is unchanged")
 
 print("OK test_generate_mappings")

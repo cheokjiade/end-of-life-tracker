@@ -51,6 +51,7 @@ import math
 
 from .parsers import SOURCE_LABELS
 from .parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
+from .parsers.maven_central import _normalize_repository
 
 # Sources whose config entries this module knows how to field-check.
 # Entries routing to a registered source without rules here get a warning.
@@ -164,6 +165,19 @@ def _check_product_entry(entry, prefix, results):
             results.append(_finding(
                 f"{prefix}.engine", "error",
                 "engine must be one of: " + ", ".join(VALID_ENGINES)))
+
+    if source == "maven_central" and "repository" in entry:
+        repository = entry.get("repository")
+        valid = False
+        if _is_scalar(repository):
+            try:
+                valid = _normalize_repository(repository) is not None
+            except ValueError:
+                valid = False
+        if not valid:
+            results.append(_finding(
+                f"{prefix}.repository", "error",
+                "'repository' must be an absolute http(s) URL when provided"))
 
     for field in ("label", "policy_note", "reference_url"):
         value = entry.get(field)

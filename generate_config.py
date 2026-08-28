@@ -13,7 +13,9 @@ Mapping strategy:
     Java deps   -> known group:artifact patterns map to specific tracker
                    providers (endoflife.date Spring Boot/Framework/Tomcat/
                    Log4j, jackson_lifecycle, aws_sdk_lifecycle); everything
-                   else falls back to maven_central staleness.
+                   else falls back to maven_central staleness. Shibboleth
+                   groups (org.opensaml, net.shibboleth.*) are emitted
+                   against the Shibboleth repository, not Maven Central.
     POM props   -> known names (tomcat.version, netty.version, logback.version,
                    quartz.version, kotlin.version, java.version) produce the
                    matching tracker entry — catches transitively-managed
@@ -85,6 +87,21 @@ def _mc_entry(group, artifact, version, label):
     }
 
 
+_SHIBBOLETH_REPOSITORY = (
+    "https://build.shibboleth.net/nexus/content/repositories/releases")
+
+
+def _shibboleth_mc_entry(group, artifact, version):
+    entry = _mc_entry(group, artifact, version, f"{artifact} {version}")
+    entry["repository"] = _SHIBBOLETH_REPOSITORY
+    entry["policy_note"] = (
+        "Hosted on the Shibboleth repository, not Maven Central; each "
+        "major version's support ends with its Shibboleth IdP release "
+        "train (OpenSAML 4 EOL 2024-09-01)."
+    )
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Java group:artifact -> tracker entry mappings
 #
@@ -149,6 +166,12 @@ _JAVA_MAPPINGS = [
         lambda g, a: g == "org.jetbrains.kotlin",
         lambda g, a, v: _eol_entry("kotlin", _major_minor(v),
                                    f"Kotlin {_major_minor(v)}"),
+    ),
+    # OpenSAML / Shibboleth artifacts are distributed from the Shibboleth
+    # repository, not Maven Central (since OpenSAML 3).
+    (
+        lambda g, a: g == "org.opensaml" or g.startswith("net.shibboleth"),
+        lambda g, a, v: _shibboleth_mc_entry(g, a, v),
     ),
     # Skip junk we don't want to track
     (

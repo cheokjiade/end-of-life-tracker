@@ -23,6 +23,7 @@ from eoltracker import runner as runner_mod
 from eoltracker.parsers import check_product
 from eoltracker.parsers.maven_central import (
     _MAVEN_LATEST_CACHE,
+    _MAVEN_REPOSITORY,
     _MAVEN_VERSION_CACHE,
     _provider_maven_central,
 )
@@ -282,8 +283,9 @@ assert r["status"] == "ok", r
 # 10. R-08: maven_central unknown vs ok via seeded caches (network-free)
 # ---------------------------------------------------------------------------
 MV_ENTRY = {"group": "com.example", "artifact": "lib", "version": "8.0"}
-MV_LATEST = ("com.example", "lib")
-MV_VERSION = ("com.example", "lib", "8.0")
+# Cache keys lead with the repository so overrides never collide with Central.
+MV_LATEST = (_MAVEN_REPOSITORY, "com.example", "lib")
+MV_VERSION = (_MAVEN_REPOSITORY, "com.example", "lib", "8.0")
 
 try:
     # Both caches are pre-seeded so the provider never touches the network;
