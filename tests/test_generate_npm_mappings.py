@@ -51,9 +51,12 @@ assert entry["label"] == "Next.js 16", entry
 print("OK next range spec is cleaned to a bare major")
 
 
-# Vue cycles on endoflife.date are major.minor ("3.5", "3.4", "2.7", ... —
-# verified live against /api/vue.json; no bare-major cycle exists), so a
-# major-only version string missed the actual cycle.
+# Vue cycles on endoflife.date are major.minor ("3.5", "3.4", "3.3", "2.7",
+# "3.2", "3.1", "3.0", "2.6" ... "2.0") plus the bare-major cycle "1" —
+# verified live against /api/vue.json; there are NO cycles "3", "2" or
+# "1.0". So: a bare-major spec must be skipped (not guessed into a doomed
+# cycle), a 1.x.y pin maps to cycle "1", and everything else uses
+# major.minor.
 entry = _map_npm_dep("vue", "3.5.3")
 assert "source" not in entry, entry
 assert entry["product"] == "vue", entry
@@ -65,5 +68,36 @@ entry = _map_npm_dep("vue", "2.7.16")
 assert entry["version"] == "2.7", entry
 assert entry["label"] == "Vue 2.7", entry
 print("OK vue 2.7.16 maps to vue major.minor cycle 2.7")
+
+# (a) bare-major specs have no endoflife.date vue cycle to hit: skip them
+# into _skipped_npm_packages instead of fabricating a doomed row.
+for bare in ("3", "^3", "2"):
+    assert _map_npm_dep("vue", bare) is None, bare
+print("OK vue bare-major specs (3, ^3, 2) are skipped")
+
+# (b) major 1 exists only as the bare cycle "1" (no 1.x minor cycles).
+entry = _map_npm_dep("vue", "1.0.27")
+assert "source" not in entry, entry
+assert entry["product"] == "vue", entry
+assert entry["version"] == "1", entry
+assert entry["label"] == "Vue 1", entry
+entry = _map_npm_dep("vue", "1.0")
+assert entry["version"] == "1", entry
+assert entry["label"] == "Vue 1", entry
+print("OK vue 1.x pins map to the bare-major cycle 1 (label 'Vue 1')")
+
+# End-to-end: the skipped bare-major spec must not produce a tracker row.
+scan = {
+    "java": [],
+    "pom_properties": [],
+    "node": [("vue", "^3", "package.json")],
+    "files": ["package.json"],
+}
+config = generate_config(scan, "demo")
+skipped = [s["name"] for s in config.get("_skipped_npm_packages", [])]
+assert "vue" in skipped, config.get("_skipped_npm_packages")
+rows = [p for p in config["products"] if not p.get("_section")]
+assert not rows, config["products"]
+print("OK vue ^3 dependency falls into _skipped_npm_packages, no row")
 
 print("OK test_generate_npm_mappings")

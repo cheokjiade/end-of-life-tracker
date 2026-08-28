@@ -38,7 +38,8 @@ Mapping strategy:
     Node deps   -> known package names map to endoflife.date entries
                    (react, vue, angular, next, nuxt, node, express,
                    ckeditor); unmapped packages are listed in
-                   _skipped_npm_packages for manual review.
+                   _skipped_npm_packages for manual review (vue bare-major
+                   specs like '^3' are skipped there too — no such cycle).
 
 Usage:
     python generate_config.py <folder> [--name PROJECT] [--output FILE]
@@ -266,12 +267,30 @@ _POM_PROPERTY_MAPPINGS = {
 # staleness provider yet.
 # ---------------------------------------------------------------------------
 
+def _vue_entry(version):
+    """vue -> endoflife.date entry, or None when the spec must be skipped.
+
+    endoflife.date's vue cycles are major.minor ('3.5', '3.4', '3.3',
+    '2.7', ... '2.0') plus the bare-major cycle '1'; there are no cycles
+    '3', '2' or '1.0' (verified live against /api/vue.json). A bare-major
+    spec ('^3', '3', '2') must therefore not be guessed into a cycle —
+    return None so the package lands in _skipped_npm_packages — and a 1.x
+    pin maps to the bare-major cycle '1' (label 'Vue 1'), since no 1.x
+    minor cycles exist.
+    """
+    parts = (version or "").split(".")
+    if len(parts) < 2:
+        return None
+    if parts[0] == "1":
+        return _eol_entry("vue", "1", "Vue 1")
+    return _eol_entry("vue", _major_minor(version), f"Vue {_major_minor(version)}")
+
+
 _NPM_MAPPINGS = {
     "react":                       lambda v: _eol_entry("react", _major(v),
-                                                        f"React {_major(v)}"),
+                                                         f"React {_major(v)}"),
     "react-dom":                   lambda v: None,           # tracked via 'react'
-    "vue":                         lambda v: _eol_entry("vue", _major_minor(v),
-                                                         f"Vue {_major_minor(v)}"),
+    "vue":                         _vue_entry,
     "@angular/core":               lambda v: _eol_entry("angular", _major(v),
                                                         f"Angular {_major(v)}"),
     "next":                        lambda v: _eol_entry("nextjs", _major(v),

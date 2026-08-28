@@ -334,7 +334,10 @@ extracted manually (the scanner silently misses it):
   `latest.integration`. An ext suffix (`1.0@jar`) is truncated to the plain version
   (`1.0`).
 - `package.json`: `dependencies`/`devDependencies`/`engines.node`; known packages map to
-  endoflife.date entries, the rest land in `_skipped_npm_packages`.
+  endoflife.date entries, the rest land in `_skipped_npm_packages`. `vue` needs a pinned
+  minor: `vue@3.5.3` maps to cycle `3.5`, and a `1.x.y` pin maps to the bare-major cycle
+  `1` (label `Vue 1`), but a bare-major spec (`^3`, `2`) is skipped — endoflife.date has
+  no vue cycles `3` or `2`, and guessing one fabricates a doomed row.
 
 The scanner is a heuristic regex/JSON/XML pass, not a build — after running it, diff its
 output against the inputs and hand-map whatever it missed. Do not assume silence means
