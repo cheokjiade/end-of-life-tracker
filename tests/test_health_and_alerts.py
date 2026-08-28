@@ -67,14 +67,33 @@ assert analyse_results([R("error", label="Bad")], TH)["has_health_failures"] is 
 assert analyse_results([R("unknown", label="Unk")], TH)["has_health_failures"] is True
 assert analyse_results([R("unknown", label="Unk")], TH)["has_lifecycle_alerts"] is False
 
+# A provider contract violation fails closed as a check error; it must never
+# drift into the healthy bucket via the categoriser's fallback branch.
+invalid_status = R("surprise", label="Bad Provider State")
+a_invalid = analyse_results([invalid_status], TH)
+assert a_invalid["has_health_failures"] is True
+assert len(a_invalid["error"]) == 1 and not a_invalid["ok"]
+assert "Unrecognised provider status" in a_invalid["error"][0]["message"]
+assert invalid_status["message"] == "m"  # categorisation does not mutate input
+
+missing_status = R("ok", label="Missing Provider State")
+del missing_status["status"]
+a_missing = analyse_results([missing_status], TH)
+assert a_missing["has_health_failures"] is True
+assert len(a_missing["error"]) == 1 and not a_missing["ok"]
+
 # Deliberate untracked: neither an alert nor a health failure.
 a_untracked = analyse_results([R("untracked", label="PuTTY")], TH)
 assert a_untracked["has_lifecycle_alerts"] is False
 assert a_untracked["has_health_failures"] is False
 assert len(a_untracked["untracked"]) == 1
 
-# Empty thresholds -> default 90 preserved.
-assert analyse_results([], [])["max_threshold"] == 90
+# Empty thresholds -> default 90 preserved. An empty result set is unhealthy:
+# there is no evidence from which to issue an all-clear.
+a_empty = analyse_results([], [])
+assert a_empty["max_threshold"] == 90
+assert a_empty["empty_inventory"] is True
+assert a_empty["has_health_failures"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +167,23 @@ html_err_only, _ = format_report_html([err], TH, TODAY)
 assert "TRACKER HEALTH: 1 check error(s)" in html_err_only
 html_unk_only, _ = format_report_html([unk], TH, TODAY)
 assert "1 unknown status(es)" in html_unk_only
+
+# Unknown provider status and zero-result inventories both render and notify
+# as tracker-health failures, never as green all-clear reports.
+text_invalid, alerts_invalid = format_report_text([invalid_status], TH, TODAY)
+html_invalid, html_alerts_invalid = format_report_html([invalid_status], TH, TODAY)
+assert alerts_invalid is True and html_alerts_invalid is True
+assert "CHECK ERRORS (1)" in text_invalid
+assert "Unrecognised provider status" in text_invalid
+assert "CHECK FAILED" in html_invalid
+assert "All products are within support" not in html_invalid
+
+text_empty, alerts_empty = format_report_text([], TH, TODAY)
+html_empty, html_alerts_empty = format_report_html([], TH, TODAY)
+assert alerts_empty is True and html_alerts_empty is True
+assert "TRACKER HEALTH - EMPTY INVENTORY" in text_empty
+assert "TRACKER HEALTH: no products checked" in html_empty
+assert "All products are within support" not in html_empty
 
 
 # ---------------------------------------------------------------------------
@@ -258,14 +294,22 @@ try:
     _MAVEN_VERSION_CACHE[MV_VERSION] = None
     r = _provider_maven_central(MV_ENTRY, NPM_TODAY)
     assert r["status"] == "unknown", r
-    assert "not on Maven Central" in r["message"]
+    assert "could not be verified on Maven Central" in r["message"]
 
     # 10b. Same lookup once Central positively locates the version -> ok.
     _MAVEN_VERSION_CACHE[MV_VERSION] = {"v": "8.0", "released": date(2024, 3, 1)}
     r = _provider_maven_central(MV_ENTRY, NPM_TODAY)
     assert r["status"] == "ok", r
 
-    # 10c. In-use version IS the resolved latest even though the gav query
+    # 10c. A confirmed version without a search timestamp is still present;
+    # describe its unknown date without claiming the artifact is absent.
+    _MAVEN_VERSION_CACHE[MV_VERSION] = {"v": "8.0", "released": None}
+    r = _provider_maven_central(MV_ENTRY, NPM_TODAY)
+    assert r["status"] == "ok", r
+    assert "release date unknown" in r["message"], r
+    assert "could not be verified" not in r["message"], r
+
+    # 10d. In-use version IS the resolved latest even though the gav query
     #      came back empty -> verified ok (the latest query proves it exists).
     _MAVEN_LATEST_CACHE[MV_LATEST] = {"v": "8.0", "released": date(2024, 3, 1)}
     _MAVEN_VERSION_CACHE[MV_VERSION] = None
@@ -343,6 +387,18 @@ assert resp["notified"] is False and "subject" not in cap
 resp, cap = _run_handler(alerts_cfg, [R("eol"), unk])
 assert resp["notified"] is True
 assert cap["subject"].startswith("[EOL ALERT][TRACKER HEALTH]"), cap["subject"]
+
+# 12e. Empty and section-only inventories fail closed and notify even with
+# alerts_only. ``None`` models check_product's section-divider result.
+resp, cap = _run_handler(alerts_cfg, [])
+assert resp["checked"] == 0 and resp["has_health_failures"] is True
+assert resp["notified"] is True
+assert cap["subject"].startswith("[TRACKER HEALTH]"), cap["subject"]
+
+resp, cap = _run_handler(alerts_cfg, [None])
+assert resp["checked"] == 0 and resp["has_health_failures"] is True
+assert resp["notified"] is True
+assert cap["subject"].startswith("[TRACKER HEALTH]"), cap["subject"]
 
 
 # ---------------------------------------------------------------------------

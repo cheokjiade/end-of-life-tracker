@@ -77,18 +77,19 @@ assert resp["statusCode"] == 200
 assert resp["notified"] is False, "nothing delivered => notified=False"
 print("OK local mode never raises; notified=False on total failure")
 
-# --- 4. alerts_only without alerts -> notifications skipped entirely ----------
+# --- 4. alerts_only still reports an unverifiable empty inventory -------------
 h3 = _Harness([])
 cfg = dict(CONFIG)
 cfg["notify_when"] = "alerts_only"
-cfg["products"] = []  # no products -> has_alerts False
+cfg["products"] = []
 handler.load_config_from_s3 = lambda key=None: cfg
 handler.send_notifications = h3
 resp = handler.lambda_handler({}, context=None)
-assert h3.calls == 0, "alerts_only run without alerts must not notify"
+assert h3.calls == 1, "empty inventory must trigger a tracker-health delivery"
 assert resp["has_alerts"] is False
+assert resp["has_health_failures"] is True
 assert resp["notified"] is False
 assert resp["notification_outcomes"] == []
-print("OK alerts_only suppression: no attempt, notified=False")
+print("OK alerts_only reports empty inventory as tracker-health failure")
 
 print("OK test_delivery_handler")
