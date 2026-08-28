@@ -182,7 +182,8 @@ def _provider_maven_central(entry, today):
         )
     elif in_use is None:
         message = (
-            f"Version {version} not on Maven Central (private build?); "
+            f"Version {version} could not be verified on Maven Central "
+            f"(private build, typo, or repository gap); "
             f"latest published is {latest_v} ({latest_date_text})"
         )
     elif in_use_date is None:

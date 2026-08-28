@@ -28,6 +28,11 @@ output "sns_topic_arns" {
   value       = { for k, t in aws_sns_topic.eol_alerts : k => t.arn }
 }
 
+output "ops_topic_arn" {
+  description = "Operational alarm SNS topic ARN (subscription must be confirmed)"
+  value       = aws_sns_topic.ops_alerts.arn
+}
+
 output "schedule_rule_names" {
   description = "Per-project EventBridge rule names — useful for manual `aws events put-events` testing"
   value       = { for k, r in aws_cloudwatch_event_rule.daily : k => r.name }

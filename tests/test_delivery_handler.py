@@ -45,49 +45,63 @@ class _Harness:
         return self.outcomes
 
 
-h = _Harness([fail_outcome()])
-handler.load_config_from_s3 = lambda key=None: dict(CONFIG)
-handler.send_notifications = h
+original_load_config_from_s3 = handler.load_config_from_s3
+original_send_notifications = handler.send_notifications
+original_lambda_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
 
-# --- 1. Lambda mode + every channel failed -> raise -------------------------
-os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "eol-test-fn"
 try:
-    handler.lambda_handler({}, context=None)
-    raise AssertionError("expected DeliveryFailureError in Lambda mode")
-except DeliveryFailureError as exc:
-    assert "all required notification channels failed" in str(exc), str(exc)
-assert h.calls == 1
-print("OK Lambda mode raises when all channels fail")
+    h = _Harness([fail_outcome()])
+    handler.load_config_from_s3 = lambda key=None: dict(CONFIG)
+    handler.send_notifications = h
 
-# --- 2. Lambda mode + partial failure -> success, notified reflects delivery --
-h2 = _Harness([fail_outcome("sns"), ok_outcome("ses")])
-handler.send_notifications = h2
-resp = handler.lambda_handler({}, context=None)
-assert resp["statusCode"] == 200
-assert resp["notified"] is True, "a delivered channel means notified=True"
-assert [o["channel"] for o in resp["notification_outcomes"]] == ["sns", "ses"]
-print("OK partial delivery -> notified=True, outcomes returned")
+    # --- 1. Lambda mode + every channel failed -> raise ---------------------
+    os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "eol-test-fn"
+    try:
+        handler.lambda_handler({}, context=None)
+        raise AssertionError("expected DeliveryFailureError in Lambda mode")
+    except DeliveryFailureError as exc:
+        assert "all required notification channels failed" in str(exc), str(exc)
+    assert h.calls == 1
+    print("OK Lambda mode raises when all channels fail")
 
-# --- 3. local mode + total failure -> no raise --------------------------------
-handler.send_notifications = h
-del os.environ["AWS_LAMBDA_FUNCTION_NAME"]
-resp = handler.lambda_handler({}, context=None)
-assert resp["statusCode"] == 200
-assert resp["notified"] is False, "nothing delivered => notified=False"
-print("OK local mode never raises; notified=False on total failure")
+    # --- 2. Lambda mode + partial failure -> success ------------------------
+    h2 = _Harness([fail_outcome("sns"), ok_outcome("ses")])
+    handler.send_notifications = h2
+    resp = handler.lambda_handler({}, context=None)
+    assert resp["statusCode"] == 200
+    assert resp["notified"] is True, "a delivered channel means notified=True"
+    assert [o["channel"] for o in resp["notification_outcomes"]] == ["sns", "ses"]
+    assert resp["required_channels_undelivered"] == 1
+    print("OK partial delivery -> notified=True, outcomes returned")
 
-# --- 4. alerts_only without alerts -> notifications skipped entirely ----------
-h3 = _Harness([])
-cfg = dict(CONFIG)
-cfg["notify_when"] = "alerts_only"
-cfg["products"] = []  # no products -> has_alerts False
-handler.load_config_from_s3 = lambda key=None: cfg
-handler.send_notifications = h3
-resp = handler.lambda_handler({}, context=None)
-assert h3.calls == 0, "alerts_only run without alerts must not notify"
-assert resp["has_alerts"] is False
-assert resp["notified"] is False
-assert resp["notification_outcomes"] == []
-print("OK alerts_only suppression: no attempt, notified=False")
+    # --- 3. local mode + total failure -> no raise --------------------------
+    handler.send_notifications = h
+    del os.environ["AWS_LAMBDA_FUNCTION_NAME"]
+    resp = handler.lambda_handler({}, context=None)
+    assert resp["statusCode"] == 200
+    assert resp["notified"] is False, "nothing delivered => notified=False"
+    print("OK local mode never raises; notified=False on total failure")
+
+    # --- 4. alerts_only reports an unverifiable empty inventory ------------
+    h3 = _Harness([])
+    cfg = dict(CONFIG)
+    cfg["notify_when"] = "alerts_only"
+    cfg["products"] = []
+    handler.load_config_from_s3 = lambda key=None: cfg
+    handler.send_notifications = h3
+    resp = handler.lambda_handler({}, context=None)
+    assert h3.calls == 1, "empty inventory must trigger tracker-health delivery"
+    assert resp["has_alerts"] is False
+    assert resp["has_health_failures"] is True
+    assert resp["notified"] is False
+    assert resp["notification_outcomes"] == []
+    print("OK alerts_only reports empty inventory as tracker-health failure")
+finally:
+    handler.load_config_from_s3 = original_load_config_from_s3
+    handler.send_notifications = original_send_notifications
+    if original_lambda_name is None:
+        os.environ.pop("AWS_LAMBDA_FUNCTION_NAME", None)
+    else:
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = original_lambda_name
 
 print("OK test_delivery_handler")
