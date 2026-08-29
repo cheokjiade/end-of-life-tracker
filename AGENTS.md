@@ -27,6 +27,7 @@ a verified manifest (see `docs/packaging.md`).
 | Add a new data-source provider | Invoke `add-eol-provider` in Codex/OpenCode or `eol-provider` in Claude Code; canonical instructions: `.agents/skills/add-eol-provider/SKILL.md` |
 | Repair a provider whose upstream page drifted | Use the same provider skill; canonical repair procedure: `docs/adding-a-provider.md` |
 | Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
+| Run a Codex task while conserving Codex allowance | Ask Codex to follow `docs/codex-usage-efficient-workflow.md` |
 
 Universal norms, whichever workflow you are in:
 
