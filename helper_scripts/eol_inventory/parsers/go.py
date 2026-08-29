@@ -94,26 +94,19 @@ def parse_go_mod_records(path, rel_path):
         emit_dependency(tokens[0], _strip_v(tokens[1]), not indirect,
                         line, f"require:{tokens[0]}")
 
-    def handle_replace(code, line):
+    def parse_replace(code, line):
         if "=>" not in code:
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed replace: {code!r}"))
-            return
+            return None
         old, old_version = _parse_replace_side(code.split("=>", 1)[0])
         target, target_version = _parse_replace_side(code.split("=>", 1)[1])
         if not old or not target:
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed replace: {code!r}"))
-            return
-
-        old_record = next((
-            record for record in original_requirements
-            if record["kind"] == "dependency" and record["name"] == old
-            and (not old_version or record.get("version") == old_version)
-            and record in records
-        ), None)
+            return None
 
         local_target = _is_local_path(target)
         if local_target:
@@ -127,14 +120,22 @@ def parse_go_mod_records(path, rel_path):
                 "go_replace", rel_path,
                 f"line {line}: replace {old} => {target}"
                 + (f" {target_version}" if target_version else "")))
+        return {
+            "old": old,
+            "old_version": old_version,
+            "target": target,
+            "target_version": target_version,
+            "local_target": local_target,
+            "line": line,
+        }
 
-        # A replace directive only affects an original requirement with a
-        # matching module path/version. Emitted replacement targets are never
-        # fed into later directives, so unused/chained replacements remain
-        # warning-only and directive order cannot change inventory.
-        if old_record is None:
-            return
-        if local_target:
+    def apply_replacement(old_record, replacement):
+        old = replacement["old"]
+        target = replacement["target"]
+        target_version = replacement["target_version"]
+        line = replacement["line"]
+
+        if replacement["local_target"]:
             target_record = None
         else:
             target_record = emit_dependency(
@@ -213,7 +214,29 @@ def parse_go_mod_records(path, rel_path):
 
     original_requirements = tuple(
         record for record in records if record["kind"] == "dependency")
-    for code, lineno in replacements:
-        handle_replace(code, lineno)
+    parsed_replacements = [
+        replacement for code, lineno in replacements
+        if (replacement := parse_replace(code, lineno)) is not None
+    ]
+    for old_record in original_requirements:
+        matches = [
+            replacement for replacement in parsed_replacements
+            if replacement["old"] == old_record["name"]
+            and (replacement["old_version"] is None
+                 or replacement["old_version"] == old_record.get("version"))
+        ]
+        exact = [replacement for replacement in matches
+                 if replacement["old_version"] is not None]
+        candidates = exact or [replacement for replacement in matches
+                               if replacement["old_version"] is None]
+        if len(candidates) > 1:
+            warnings.append(new_warning(
+                "parse_error", rel_path,
+                f"go.mod has multiple matching replace directives for "
+                f"{old_record['name']} {old_record.get('version') or ''}; "
+                f"requirement left unchanged"))
+            continue
+        if candidates:
+            apply_replacement(old_record, candidates[0])
 
     return records, warnings

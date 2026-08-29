@@ -190,6 +190,33 @@ def test_go_replacement_targets_are_not_chained():
     ]
 
 
+def test_go_version_specific_replace_beats_wildcard_in_any_order():
+    outputs = []
+    orders = (
+        ("replace example.test/A => example.test/W v1.0.0",
+         "replace example.test/A v0.1.0 => example.test/S v2.0.0"),
+        ("replace example.test/A v0.1.0 => example.test/S v2.0.0",
+         "replace example.test/A => example.test/W v1.0.0"),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        for directives in orders:
+            path.write_text(
+                "module example.test/app\n"
+                "require example.test/A v0.1.0\n"
+                + "\n".join(directives) + "\n", encoding="utf-8")
+            records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+            outputs.append([
+                (record["name"], record["version"], record["direct"])
+                for record in records if record["kind"] == "dependency"
+            ])
+            assert len([w for w in warnings if w["category"] == "go_replace"]) == 2
+    assert outputs == [
+        [("example.test/S", "2.0.0", True)],
+        [("example.test/S", "2.0.0", True)],
+    ]
+
+
 def test_go_unused_same_module_version_replace_is_warning_only():
     records, warnings = _parse_go("go", "basic", "go.mod")
 
@@ -466,6 +493,7 @@ TESTS = [
     test_go_module_replace_warning_provenance_and_target,
     test_go_replace_before_require_is_order_independent,
     test_go_replacement_targets_are_not_chained,
+    test_go_version_specific_replace_beats_wildcard_in_any_order,
     test_go_unused_same_module_version_replace_is_warning_only,
     test_go_local_replace_never_public_dependency,
     test_go_malformed_lines_warn_and_parsing_continues,
