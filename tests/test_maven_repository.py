@@ -1515,4 +1515,116 @@ print("OK chain results are cached per repository; other repos probe their own p
 
 
 clear_caches()
+calls.clear()
+
+
+# --- Primary-repository skip is scheme-insensitive ---------------------------
+# A declared repository that IS Maven Central under any spelling (http://,
+# uppercase host, trailing slash, listed twice) must be skipped silently so
+# the rescuing repository behind it is still probed. This section owns
+# `calls`: both stubs append (url, method) tuples from here on.
+
+SHIBBOLETH_RESCUE = "https://rescue-b.example/maven2"
+SCHEME_VARIANTS = [
+    "http://repo1.maven.org/maven2",
+    "https://REPO1.MAVEN.ORG/maven2/",
+    "https://repo1.maven.org/maven2",
+]
+
+
+def scheme_variants_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>2.6.4</release>"
+                                b"</versioning></metadata>")
+        raise http_404(request)  # in-use 2.6.6 not published on Central
+    assert "repo1.maven.org" not in url, url  # scheme variants never probed
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>3.0.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = scheme_variants_urlopen
+    result = maven._provider_maven_central({
+        "label": "OpenSAML 2.6.6",
+        "group": "org.opensaml",
+        "artifact": "opensaml",
+        "version": "2.6.6",
+        "repositories": SCHEME_VARIANTS + [SHIBBOLETH_RESCUE],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["source_label"] == "rescue-b.example", result
+assert result["message"].startswith(
+    "Version 2.6.6 not on Maven Central; found on rescue-b.example: "), result
+assert "latest: 2.6.4" in result["message"], result
+assert sum(1 for u, _ in calls if "repo1.maven.org" in u) == 3, calls
+print("OK primary-repository skip is scheme-insensitive (http/uppercase/dupes skipped)")
+
+
+# --- Version-only rescue where the rescued version IS Central's latest ------
+
+clear_caches()
+calls.clear()
+RESCUE_A = "https://rescue-a.example/repo"
+RESCUE_B = "https://rescue-c.example/repo"
+
+
+def on_latest_rescue_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>1.0.0</release>"
+                                b"<versions><version>1.0.0</version></versions>"
+                                b"</versioning></metadata>")
+        raise http_404(request)  # 1.0.0 POM missing on Central (CDN-gap shape)
+    if url.startswith(RESCUE_A):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>2.5.0</release>"
+                                b"</versioning></metadata>")
+        raise http_404(request)  # artifact listed there, but not the version
+    assert url.startswith(RESCUE_B), url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>1.1.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = on_latest_rescue_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget 1.0.0",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [RESCUE_A, RESCUE_B],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["message"].startswith(
+    "Version 1.0.0 not on Maven Central; found on rescue-c.example: "
+    "On latest release (1.0.0)"), result
+assert result["latest_patch"] == "1.0.0", result
+assert result["on_latest_cycle"] is True, result
+assert any(u.startswith(RESCUE_A) for u, _ in calls), calls  # A probed, then continued
+print("OK version-only rescue with version == Central latest -> on-latest wording")
+
+
+clear_caches()
 print("OK test_maven_repository")

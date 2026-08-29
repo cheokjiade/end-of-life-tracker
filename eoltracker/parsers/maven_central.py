@@ -121,6 +121,19 @@ def _normalize_repository(value):
     return text
 
 
+def _is_primary_repository(url):
+    """True when *url* is the primary repository itself.
+
+    Compared scheme-insensitively on host and path: a declared
+    http://repo1.maven.org/maven2 is the already-probed primary just as
+    much as the canonical https URL, and must not enter the chain.
+    """
+    candidate = urllib.parse.urlsplit(url)
+    primary = urllib.parse.urlsplit(_MAVEN_REPOSITORY)
+    return (candidate.hostname, candidate.path.rstrip("/")) == (
+        primary.hostname, primary.path.rstrip("/"))
+
+
 def _artifact_base_url(group, artifact, repository=_MAVEN_REPOSITORY):
     """Canonical, path-quoted repository URL for one Maven artifact."""
     group_path = "/".join(
@@ -384,10 +397,10 @@ def _provider_maven_central(entry, today):
             if not candidate_repo:
                 logger.warning("%s: skipping blank declared repository", label)
                 continue
-            if candidate_repo == _MAVEN_REPOSITORY:
+            if _is_primary_repository(candidate_repo):
                 # Already probed as the primary above; the ordinary
-                # <id>central</id> declaration must not short-circuit the
-                # chain. Skipped silently — nothing is wrong.
+                # <id>central</id> declaration (any scheme spelling of it)
+                # must not short-circuit the chain. Skipped silently.
                 continue
             try:
                 candidate_latest = _fetch_maven_latest(

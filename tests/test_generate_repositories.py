@@ -439,4 +439,33 @@ with tempfile.TemporaryDirectory() as tmp:
 assert "Repositories declared: 3" in out, out
 print("OK CLI summary reports the declared repository count")
 
+# --- F: plugin-coordinate aliases apply to settings.gradle.kts plugin rows ---
+
+SETTINGS_KTS_PLUGIN = """\
+pluginManagement {
+    plugins {
+        id("io.spring.dependency-management") version "1.1.7"
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://build.shibboleth.net/nexus/content/repositories/releases/")
+        }
+    }
+}
+"""
+
+with tempfile.TemporaryDirectory() as tmp:
+    _write(tmp, "settings.gradle.kts", SETTINGS_KTS_PLUGIN)
+    scan = scan_folder(tmp)
+    assert scan.get("repositories") == [SHIB], scan.get("repositories")
+    config = generate_config(scan, "settings-plugin-probe")
+    rows = [p for p in config["products"]
+            if p.get("artifact") == "dependency-management-plugin"]
+    assert len(rows) == 1, config["products"]
+    assert rows[0].get("group") == "io.spring.gradle", rows
+    assert rows[0].get("version") == "1.1.7", rows
+print("OK settings.gradle.kts plugin rows use the coordinate alias table")
+
 print("OK test_generate_repositories")
