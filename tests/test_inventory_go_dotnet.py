@@ -163,12 +163,37 @@ def test_go_replace_before_require_is_order_independent():
     assert _has_warning(warnings, "go_replace", "github.com/old/dep")
 
 
-def test_go_same_module_version_pin_replace():
+def test_go_replacement_targets_are_not_chained():
+    outputs = []
+    orders = (
+        ("replace example.test/A => example.test/B v1.0.0",
+         "replace example.test/B => example.test/C v1.0.0"),
+        ("replace example.test/B => example.test/C v1.0.0",
+         "replace example.test/A => example.test/B v1.0.0"),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        for directives in orders:
+            path.write_text(
+                "module example.test/app\n"
+                "require example.test/A v0.1.0\n"
+                + "\n".join(directives) + "\n", encoding="utf-8")
+            records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+            dependencies = [
+                (record["name"], record["version"], record["direct"])
+                for record in records if record["kind"] == "dependency"]
+            outputs.append(dependencies)
+            assert len([w for w in warnings if w["category"] == "go_replace"]) == 2
+    assert outputs == [
+        [("example.test/B", "1.0.0", True)],
+        [("example.test/B", "1.0.0", True)],
+    ]
+
+
+def test_go_unused_same_module_version_replace_is_warning_only():
     records, warnings = _parse_go("go", "basic", "go.mod")
 
-    pinned = _one(records, "github.com/pinned/dep")
-    assert pinned["version"] == "1.0.4"   # the replaced-to version wins
-    assert _locators(pinned) == ["replace:github.com/pinned/dep"]
+    assert not _records_named(records, "github.com/pinned/dep")
     assert _has_warning(warnings, "go_replace", "github.com/pinned/dep")
 
 
@@ -422,7 +447,8 @@ TESTS = [
     test_go_direct_requires_and_indirect_count,
     test_go_module_replace_warning_provenance_and_target,
     test_go_replace_before_require_is_order_independent,
-    test_go_same_module_version_pin_replace,
+    test_go_replacement_targets_are_not_chained,
+    test_go_unused_same_module_version_replace_is_warning_only,
     test_go_local_replace_never_public_dependency,
     test_go_malformed_lines_warn_and_parsing_continues,
     test_go_parsing_is_deterministic,

@@ -26,6 +26,7 @@ Rules enforced here:
       silently rewritten exact versions.
 """
 
+import codecs
 import fnmatch
 import re
 import xml.etree.ElementTree as ET
@@ -126,7 +127,12 @@ def load_safe_xml(path, rel_path, what):
         return None, new_warning(
             "oversize_input", rel_path,
             f"file exceeds {MAX_FILE_BYTES} byte limit; skipped")
-    if re.search(br"<!\s*(?:DOCTYPE|ENTITY)\b", raw, flags=re.IGNORECASE):
+    forbidden, encoding_error = _xml_declaration_status(raw)
+    if encoding_error:
+        return None, new_warning(
+            "parse_error", rel_path,
+            f"{what} has an invalid {encoding_error} encoding")
+    if forbidden:
         return None, new_warning(
             "parse_error", rel_path,
             f"{what} contains a forbidden DTD/entity declaration")
@@ -135,6 +141,37 @@ def load_safe_xml(path, rel_path, what):
     except ET.ParseError as exc:
         return None, new_warning(
             "parse_error", rel_path, f"{what} parse error: {exc}")
+
+
+def _xml_declaration_status(raw):
+    """Return ``(forbidden, encoding_error)`` across XML byte encodings."""
+    byte_pattern = re.compile(
+        br"<!\s*(?:DOCTYPE|ENTITY)\b", flags=re.IGNORECASE)
+    if byte_pattern.search(raw):
+        return True, None
+
+    encoding = None
+    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        encoding = "utf-32"
+    elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        encoding = "utf-16"
+    elif raw.startswith(b"<\x00\x00\x00"):
+        encoding = "utf-32-le"
+    elif raw.startswith(b"\x00\x00\x00<"):
+        encoding = "utf-32-be"
+    elif raw.startswith(b"<\x00?\x00"):
+        encoding = "utf-16-le"
+    elif raw.startswith(b"\x00<\x00?"):
+        encoding = "utf-16-be"
+    if encoding is None:
+        return False, None
+    try:
+        text = raw.decode(encoding)
+    except UnicodeDecodeError:
+        return False, encoding
+    forbidden = re.search(
+        r"<!\s*(?:DOCTYPE|ENTITY)\b", text, flags=re.IGNORECASE)
+    return bool(forbidden), None
 
 
 # ---------------------------------------------------------------------------

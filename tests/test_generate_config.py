@@ -224,14 +224,20 @@ def test_parse_pom_records_plain_and_broken():
 def test_pom_rejects_dtd_and_entities():
     with tempfile.TemporaryDirectory() as td:
         pom = Path(td) / "pom.xml"
-        pom.write_text(
+        hostile = (
             '<!DOCTYPE project [<!ENTITY boom "expanded">]>'
-            '<project><groupId>&boom;</groupId></project>', encoding="utf-8")
+            '<project><groupId>&boom;</groupId></project>')
+        for encoding in ("utf-8", "utf-16", "utf-32"):
+            pom.write_text(hostile, encoding=encoding)
+            records, warnings = gc.parse_pom_records(pom, "pom.xml")
+            assert records == [], encoding
+            assert len(warnings) == 1, encoding
+            assert warnings[0]["category"] == "parse_error", encoding
+            assert "forbidden DTD/entity" in warnings[0]["message"], encoding
+
+        pom.write_text("<project />", encoding="utf-16")
         records, warnings = gc.parse_pom_records(pom, "pom.xml")
-    assert records == []
-    assert len(warnings) == 1
-    assert warnings[0]["category"] == "parse_error"
-    assert "forbidden DTD/entity" in warnings[0]["message"]
+        assert records == [] and warnings == []
 
 
 def test_parse_pom_records_unresolved():
@@ -958,13 +964,15 @@ def test_cli_update_rejects_non_object_json():
         assert json.loads(output.read_text(encoding="utf-8")) == []
 
 
-def test_terraform_excludes_non_runtime_directories():
+def test_terraform_uses_positive_runtime_allowlist():
     terraform = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
-    for path in (
-            "helper_scripts", "tests", ".agents", ".venv", "venv", "env",
-            ".tox", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".idea",
-            ".vscode"):
-        assert f'"{path}"' in terraform, path
+    assert "source_dir" not in terraform
+    assert "excludes =" not in terraform
+    assert '["lambda_function.py"]' in terraform
+    assert 'fileset("${path.module}/../eoltracker", "**/*.py")' in terraform
+    assert '"eoltracker/${source_file}"' in terraform
+    assert 'dynamic "source"' in terraform
+    assert 'filename = source.value' in terraform
 
 
 TESTS = [
@@ -1005,7 +1013,7 @@ TESTS = [
     test_update_merge_preserves_curation_and_unobserved_entries,
     test_update_merge_preserves_multiple_versions_and_default_source,
     test_cli_update_rejects_non_object_json,
-    test_terraform_excludes_non_runtime_directories,
+    test_terraform_uses_positive_runtime_allowlist,
 ]
 
 

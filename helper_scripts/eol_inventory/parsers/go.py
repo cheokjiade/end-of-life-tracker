@@ -75,6 +75,7 @@ def parse_go_mod_records(path, rel_path):
     records = []
     warnings = []
     replacements = []
+    original_requirements = ()
     block = None
 
     def emit_dependency(name, version, direct, line, locator):
@@ -108,26 +109,37 @@ def parse_go_mod_records(path, rel_path):
             return
 
         old_record = next((
-            record for record in records
+            record for record in original_requirements
             if record["kind"] == "dependency" and record["name"] == old
             and (not old_version or record.get("version") == old_version)
+            and record in records
         ), None)
 
-        if _is_local_path(target):
+        local_target = _is_local_path(target)
+        if local_target:
             # Local replacements are never emitted as public dependencies.
             warnings.append(new_warning(
                 "go_local_replace", rel_path,
                 f"line {line}: replace {old} => {target} is a local path; "
                 f"not emitted as a public dependency"))
-            target_record = None
         else:
             warnings.append(new_warning(
                 "go_replace", rel_path,
                 f"line {line}: replace {old} => {target}"
                 + (f" {target_version}" if target_version else "")))
+
+        # A replace directive only affects an original requirement with a
+        # matching module path/version. Emitted replacement targets are never
+        # fed into later directives, so unused/chained replacements remain
+        # warning-only and directive order cannot change inventory.
+        if old_record is None:
+            return
+        if local_target:
+            target_record = None
+        else:
             target_record = emit_dependency(
                 target, target_version,
-                direct=old_record["direct"] if old_record else False,
+                direct=old_record["direct"],
                 line=line,
                 locator=f"replace:{old}")
 
@@ -199,6 +211,8 @@ def parse_go_mod_records(path, rel_path):
             replacements.append((tokens[1], lineno))
         # Anything else (exclude/retract single lines, stray text) is ignored.
 
+    original_requirements = tuple(
+        record for record in records if record["kind"] == "dependency")
     for code, lineno in replacements:
         handle_replace(code, lineno)
 

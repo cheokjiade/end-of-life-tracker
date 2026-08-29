@@ -59,6 +59,15 @@ def test_dispatch_isolates_provider_failures():
     assert "ZeroDivisionError" in result["message"]
     assert result["policy_note"] == "Keep note"
 
+    malformed = [
+        check_product(None, TODAY),
+        check_product([], TODAY),
+        check_product({"source": []}, TODAY),
+    ]
+    assert all(item["status"] == "error" for item in malformed)
+    assert "expected object" in malformed[0]["message"]
+    assert "non-empty string" in malformed[2]["message"]
+
 
 def test_malformed_provider_documents_return_error_rows():
     real_cycles = endoflife_date.fetch_all_cycles
