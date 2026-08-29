@@ -23,7 +23,7 @@ import glob as _glob
 import re
 from pathlib import Path
 
-from ..models import new_warning
+from ..models import MAX_FILES, guarded_local_file, new_warning
 from .docker import emit_image_record
 
 _MAX_INCLUDE_DEPTH = 5
@@ -63,7 +63,10 @@ def parse_gitlab_ci_records(path, rel_path, root=None):
     return _parse_ci_text(text, rel_path, root)
 
 
-def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
+def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset(),
+                   include_state=None):
+    if include_state is None:
+        include_state = {"files": 0}
     records = []
     warnings = []
     top_vars = {}
@@ -77,6 +80,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
     pending_item_name = False  # services "-" awaiting a "name:" line
     tab_warned = False
     anchors_warned = False
+    block_scalar_indent = None
 
     def warn(category, message):
         warnings.append(new_warning(category, rel_path, message))
@@ -84,6 +88,10 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
     def image_value(raw, line, locator):
         value = raw.strip().strip("\"'")
         if not value:
+            return
+        if value.startswith(("*", "&")):
+            warn("ci_yaml_unsupported",
+                 f"line {line}: YAML image aliases/anchors are not resolved")
             return
         if value[0] in "{[":
             warn("ci_yaml_unsupported",
@@ -118,15 +126,30 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
                  f"line {line}: include chain exceeds "
                  f"{_MAX_INCLUDE_DEPTH} levels at {inc_rel!r}")
             return
+        if include_state["files"] >= MAX_FILES:
+            warn("ci_include_limit",
+                 f"line {line}: local include limit of {MAX_FILES} files "
+                 "reached; remaining includes skipped")
+            return
+        guarded, guard_warning = guarded_local_file(resolved, root, inc_rel)
+        if guard_warning:
+            warnings.append(guard_warning)
+            return
+        if guarded is None:
+            warn("ci_include_missing",
+                 f"line {line}: local include {inc_rel!r} does not exist")
+            return
         try:
-            inc_text = resolved.read_text(encoding="utf-8", errors="replace")
+            inc_text = guarded.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             warn("ci_include_missing",
                  f"line {line}: local include {inc_rel!r} could not be "
                  f"read: {exc}")
             return
+        include_state["files"] += 1
         inc_records, inc_warnings = _parse_ci_text(
-            inc_text, inc_rel, root, depth + 1, visited | {resolved})
+            inc_text, inc_rel, root, depth + 1, visited | {resolved},
+            include_state)
         records.extend(inc_records)
         warnings.extend(inc_warnings)
 
@@ -220,6 +243,10 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
                 tab_warned = True
             continue
         indent = len(raw) - len(raw.lstrip(" "))
+        if block_scalar_indent is not None:
+            if indent > block_scalar_indent:
+                continue
+            block_scalar_indent = None
         content = re.sub(r"\s+#.*$", "", raw.strip()).strip()
         if not content:
             continue
@@ -235,9 +262,12 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
         is_item = content == "-" or content.startswith("- ")
         body = "" if content == "-" else content[2:].strip() \
             if is_item else content
+        if is_item and body in ("|", "|-", "|+", ">", ">-", ">+"):
+            block_scalar_indent = indent
+            continue
 
         if is_item:
-            if collecting == "services" and indent > collect_indent:
+            if collecting == "services" and indent >= collect_indent:
                 if not body:
                     pending_item_name = True
                     continue
@@ -251,7 +281,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
                     image_value(body, lineno, services_locator)
                     pending_item_name = False
                 continue
-            if collecting == "include" and indent > collect_indent:
+            if collecting == "include" and indent >= collect_indent:
                 if ":" in body:
                     kind, _, target = body.partition(":")
                     handle_include(kind, target, lineno)
@@ -264,6 +294,12 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
         key, _, val = content.partition(":")
         key = key.strip()
         val = val.strip()
+        if val in ("|", "|-", "|+", ">", ">-", ">+"):
+            block_scalar_indent = indent
+            if key in ("image", "services", "include"):
+                warn("ci_yaml_unsupported",
+                     f"line {lineno}: block scalar {key} value is not parsed")
+            continue
 
         if indent == 0:
             current_top = key

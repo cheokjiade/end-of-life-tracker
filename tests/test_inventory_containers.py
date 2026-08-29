@@ -181,6 +181,20 @@ def test_stage_alias_can_match_image_name():
     assert len(records) == 1
     assert records[0]["name"] == "alpine"
 
+    records, warnings = docker_parser._parse_dockerfile_text(
+        "FROM python:3.12 AS python\nFROM python:3.13 AS runtime\n",
+        "Dockerfile")
+    assert warnings == []
+    assert [record["version"] for record in records] == ["3.12", "3.13"]
+
+    records, warnings = docker_parser._parse_dockerfile_text(
+        "ARG PYTHON_VERSION=3.12 # pinned\n"
+        "# comment ending in \\\nFROM node:20\n"
+        "FROM python:${PYTHON_VERSION}\n", "Dockerfile")
+    assert warnings == []
+    assert [(r["name"], r["version"]) for r in records] == [
+        ("node", "20"), ("python", "3.12")]
+
 
 def test_gitlab_top_level_image_and_services():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -311,6 +325,17 @@ def test_gitlab_anchors_and_tabs():
         assert records == []
         assert _has_warning(warnings, "parse_error", "tab indentation")
 
+        scalar = Path(tmpdir) / "scalar.yml"
+        scalar.write_text(
+            "variables:\n  IMAGE: python:3.12\n"
+            "job:\n  image: *default_image\n  script:\n    - |\n"
+            "      image: node:20\n      echo done\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            scalar, "scalar.yml")
+        assert records == []
+        assert _has_warning(warnings, "ci_yaml_unsupported", "aliases")
+
 
 def test_gitlab_include_guards():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,6 +364,29 @@ def test_gitlab_include_guards():
             ci, ".gitlab-ci.yml")
         assert records == []
         assert _has_warning(warnings, "ci_include_skipped", "scan root")
+
+
+def test_gitlab_zero_indent_lists_and_oversize_include():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        included = root / "included.yml"
+        included.write_text("image: python:3.12\n", encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "services:\n- postgres:16\ninclude:\n- local: included.yml\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+        assert sorted((r["name"], r["version"]) for r in records) == [
+            ("postgres", "16"), ("python", "3.12")]
+        assert warnings == []
+
+        included.write_text("#" * 2_000_001, encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+        assert [(r["name"], r["version"]) for r in records] == [
+            ("postgres", "16")]
+        assert _has_warning(warnings, "oversize_input", "byte limit")
 
 
 def test_gitlab_include_glob_and_circular_and_depth():
@@ -470,6 +518,7 @@ TESTS = [
     test_gitlab_parsing_is_deterministic,
     test_gitlab_anchors_and_tabs,
     test_gitlab_include_guards,
+    test_gitlab_zero_indent_lists_and_oversize_include,
     test_gitlab_include_glob_and_circular_and_depth,
     test_gitlab_globbed_include_cannot_follow_escaping_symlink,
     test_image_cycle_helpers,

@@ -93,11 +93,13 @@ def test_powershell_wrappers_parse():
             f"{proc.stdout.strip()}\n{proc.stderr.strip()}")
 
 
-def test_generator_wizards_use_explicit_replace_flag():
+def test_generator_wizards_offer_update_and_explicit_replace():
     bash = (HELPERS / "generate_config.sh").read_text(encoding="utf-8")
     powershell = (HELPERS / "generate_config.ps1").read_text(encoding="utf-8")
     assert 'set -- "$@" --replace' in bash
-    assert "$genArgs += '--replace'" in powershell
+    assert 'set -- "$@" --update' in bash
+    assert "$existingMode = '--replace'" in powershell
+    assert "$existingMode = '--update'" in powershell
     assert 'set -- "$@" --force' not in bash
     assert "$genArgs += '--force'" not in powershell
 
@@ -106,7 +108,7 @@ TESTS = [
     test_wrapper_files_exist,
     test_bash_wrappers_parse,
     test_powershell_wrappers_parse,
-    test_generator_wizards_use_explicit_replace_flag,
+    test_generator_wizards_offer_update_and_explicit_replace,
 ]
 
 

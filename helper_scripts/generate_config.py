@@ -19,13 +19,13 @@ Supported formats:
     .gitlab-ci.yml/.yaml, .gitlab/*.yml   — GitLab CI images
 
 Usage:
-    python generate_config.py <folder> [--name PROJECT] [--output FILE]
-                              [--exclude PATTERN] [--update | --replace]
-                              [--include-transitive] [--strict]
+    python helper_scripts/generate_config.py <folder> [--name PROJECT]
+           [--output FILE] [--exclude PATTERN] [--update | --replace]
+           [--include-transitive] [--strict]
 
 Examples:
-    python generate_config.py "project-b" --name b
-    python generate_config.py ssg-frontend --name frontend --update
+    python helper_scripts/generate_config.py "project-b" --name b
+    python helper_scripts/generate_config.py ssg-frontend --name frontend --update
 """
 
 import argparse
@@ -39,16 +39,22 @@ from eol_inventory import generate_config, scan_folder
 
 def _merge_identity(entry):
     """Identity excluding version, used for curation-preserving updates."""
-    return tuple(entry.get(key) for key in (
-        "source", "product", "package", "module", "group", "artifact",
-        "sdk", "label" if entry.get("source") == "manual" else "_unused"))
+    source = entry.get("source") or "endoflife_date"
+    identity = (source,) + tuple(entry.get(key) for key in (
+        "product", "package", "module", "group", "artifact", "sdk",
+        "major", "label" if source == "manual" else "_unused"))
+    if source == "manual":
+        identity += (entry.get("note"),)
+    return identity
 
 
 def _merge_existing_config(existing, generated):
     """Merge scan evidence into an existing config without deleting curation."""
     fresh = [p for p in generated.get("products", [])
              if isinstance(p, dict) and not p.get("_section")]
-    fresh_by_identity = {_merge_identity(p): p for p in fresh}
+    fresh_by_identity = {}
+    for index, product in enumerate(fresh):
+        fresh_by_identity.setdefault(_merge_identity(product), []).append(index)
     used = set()
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
@@ -58,12 +64,20 @@ def _merge_existing_config(existing, generated):
             products.append(old)
             continue
         identity = _merge_identity(old)
-        new = fresh_by_identity.get(identity)
-        if new is None:
+        candidates = [index for index in fresh_by_identity.get(identity, [])
+                      if index not in used]
+        exact = [index for index in candidates
+                 if fresh[index].get("version") == old.get("version")]
+        if exact:
+            selected = exact[0]
+        elif len(candidates) == 1:
+            selected = candidates[0]
+        else:
             products.append(old)
             stats["retained_not_observed"] += 1
             continue
-        used.add(identity)
+        new = fresh[selected]
+        used.add(selected)
         merged_entry = dict(old)
         merged_entry.update(new)
         for key in ("policy_note", "note", "reference_url", "eol_date",
@@ -76,10 +90,21 @@ def _merge_existing_config(existing, generated):
         else:
             stats["changed"] += 1
 
-    additions = [p for p in fresh if _merge_identity(p) not in used]
+    additions = [p for index, p in enumerate(fresh) if index not in used]
     if additions:
-        products.append({"_section": "=== Newly Discovered ==="})
-        products.extend(additions)
+        section = next((index for index, item in enumerate(products)
+                        if isinstance(item, dict) and item.get("_section") ==
+                        "=== Newly Discovered ==="), None)
+        if section is None:
+            products.append({"_section": "=== Newly Discovered ==="})
+            products.extend(additions)
+        else:
+            insert_at = next(
+                (index for index in range(section + 1, len(products))
+                 if isinstance(products[index], dict)
+                 and products[index].get("_section")),
+                len(products))
+            products[insert_at:insert_at] = additions
         stats["added"] = len(additions)
 
     merged = dict(generated)
@@ -135,7 +160,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     folder = args.folder
-    project_name = args.name or os.path.basename(os.path.normpath(folder)).replace(" ", "-").lower()
+    project_name = args.name or os.path.basename(
+        os.path.abspath(os.path.normpath(folder))).replace(" ", "-").lower()
     output = args.output or f"eol_config.{project_name}.json"
 
     if os.path.exists(output) and not (args.replace or args.update):
@@ -157,6 +183,8 @@ def main(argv=None):
         try:
             with open(output, encoding="utf-8") as existing_file:
                 existing = json.load(existing_file)
+            if not isinstance(existing, dict):
+                raise ValueError("top-level JSON value is not an object")
             config = _merge_existing_config(existing, config)
         except (OSError, ValueError) as exc:
             print(f"Could not update existing config: {exc}", file=sys.stderr)

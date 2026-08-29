@@ -182,6 +182,10 @@ def _join_continuations(text):
     pending = None
     start_line = 0
     for lineno, raw in enumerate(text.splitlines(), 1):
+        if raw.lstrip().startswith("#"):
+            if pending is None:
+                logical.append((lineno, raw.rstrip()))
+            continue
         chunk = raw.rstrip()
         if pending is None:
             start_line = lineno
@@ -196,6 +200,26 @@ def _join_continuations(text):
     if pending is not None:
         logical.append((start_line, pending))
     return logical
+
+
+def _strip_inline_comment(value):
+    """Strip a whitespace-prefixed Docker comment outside quotes."""
+    quote = None
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote == '"':
+            escaped = True
+            continue
+        if char in ("'", '"'):
+            quote = None if quote == char else char if quote is None else quote
+            continue
+        if char == "#" and quote is None \
+                and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.rstrip()
 
 
 def _parse_dockerfile_text(text, rel_path):
@@ -216,7 +240,7 @@ def _parse_dockerfile_text(text, rel_path):
             if match and not seen_from:
                 value = match.group(2)
                 if value is not None:
-                    value = value.strip("\"'") or None
+                    value = _strip_inline_comment(value).strip("\"'") or None
                 args[match.group(1)] = value
             continue
         if upper != "FROM":
@@ -225,7 +249,7 @@ def _parse_dockerfile_text(text, rel_path):
 
         rest = _FROM_RE.match(code).group(1)
         rest = _PLATFORM_FLAG_RE.sub("", rest)
-        rest = re.sub(r"\s+#.*$", "", rest).strip()
+        rest = _strip_inline_comment(rest).strip()
         alias = None
         as_match = _AS_RE.search(rest)
         if as_match:
@@ -235,7 +259,10 @@ def _parse_dockerfile_text(text, rel_path):
             continue
 
         repo, _, _ = split_image_reference(rest)
-        if repo.lower() in aliases or repo.lower() == "scratch":
+        # A stage reference is the bare alias. Comparing the normalized
+        # repository would drop a real image when a stage happened to share
+        # its name (for example: `AS python`, then `FROM python:3.13`).
+        if rest.lower() in aliases or repo.lower() == "scratch":
             if alias:
                 aliases.add(alias.lower())
             continue

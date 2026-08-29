@@ -29,7 +29,13 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ..models import add_location, new_record, new_warning
+from ..models import (
+    add_location,
+    guarded_local_file,
+    new_record,
+    new_warning,
+    scan_root_for,
+)
 
 _PROP_RE = re.compile(r"\$\(([^)]+)\)")
 
@@ -73,6 +79,23 @@ def _sibling_rel(rel_path, filename):
     return f"{dirpart}/{filename}" if dirpart else filename
 
 
+def _nearest_sidecar(project_dir, scan_root, filename):
+    """Nearest filename from the project directory up to the scan root."""
+    current = Path(project_dir).resolve()
+    boundary = Path(scan_root).resolve()
+    while True:
+        candidate = current / filename
+        if candidate.exists():
+            try:
+                rel = candidate.relative_to(boundary).as_posix()
+            except ValueError:
+                return candidate, filename
+            return candidate, rel
+        if current == boundary or boundary not in current.parents:
+            return Path(project_dir) / filename, _sibling_rel("", filename)
+        current = current.parent
+
+
 def _load_xml(path, rel_path, what):
     """ET root or (None, warning) — callers must handle the None."""
     try:
@@ -109,8 +132,11 @@ def _tfm_version(tfm):
         rest = base
     if not rest:
         return None
-    if "." not in rest and rest.isdigit() and len(rest) == 2:
-        return rest[0] + "." + rest[1]
+    if "." not in rest and rest.isdigit():
+        if len(rest) == 2:
+            return rest[0] + "." + rest[1]
+        if len(rest) >= 3:
+            return rest[0] + "." + rest[1] + "." + rest[2:]
     return rest
 
 
@@ -118,19 +144,20 @@ def _tfm_version(tfm):
 # Version sources: Directory.Packages.props and packages.lock.json
 # ---------------------------------------------------------------------------
 
-def _read_central_versions(props_abs):
+def _read_central_versions(props_abs, root, rel_path):
     """{lower-name: (declared-name, version)} from Directory.Packages.props.
 
     First declaration wins when casing differs (deterministic file order).
     """
-    if not props_abs.is_file():
-        return {}
+    guarded, warning = guarded_local_file(props_abs, root, rel_path)
+    if guarded is None:
+        return {}, warning
     try:
-        root = ET.parse(props_abs).getroot()
+        document = ET.parse(guarded).getroot()
     except (ET.ParseError, OSError):
-        return {}
+        return {}, None
     central = {}
-    for elem in root.iter():
+    for elem in document.iter():
         if _local(elem.tag) != "PackageVersion":
             continue
         attrs = _attrs_ci(elem)
@@ -141,7 +168,7 @@ def _read_central_versions(props_abs):
         key = name.lower()
         if version and key not in central:
             central[key] = (name, version)
-    return central
+    return central, None
 
 
 def _requested_lower_bound(spec):
@@ -151,60 +178,75 @@ def _requested_lower_bound(spec):
     return token or None
 
 
-def _read_lock_versions(lock_abs):
+def _read_lock_versions(lock_abs, root, rel_path):
     """{lower-name: version} from packages.lock.json.
 
     Direct entries beat Transitive ones; within a pass, target
     frameworks are visited in sorted order and the first occurrence
     wins — deterministic regardless of JSON ordering.
     """
-    if not lock_abs.is_file():
-        return {}
+    guarded, warning = guarded_local_file(lock_abs, root, rel_path)
+    if guarded is None:
+        return {}, warning
     try:
-        with open(lock_abs, encoding="utf-8") as f:
+        with open(guarded, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
+        return {}, None
+    if not isinstance(data, dict):
+        return {}, None
     dependencies = data.get("dependencies") or {}
+    if not isinstance(dependencies, dict):
+        return {}, None
     tfms = sorted(dependencies)
     lock = {}
     for wanted in ("Direct", "Transitive"):
         for tfm in tfms:
             packages = dependencies.get(tfm) or {}
+            if not isinstance(packages, dict):
+                continue
             for pkg in sorted(packages):
                 key = pkg.lower()
                 if key in lock:
                     continue
                 info = packages.get(pkg) or {}
+                if not isinstance(info, dict):
+                    continue
                 if info.get("type") != wanted:
                     continue
-                version = info.get("resolved") or _requested_lower_bound(
-                    info.get("requested"))
+                version = info.get("resolved")
                 if version:
                     lock[key] = version
-    return lock
+    return lock, None
 
 
 # ---------------------------------------------------------------------------
 # Project file parser (csproj / fsproj / vbproj)
 # ---------------------------------------------------------------------------
 
-def parse_csproj_records(path, rel_path):
+def parse_csproj_records(path, rel_path, root=None):
     """Parse a .csproj/.fsproj/.vbproj; return (records, warnings)."""
-    root, warning = _load_xml(path, rel_path, "project file")
-    if root is None:
+    document, warning = _load_xml(path, rel_path, "project file")
+    if document is None:
         return [], [warning]
 
     records = []
     warnings = []
-    props = _collect_properties(root)
+    props = _collect_properties(document)
     project_dir = Path(path).parent
-    central = _read_central_versions(project_dir / _PROJECT_SIBLING)
-    central_rel = _sibling_rel(rel_path, _PROJECT_SIBLING)
-    lock = _read_lock_versions(project_dir / _LOCK_SIBLING)
-    lock_rel = _sibling_rel(rel_path, _LOCK_SIBLING)
+    scan_root = Path(root).resolve() if root is not None else scan_root_for(
+        path, rel_path)
+    central_path, central_rel = _nearest_sidecar(
+        project_dir, scan_root, _PROJECT_SIBLING)
+    lock_path, lock_rel = _nearest_sidecar(
+        project_dir, scan_root, _LOCK_SIBLING)
+    central, central_warning = _read_central_versions(
+        central_path, scan_root, central_rel)
+    lock, lock_warning = _read_lock_versions(
+        lock_path, scan_root, lock_rel)
+    warnings.extend(w for w in (central_warning, lock_warning) if w)
 
-    for elem in root.iter():
+    for elem in document.iter():
         tag = _local(elem.tag)
 
         if tag in ("TargetFramework", "TargetFrameworks"):
@@ -328,10 +370,22 @@ def parse_global_json_records(path, rel_path):
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         return [], [new_warning(
             "parse_error", rel_path, f"global.json parse error: {exc}")]
-
-    version = (data.get("sdk") or {}).get("version")
+    if not isinstance(data, dict):
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "global.json top-level value is not an object")]
+    sdk = data.get("sdk") or {}
+    if not isinstance(sdk, dict):
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "global.json sdk value is not an object")]
+    version = sdk.get("version")
     if not version:
         return [], []
+    if not isinstance(version, str):
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "global.json sdk.version value is not a string")]
     record = new_record("dotnet", "dotnet-sdk", version=version,
                         kind="runtime")
     add_location(record, rel_path, "dotnet", locator="sdk.version")

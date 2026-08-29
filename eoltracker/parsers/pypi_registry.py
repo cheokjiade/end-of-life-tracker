@@ -175,6 +175,8 @@ def _error(entry, package, message):
     result = _error_result(entry, message)
     result["source"] = "pypi_registry"
     result["product"] = package
+    version = str(entry.get("version") or "")
+    result["label"] = entry.get("label") or f"{package} {version}".strip()
     return result
 
 
@@ -288,6 +290,8 @@ def _provider_pypi_registry(entry, today):
         result = _error_result(entry, f"PyPI registry query failed: {exc}")
         result["source"] = "pypi_registry"
         result["product"] = package
+        result["label"] = entry.get("label") or \
+            f"{package} {entry.get('version', '')}".strip()
         return result
     return _pypi_result_from_doc(entry, doc, today)
 
@@ -299,4 +303,5 @@ provider = _provider_pypi_registry
 
 def url_for(r):
     product = r.get("product") or ""
-    return f"https://pypi.org/project/{product}/" if product else None
+    quoted = urllib.parse.quote(str(product), safe="")
+    return f"https://pypi.org/project/{quoted}/" if quoted else None

@@ -207,8 +207,7 @@ def build_inventory_view(config, project_name=None):
     for entry in config.get("products") or []:
         if not isinstance(entry, dict) or entry.get("_section"):
             continue
-        if entry.get("source") == "manual" \
-                and "untracked" in _comment_text(entry) and inventory:
+        if entry.get("_inventory_generated") == "unmapped" and inventory:
             continue
         row = _product_row(entry)
         (containers if row["container"] else products).append(row)
@@ -295,10 +294,16 @@ def format_found_in(locations):
 # ---------------------------------------------------------------------------
 
 def _md_cell(value):
-    """One Markdown table cell with pipes escaped."""
+    """One single-line Markdown table cell with active markup escaped."""
+    return _md_text(value).replace("|", "\\|")
+
+
+def _md_text(value):
+    """Plain Markdown text safe for headings, bullets, and table cells."""
     if value is None:
         return ""
-    return str(value).replace("|", "\\|")
+    text = html.escape(str(value), quote=True)
+    return text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
 
 
 def _sorted_rows(rows):
@@ -320,11 +325,11 @@ def render_markdown(view):
     lines = []
     title = "# Dependency inventory"
     if meta["project"]:
-        title += f": {meta['project']}"
+        title += f": {_md_text(meta['project'])}"
     lines.append(title)
     lines.append("")
     lines.append(f"- Scan date: {meta['scan_date']}")
-    lines.append(f"- Generator version: {meta['generator_version']}")
+    lines.append(f"- Generator version: {_md_text(meta['generator_version'])}")
     files_scanned = meta["files_scanned"]
     lines.append("- Files scanned: {}".format(
         files_scanned if files_scanned is not None else "not recorded"))
@@ -415,7 +420,10 @@ def render_markdown(view):
         lines.append("")
     else:
         for warning in view["warnings"]:
-            lines.append("- [{category}] {path}: {message}".format(**warning))
+            lines.append("- [{}] {}: {}".format(
+                _md_text(warning.get("category", "")),
+                _md_text(warning.get("path", "")),
+                _md_text(warning.get("message", ""))))
         lines.append("")
 
     lines.append("## Summary")
@@ -468,10 +476,13 @@ def render_csv(view):
     containers = _sorted_rows(view["containers"])
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
-    writer.writerow(["kind", "ecosystem", "provider", "name", "version",
-                     "review_state", "inferred", "found_in", "details"])
+    def write_row(values):
+        writer.writerow([_csv_cell(value) for value in values])
+
+    write_row(["kind", "ecosystem", "provider", "name", "version",
+               "review_state", "inferred", "found_in", "details"])
     for row in tracked + containers:
-        writer.writerow([
+        write_row([
             "product",
             row["ecosystem"],
             row["provider"],
@@ -483,7 +494,7 @@ def render_csv(view):
             row["details"],
         ])
     for item in view["unmapped"]:
-        writer.writerow([
+        write_row([
             "unmapped",
             item["ecosystem"],
             "",
@@ -498,15 +509,24 @@ def render_csv(view):
     return buf.getvalue()
 
 
+def _csv_cell(value):
+    """Prevent spreadsheet programs from evaluating inventory text."""
+    text = "" if value is None else str(value)
+    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + text
+    return text
+
+
 def render_html(view):
     """Render a deterministic, self-contained and escaped HTML inventory."""
     esc = lambda value: html.escape(str(value if value is not None else ""))
     rows = []
     for row in _sorted_rows(view["products"] + view["containers"]):
+        state = "inferred" if row["inferred"] else "tracked"
         rows.append(
-            "<tr><td>tracked</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>"
             "<td>{}</td><td>{}</td><td>{}</td></tr>".format(
-                esc(row["ecosystem"]), esc(row["label"]),
+                state, esc(row["ecosystem"]), esc(row["label"]),
                 esc(row["version"]), esc(row["provider"]),
                 esc(format_found_in(row["provenance"]) or "not recorded"),
                 esc(row["details"])))

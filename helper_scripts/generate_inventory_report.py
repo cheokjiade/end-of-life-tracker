@@ -9,13 +9,12 @@ imports. Legacy configs without `_inventory` remain readable.
 Standard-library only; project files are never executed.
 
 Usage:
-    python generate_inventory_report.py <config> [--output FILE]
-                                        [--csv [FILE]] [--force]
+    python helper_scripts/generate_inventory_report.py <config> [--output FILE]
+           [--csv [FILE]] [--html [FILE]] [--no-csv] [--no-html] [--force]
 
 Examples:
-    python generate_inventory_report.py eol_config.demo.json
-    python generate_inventory_report.py eol_config.demo.json --csv
-    python generate_inventory_report.py old.json --output inv.md --force
+    python helper_scripts/generate_inventory_report.py eol_config.demo.json
+    python helper_scripts/generate_inventory_report.py old.json --output inv.md --force
 """
 
 import argparse
@@ -106,7 +105,7 @@ def main(argv=None):
 
     print(f"Reading {config_path!r}...")
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
     except (OSError, ValueError) as exc:
         print(f"Could not read config file: {config_path}", file=sys.stderr)

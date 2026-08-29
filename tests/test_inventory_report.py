@@ -337,6 +337,17 @@ def test_markdown_pipe_escaping():
     assert "| Weird | Name |" not in md
 
 
+def test_markdown_escapes_newlines_html_and_warning_markup():
+    config = _new_model_config()
+    config["products"][1]["label"] = "<b>name</b>\n| injected |"
+    config["_inventory"]["warnings"][0]["message"] = \
+        "first\n- [click](javascript:alert(1)) <script>"
+    md = render_markdown(build_inventory_view(config, project_name="<demo>"))
+    assert "<script>" not in md and "<b>name</b>" not in md
+    assert "&lt;demo&gt;" in md and "&lt;b&gt;name&lt;/b&gt;" in md
+    assert "\n- [click]" not in md
+
+
 def test_markdown_legacy_config():
     md = render_markdown(build_inventory_view(_legacy_config()))
     assert md.startswith("# Dependency inventory\n")
@@ -392,6 +403,30 @@ def test_csv_quotes_special_values():
     assert rows[1][3] == 'Netty "HTTP", full'
 
 
+def test_csv_neutralizes_spreadsheet_formulas():
+    config = _new_model_config()
+    config["products"][1]["label"] = '=HYPERLINK("https://evil", "open")'
+    config["products"][1]["version"] = "+1"
+    rows = list(csv.reader(io.StringIO(render_csv(
+        build_inventory_view(config, project_name="demo")))))
+    product = rows[1]
+    assert product[3].startswith("'=")
+    assert product[4] == "'+1"
+
+
+def test_curated_manual_entry_with_untracked_comment_is_not_hidden():
+    config = _new_model_config()
+    config["products"].append({
+        "source": "manual", "label": "Curated appliance", "version": "7",
+        "_comment": "Owner says this remains untracked until migration"})
+    view = build_inventory_view(config)
+    assert any(row["label"] == "Curated appliance" for row in view["products"])
+
+    config["products"][-1]["_inventory_generated"] = "unmapped"
+    view = build_inventory_view(config)
+    assert not any(row["label"] == "Curated appliance" for row in view["products"])
+
+
 def test_html_output_is_escaped_and_has_review_details():
     config = _new_model_config()
     config["products"][1]["label"] = "Netty <unsafe>"
@@ -401,6 +436,7 @@ def test_html_output_is_escaped_and_has_review_details():
     assert "Netty <unsafe>" not in rendered
     assert "SNAPSHOT build resolves on no public registry" in rendered
     assert "Manual review checklist" in rendered
+    assert "<td>inferred</td>" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -498,10 +534,13 @@ TESTS = [
     test_markdown_new_model,
     test_markdown_container_separation,
     test_markdown_pipe_escaping,
+    test_markdown_escapes_newlines_html_and_warning_markup,
     test_markdown_legacy_config,
     test_markdown_deterministic,
     test_csv_output,
     test_csv_quotes_special_values,
+    test_csv_neutralizes_spreadsheet_formulas,
+    test_curated_manual_entry_with_untracked_comment_is_not_hidden,
     test_html_output_is_escaped_and_has_review_details,
     test_project_slug,
     test_cli_render_refuse_and_force,

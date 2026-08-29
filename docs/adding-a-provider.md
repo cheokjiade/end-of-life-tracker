@@ -52,6 +52,7 @@ from ..core import _error_result, logger
 
 _FOO_URL = "https://example.com/eol-data"
 _FOO_CACHE = {}          # cache the fetch — a run checks many products against one source
+_FOO_MIN_ROWS = 3        # tune to the smallest legitimate upstream data set
 
 
 def _fetch_foo():

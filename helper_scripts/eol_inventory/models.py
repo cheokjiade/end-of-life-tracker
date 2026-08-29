@@ -27,6 +27,7 @@ Rules enforced here:
 """
 
 import fnmatch
+from pathlib import Path
 
 SCHEMA_VERSION = 1
 GENERATOR_VERSION = "1.0.0"
@@ -41,6 +42,7 @@ DEFAULT_EXCLUDED_DIRS = (
 # Safety guards against accidental huge scans.
 MAX_FILE_BYTES = 2_000_000
 MAX_FILES = 5_000
+MAX_PARSE_DEPTH = 64
 
 
 # ---------------------------------------------------------------------------
@@ -153,4 +155,42 @@ def is_excluded(rel_posix, patterns):
 
 
 def _fnmatch(name, pattern):
-    return fnmatch.fnmatch(name, pattern)
+    # fnmatch() applies os.path.normcase and is therefore case-insensitive on
+    # Windows but case-sensitive on Linux. Config scans must be deterministic.
+    return fnmatch.fnmatchcase(name, pattern)
+
+
+def scan_root_for(path, rel_path):
+    """Derive the lexical scan root from an absolute path + relative path.
+
+    Use the lexical path rather than resolving the manifest symlink: resolving
+    first can move the apparent root and weaken include containment checks.
+    """
+    root = Path(path).absolute().parent
+    for _ in range(max(0, len(str(rel_path).split("/")) - 1)):
+        root = root.parent
+    return root.resolve()
+
+
+def guarded_local_file(path, root, rel_path):
+    """Return (resolved_path, warning) for a bounded in-root sidecar file."""
+    candidate = Path(path)
+    if not candidate.exists():
+        return None, None
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        return None, new_warning(
+            "escaped_symlink", rel_path,
+            "sidecar/include target lies outside the scan root; skipped")
+    try:
+        size = resolved.stat().st_size
+    except OSError as exc:
+        return None, new_warning(
+            "unreadable_file", rel_path, f"could not stat file: {exc}")
+    if size > MAX_FILE_BYTES:
+        return None, new_warning(
+            "oversize_input", rel_path,
+            f"file exceeds {MAX_FILE_BYTES} byte limit ({size} bytes); skipped")
+    return resolved, None

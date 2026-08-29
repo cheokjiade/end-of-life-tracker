@@ -139,15 +139,10 @@ def test_go_module_replace_warning_provenance_and_target():
 
     target = _one(records, "github.com/new/dep")
     assert target["version"] == "1.2.3"
-    assert target["direct"] is False
-    assert target["found_in"][0]["line"] == 16
-    assert target["found_in"][0]["locator"] == "replace:github.com/old/dep"
-
-    # The replaced module's require record carries replace provenance too.
-    old = _one(records, "github.com/old/dep")
-    assert old["version"] == "0.1.0"
-    assert _locators(old) == ["require:github.com/old/dep",
-                              "replace=>github.com/new/dep"]
+    assert target["direct"] is True
+    assert _locators(target) == ["require:github.com/old/dep",
+                                 "replace:github.com/old/dep"]
+    assert not _records_named(records, "github.com/old/dep")
 
     assert _has_warning(warnings, "go_replace", "github.com/old/dep")
 
@@ -200,6 +195,8 @@ def test_dotnet_tfm_version():
     assert f("net8.0") == "8.0"
     assert f("net8.0-windows") == "8.0"
     assert f("net48") == "4.8"
+    assert f("net472") == "4.7.2"
+    assert f("net481") == "4.8.1"
     assert f("netcoreapp3.1") == "3.1"
     assert f("netstandard2.1") == "2.1"
     assert f("net") is None
@@ -332,6 +329,26 @@ def test_dotnet_project_without_siblings_warns():
         "not in Directory.Packages.props or packages.lock.json")
 
 
+def test_dotnet_finds_central_versions_at_scan_root():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        project_dir = root / "src" / "app"
+        project_dir.mkdir(parents=True)
+        (root / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup><PackageVersion Include="RootPkg" '
+            'Version="4.2.0" /></ItemGroup></Project>', encoding="utf-8")
+        csproj = project_dir / "App.csproj"
+        csproj.write_text(
+            '<Project><ItemGroup><PackageReference Include="RootPkg" />'
+            '</ItemGroup></Project>', encoding="utf-8")
+        records, warnings = dotnet_parser.parse_csproj_records(
+            csproj, "src/app/App.csproj", root=root)
+    package = _one(records, "RootPkg")
+    assert package["version"] == "4.2.0"
+    assert package["found_in"][1]["path"] == "Directory.Packages.props"
+    assert warnings == []
+
+
 def test_dotnet_global_json_malformed_and_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         bad = Path(tmpdir) / "global.json"
@@ -376,6 +393,7 @@ TESTS = [
     test_dotnet_props_only_parse_first_wins_on_casing,
     test_dotnet_global_json_sdk,
     test_dotnet_project_without_siblings_warns,
+    test_dotnet_finds_central_versions_at_scan_root,
     test_dotnet_global_json_malformed_and_empty,
     test_dotnet_parsing_is_deterministic,
 ]

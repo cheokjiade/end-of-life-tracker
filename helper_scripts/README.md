@@ -205,8 +205,8 @@ python helper_scripts\generate_inventory_report.py eol_config.my-project.json
 
 Defaults write to `reports/inventory/<project>-inventory.md`, `.csv`, and
 `.html`. Options: `--output FILE` (Markdown), `--csv [FILE]` / `--no-csv`,
-`--html [FILE]` / `--no-html`, and `--force` to overwrite existing reports
-(the Markdown file alone when you pass explicit paths for the others).
+`--html [FILE]` / `--no-html`, and `--force` to overwrite every selected
+report file, including explicitly named CSV and HTML paths.
 
 The Markdown report contains:
 
@@ -282,9 +282,10 @@ config.
 | `generate_inventory_report.sh` / `generate_inventory_report.ps1` | Bash / PowerShell | No arguments → numbered config picker. First argument selects a config (shorthand or path); the rest are forwarded to the Python CLI. |
 | `run.sh` / `run.ps1` (repository root) | Bash / PowerShell | Interactive picker that runs the **tracker** (`lambda_function.py`) on a config. |
 
-All wrappers locate the repository root from their own location, preserve
-quoted paths containing spaces, return the Python exit code, and print
-copy-paste recovery steps when Python 3.9+ is missing.
+The four wrappers in `helper_scripts/` locate the repository root from their
+own location, preserve quoted paths containing spaces, return the Python exit
+code, version-check Python 3.9+, and print copy-paste recovery steps when it is
+missing. The repository-root `run.*` scripts are the existing tracker runners.
 
 ---
 

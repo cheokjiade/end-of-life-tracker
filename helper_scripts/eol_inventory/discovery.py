@@ -11,7 +11,7 @@ prevent accidental huge scans.
 """
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .models import (
     DEFAULT_EXCLUDED_DIRS,
@@ -29,6 +29,7 @@ from .parsers import (
     parse_package_json_records,
     parse_pom_records,
 )
+from .parsers.node import parse_nvmrc_records
 from .parsers.dotnet import (
     parse_csproj_records,
     parse_directory_packages_props,
@@ -45,7 +46,7 @@ from .parsers.python import (
 
 
 def _match_globs(rel_path, patterns):
-    return any(Path(rel_path).match(pat) for pat in patterns)
+    return any(PurePosixPath(rel_path).match(pat) for pat in patterns)
 
 
 def _is_gitlab_ci_file(rel_path):
@@ -57,7 +58,7 @@ def _is_gitlab_ci_file(rel_path):
         and name.endswith((".yml", ".yaml"))
 
 
-def _parse_python_manifest(path, rel_path):
+def _parse_python_manifest(path, rel_path, root):
     """Dispatch one Python manifest file to its parser by basename."""
     name = rel_path.rsplit("/", 1)[-1].lower()
     if name == "pyproject.toml":
@@ -65,22 +66,28 @@ def _parse_python_manifest(path, rel_path):
     if name == "pipfile.lock":
         return parse_pipfile_lock_records(path, rel_path)
     if name == "pipfile":
-        return parse_pipfile_records(path, rel_path)
+        return parse_pipfile_records(path, rel_path, root=root)
     if name == ".python-version":
         return parse_python_version_records(path, rel_path)
     if name == "runtime.txt":
         return parse_runtime_txt_records(path, rel_path)
-    return parse_requirements_records(path, rel_path)
+    return parse_requirements_records(path, rel_path, root=root)
 
 
-def _parse_dotnet_manifest(path, rel_path):
+def _parse_node_manifest(path, rel_path, root):
+    if rel_path.rsplit("/", 1)[-1].lower() == ".nvmrc":
+        return parse_nvmrc_records(path, rel_path)
+    return parse_package_json_records(path, rel_path, root=root)
+
+
+def _parse_dotnet_manifest(path, rel_path, root):
     """Dispatch one .NET project file to its parser by basename."""
     name = rel_path.rsplit("/", 1)[-1].lower()
     if name == "global.json":
         return parse_global_json_records(path, rel_path)
     if name == "directory.packages.props":
         return parse_directory_packages_props(path, rel_path)
-    return parse_csproj_records(path, rel_path)
+    return parse_csproj_records(path, rel_path, root=root)
 
 
 # Manifest table in ecosystem precedence order. This preserves the
@@ -93,15 +100,15 @@ def _parse_dotnet_manifest(path, rel_path):
 # includes inside the scan root).
 _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False),
-    ("gradle", ("*.gradle.kts", "build.gradle"), parse_gradle_records, False),
-    ("npm", ("package.json",), parse_package_json_records, False),
+    ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records, False),
+    ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True),
     ("python", ("requirements*.txt", "pyproject.toml", "Pipfile", "Pipfile.lock",
                 ".python-version", "runtime.txt"),
-     _parse_python_manifest, False),
+     _parse_python_manifest, True),
     ("go", ("go.mod",), parse_go_mod_records, False),
     ("dotnet", ("*.csproj", "*.fsproj", "*.vbproj",
                 "Directory.Packages.props", "global.json"),
-     _parse_dotnet_manifest, False),
+     _parse_dotnet_manifest, True),
     ("docker", ("Dockerfile", "Dockerfile.*", "*.Dockerfile"),
      parse_dockerfile_records, False),
     ("gitlab", None, parse_gitlab_ci_records, True),
@@ -145,7 +152,6 @@ def scan_folder(folder, exclude=None):
 
     records = []
     files = []
-    warnings = []
     by_ecosystem = {eco: [] for eco, _, _, _ in _MANIFEST_PATTERNS}
 
     for dirpath, dirnames, filenames in os.walk(root, topdown=True,
@@ -199,10 +205,23 @@ def scan_folder(folder, exclude=None):
                 "symlink target lies outside the scan root; skipped"))
             continue
 
-        if wants_root:
-            file_records, file_warnings = parser(abs_path, rel, root)
-        else:
-            file_records, file_warnings = parser(abs_path, rel)
+        try:
+            if wants_root:
+                file_records, file_warnings = parser(abs_path, rel, root)
+            else:
+                file_records, file_warnings = parser(abs_path, rel)
+        except RecursionError:
+            file_records = []
+            file_warnings = [new_warning(
+                "parse_error", rel,
+                "manifest nesting/include depth exceeded the safe parser limit")]
+        except Exception as exc:
+            # A single malformed manifest must not erase valid evidence from
+            # every other file in the project.
+            file_records = []
+            file_warnings = [new_warning(
+                "parse_error", rel,
+                f"manifest parser failed safely: {type(exc).__name__}: {exc}")]
         records.extend(file_records)
         warnings.extend(file_warnings)
         files.append(rel)

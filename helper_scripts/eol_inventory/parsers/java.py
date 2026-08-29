@@ -144,7 +144,7 @@ def parse_pom_records(path, rel_path):
 
 _GRADLE_PATTERN_QUOTED = re.compile(
     r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
-    r'"([^:"\s]+):([^:"\s]+):([^"\s]+)"'
+    r'["\']([^:"\'\s]+):([^:"\'\s]+):([^"\'\s]+)["\']'
 )
 _GRADLE_PATTERN_NAMED = re.compile(
     r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*'

@@ -172,4 +172,5 @@ provider = _provider_npm_registry
 
 def url_for(r):
     product = r.get("product") or ""
-    return f"https://www.npmjs.com/package/{product}" if product else None
+    quoted = urllib.parse.quote(str(product), safe="@/")
+    return f"https://www.npmjs.com/package/{quoted}" if quoted else None

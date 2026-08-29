@@ -106,6 +106,12 @@ def parse_go_mod_records(path, rel_path):
                 f"go.mod line {line}: malformed replace: {code!r}"))
             return
 
+        old_record = next((
+            record for record in records
+            if record["kind"] == "dependency" and record["name"] == old
+            and (not old_version or record.get("version") == old_version)
+        ), None)
+
         if _is_local_path(target):
             # Local replacements are never emitted as public dependencies.
             warnings.append(new_warning(
@@ -119,16 +125,18 @@ def parse_go_mod_records(path, rel_path):
                 f"line {line}: replace {old} => {target}"
                 + (f" {target_version}" if target_version else "")))
             target_record = emit_dependency(
-                target, target_version, direct=False, line=line,
+                target, target_version,
+                direct=old_record["direct"] if old_record else False,
+                line=line,
                 locator=f"replace:{old}")
 
-        # Provenance on the replaced module's require record, when present.
-        for record in records:
-            if (record["kind"] == "dependency" and record["name"] == old
-                    and record is not target_record):
-                add_location(record, rel_path, "go", line=line,
-                             locator=f"replace=>{target}")
-                break
+        # The replacement is what the build uses. Move require provenance and
+        # directness to the replacement; do not inventory the stale old pin.
+        if old_record is not None and old_record is not target_record:
+            records.remove(old_record)
+            if target_record is not None:
+                target_record["found_in"] = (
+                    old_record["found_in"] + target_record["found_in"])
 
     for lineno, raw in enumerate(text.splitlines(), 1):
         parts = raw.split("//", 1)

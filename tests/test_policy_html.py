@@ -16,6 +16,23 @@ assert "&#9432;" in out, "info marker missing"
 assert "&lt;script&gt;" in out, "note not escaped"
 assert "<script>" not in out, "unescaped note leaked into HTML"
 
+# Provider messages, labels, versions, and release fields are untrusted too.
+hostile = check_product({"source": "manual", "label": "<script>label</script>"}, TODAY)
+hostile.update({
+    "message": '<img src=x onerror="alert(1)">',
+    "version": "<b>1</b>",
+    "latest_patch": "<i>2</i>",
+    "latest_patch_date": "<u>today</u>",
+    "in_use_release_date": "<em>yesterday</em>",
+    "latest_cycle": "<x>",
+    "latest_cycle_version": "<y>",
+})
+hostile_html, _ = format_report_html([hostile], TH, TODAY)
+for raw in ("<script>", "<img", "<b>", "<i>", "<u>", "<em>", "<x>", "<y>"):
+    assert raw not in hostile_html, (raw, hostile_html)
+assert "&lt;script&gt;label&lt;/script&gt;" in hostile_html
+assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in hostile_html
+
 # Absent note -> no info marker.
 r2 = check_product({"source": "manual", "label": "X"}, TODAY)
 out2, _ = format_report_html([r2], TH, TODAY)

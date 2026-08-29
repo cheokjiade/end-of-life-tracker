@@ -393,6 +393,7 @@ def generate_config(scan, project_name, include_transitive=False):
                 "note": item["reason"],
                 "_found_in": item["found_in"],
                 "_comment": f"Untracked {item['ecosystem']} inventory item",
+                "_inventory_generated": "unmapped",
             }
             for key in ("image_reference", "image_identity", "registry",
                         "repository", "tag", "digest", "scope", "direct"):
@@ -407,9 +408,7 @@ def generate_config(scan, project_name, include_transitive=False):
     # --- Build config --------------------------------------------------------
     real_products = [p for p in products if not p.get("_section")]
     tracked_products = [p for p in real_products
-                        if not (p.get("source") == "manual"
-                                and p.get("_comment", "").startswith(
-                                    "Untracked "))]
+                        if p.get("_inventory_generated") != "unmapped"]
     warnings = sort_warnings(scan["warnings"])
     config = {
         "_comment": [

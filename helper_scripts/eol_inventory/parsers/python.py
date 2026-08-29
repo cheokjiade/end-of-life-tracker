@@ -13,9 +13,9 @@ Covered inputs:
                           while they stay inside the scan root)
     - pyproject.toml      PEP 621 [project] tables and common Poetry
                           dependency tables
+    - Pipfile             direct declarations, enriched by a sibling lock
     - Pipfile.lock        the resolved graph (records carry direct=False,
-                          mirroring how the go parser emits indirect
-                          requires)
+                          mirroring how the go parser emits indirect requires)
     - .python-version / runtime.txt   Python runtime evidence
 
 Version policy: exact pins ("==2.32.4", "===2.32.4") become record
@@ -29,7 +29,15 @@ import json
 import re
 from pathlib import Path
 
-from ..models import MAX_FILE_BYTES, add_location, new_record, new_warning
+from ..models import (
+    MAX_FILE_BYTES,
+    MAX_PARSE_DEPTH,
+    add_location,
+    guarded_local_file,
+    new_record,
+    new_warning,
+    scan_root_for,
+)
 
 # ---------------------------------------------------------------------------
 # Requirement-line parsing (shared by requirements files and pyproject)
@@ -183,27 +191,33 @@ def _emit_requirement(parsed, scope, manifest, rel_path, locator_prefix="",
 # requirements*.txt
 # ---------------------------------------------------------------------------
 
-def parse_requirements_records(path, rel_path):
+def parse_requirements_records(path, rel_path, root=None):
     """Parse a requirements file (following includes); (records, warnings)."""
-    root_abs = _root_of(path, rel_path)
-    return _parse_requirements_file(path, rel_path, root_abs, set())
+    root_abs = Path(root).resolve() if root is not None else _root_of(path, rel_path)
+    return _parse_requirements_file(path, rel_path, root_abs, set(), 0)
 
 
 def _root_of(path, rel_path):
     """Scan root derived from the absolute path and the rel-path depth."""
-    root = Path(path).resolve()
-    for _ in range(len(rel_path.split("/")) - 1):
-        root = root.parent
-    return root
+    return scan_root_for(path, rel_path)
 
 
-def _parse_requirements_file(path, rel_path, root_abs, seen):
+def _sibling_rel(rel_path, filename):
+    directory = rel_path.rsplit("/", 1)[0] if "/" in rel_path else ""
+    return f"{directory}/{filename}" if directory else filename
+
+
+def _parse_requirements_file(path, rel_path, root_abs, seen, depth):
+    if depth > MAX_PARSE_DEPTH:
+        return [], [new_warning(
+            "include_depth", rel_path,
+            f"requirements include chain exceeds {MAX_PARSE_DEPTH} levels")]
     abs_path = Path(path).resolve()
     if abs_path in seen:
         return [], [new_warning(
             "include_cycle", rel_path,
             f"requirements include cycle at {rel_path}")]
-    seen.add(abs_path)
+    active = seen | {abs_path}
 
     try:
         size = abs_path.stat().st_size
@@ -231,10 +245,15 @@ def _parse_requirements_file(path, rel_path, root_abs, seen):
         if not line:
             continue
         if line.startswith("-"):
-            _handle_option_line(line, abs_path, rel_path, root_abs, seen,
+            _handle_option_line(line, abs_path, rel_path, root_abs, active, depth,
                                 records, warnings)
             continue
-        parsed = _parse_requirement(line)
+        # pip-tools appends integrity hashes to otherwise exact requirements.
+        # Hashes describe artifacts; they are not part of the version spec.
+        requirement = re.split(
+            r"\s+--(?:hash|no-binary|only-binary|config-settings)(?:=|\s)",
+            line, maxsplit=1)[0]
+        parsed = _parse_requirement(requirement.strip())
         record, warning = _emit_requirement(
             parsed, "runtime", "requirements", rel_path, line=lineno)
         if record:
@@ -253,17 +272,28 @@ def _strip_comment(line):
     return line
 
 
-def _handle_option_line(line, abs_path, rel_path, root_abs, seen,
+def _handle_option_line(line, abs_path, rel_path, root_abs, seen, depth,
                         records, warnings):
     tokens = line.split()
     option = tokens[0]
+    attached = None
+    if option.startswith("--requirement="):
+        attached = option.partition("=")[2]
+        option = "--requirement"
+    elif option.startswith("-r") and option != "-r":
+        attached = option[2:]
+        option = "-r"
     if option in ("-r", "--requirement"):
-        if len(tokens) < 2:
+        if attached:
+            target = attached
+        elif len(tokens) >= 2:
+            target = tokens[1]
+        else:
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"missing target for {option} include"))
             return
-        target = tokens[1].strip().strip('"').strip("'")
+        target = target.strip().strip('"').strip("'")
         inc_abs, inc_rel = _resolve_include(target, abs_path, root_abs)
         if inc_abs is None:
             warnings.append(new_warning(
@@ -272,7 +302,7 @@ def _handle_option_line(line, abs_path, rel_path, root_abs, seen,
                 f"not followed"))
             return
         sub_records, sub_warnings = _parse_requirements_file(
-            inc_abs, inc_rel, root_abs, seen)
+            inc_abs, inc_rel, root_abs, seen, depth + 1)
         records.extend(sub_records)
         warnings.extend(sub_warnings)
     elif option in ("-e", "--editable"):
@@ -605,7 +635,12 @@ def parse_pyproject_records(path, rel_path):
             "unreadable_file", rel_path,
             f"could not read pyproject.toml: {exc}")]
 
-    tables, warning = _parse_toml_subset(text, rel_path)
+    try:
+        tables, warning = _parse_toml_subset(text, rel_path)
+    except RecursionError:
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "pyproject.toml nesting exceeds the safe parser limit")]
     warnings = [warning] if warning else []
     records = []
 
@@ -810,7 +845,7 @@ def _emit_poetry_dependency(name, value, scope, locator, records, warnings,
 # Pipfile and Pipfile.lock
 # ---------------------------------------------------------------------------
 
-def parse_pipfile_records(path, rel_path):
+def parse_pipfile_records(path, rel_path, root=None):
     """Parse direct Pipfile declarations, enriched by a sibling lock file."""
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -821,14 +856,24 @@ def parse_pipfile_records(path, rel_path):
                                 f"Pipfile parse error: {message}")]
 
     lock = {}
+    warnings = []
     lock_path = Path(path).with_name("Pipfile.lock")
-    if lock_path.is_file():
+    root_abs = Path(root).resolve() if root is not None else scan_root_for(
+        path, rel_path)
+    guarded_lock, lock_warning = guarded_local_file(
+        lock_path, root_abs, _sibling_rel(rel_path, "Pipfile.lock"))
+    if lock_warning:
+        warnings.append(lock_warning)
+    if guarded_lock is not None:
         try:
-            lock = json.loads(lock_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            lock = json.loads(guarded_lock.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
             lock = {}
+            warnings.append(new_warning(
+                "parse_error", _sibling_rel(rel_path, "Pipfile.lock"),
+                f"Pipfile.lock parse error: {exc}"))
 
-    records, warnings = [], []
+    records = []
     for section, lock_section, scope in (
             ("packages", "default", "runtime"),
             ("dev-packages", "develop", "dev")):
@@ -875,6 +920,11 @@ def parse_pipfile_lock_records(path, rel_path):
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         return [], [new_warning(
             "parse_error", rel_path, f"Pipfile.lock parse error: {exc}")]
+
+    if not isinstance(data, dict):
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "Pipfile.lock top-level value is not an object")]
 
     records = []
     warnings = []

@@ -598,4 +598,6 @@ def url_for(r):
     if not product:
         return None
     version = r.get("version") or ""
+    product = urllib.parse.quote(str(product), safe="/")
+    version = urllib.parse.quote(str(version), safe="")
     return f"https://pkg.go.dev/{product}" + (f"@{version}" if version else "")

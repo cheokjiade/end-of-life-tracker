@@ -228,6 +228,27 @@ def test_optional_and_peer_dependencies_are_direct_inventory():
         ("fsevents", "optional", True), ("react", "peer", True)]
 
 
+def test_nvmrc_and_wrong_typed_package_fields():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        nvmrc = root / ".nvmrc"
+        nvmrc.write_text("v20.15.1\n", encoding="utf-8")
+        records, warnings = node_parser.parse_nvmrc_records(nvmrc, ".nvmrc")
+        assert warnings == []
+        assert [(r["name"], r["version"], r["kind"]) for r in records] == [
+            ("node", "20.15.1", "runtime")]
+
+        package = root / "package.json"
+        package.write_text(json.dumps({
+            "engines": {"node": {"bad": True}},
+            "dependencies": ["not", "an", "object"],
+        }), encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            package, "package.json", root=root)
+        assert records == []
+        assert len([w for w in warnings if w["category"] == "parse_error"]) >= 2
+
+
 # ---------------------------------------------------------------------------
 
 TESTS = [
@@ -242,6 +263,7 @@ TESTS = [
     test_invalid_manifest_parse_error,
     test_parsing_is_deterministic,
     test_optional_and_peer_dependencies_are_direct_inventory,
+    test_nvmrc_and_wrong_typed_package_fields,
 ]
 
 

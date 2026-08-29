@@ -9,8 +9,8 @@
     Git Bash / WSL) use helper_scripts\generate_config.sh instead.
 
     With no arguments an interactive wizard asks for the project directory,
-    suggests an output file, refuses to overwrite an existing file without
-    confirmation, then generates the config and the Markdown inventory.
+    suggests an output file, offers a curation-preserving update when that
+    file exists, then generates the config and all inventory formats.
 
 .EXAMPLE
     .\helper_scripts\generate_config.ps1
@@ -97,15 +97,18 @@ $defaultOutput = "eol_config.$slug.json"
 $output = Read-Host "Output file [$defaultOutput]"
 if (-not $output) { $output = $defaultOutput }
 
-# 3) refuse to overwrite an existing file without confirmation
-$replaceExisting = $false
+# 3) preserve curation by default when an existing config is selected
+$existingMode = $null
 if (Test-Path -LiteralPath $output) {
-    $answer = Read-Host ('"' + $output + '" already exists. Overwrite? [y/N]: ')
-    if ($answer -notin @('y', 'Y', 'yes')) {
-        Write-Host "Aborted; nothing written."
-        exit 1
+    $answer = Read-Host ('"' + $output + '" already exists. [U]pdate (recommended), [r]eplace, or [c]ancel')
+    switch ($answer.ToLowerInvariant()) {
+        { $_ -in @('', 'u', 'update') } { $existingMode = '--update'; break }
+        { $_ -in @('r', 'replace') } { $existingMode = '--replace'; break }
+        default {
+            Write-Host "Aborted; nothing written."
+            exit 1
+        }
     }
-    $replaceExisting = $true
 }
 
 # 4) show what file types will be scanned
@@ -115,7 +118,7 @@ Write-Host "(plus .eolignore and --exclude patterns; node_modules, .venv, target
 # 5) generate the config (the generator prints the mapped/unmapped/warning
 # counts); a non-zero exit stops here so the report step only runs on success
 $genArgs = @((Join-Path $PSScriptRoot 'generate_config.py'), $scanDir, '--name', $slug, '--output', $output)
-if ($replaceExisting) { $genArgs += '--replace' }
+if ($existingMode) { $genArgs += $existingMode }
 & $python @genArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

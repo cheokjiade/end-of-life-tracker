@@ -85,15 +85,18 @@ printf 'Output file [eol_config.%s.json]: ' "$slug"
 read -r output
 output="${output:-eol_config.${slug}.json}"
 
-# 3) refuse to overwrite an existing file without confirmation
+# 3) preserve curation by default when an existing config is selected
 # ("set --" accumulates the extra generator arguments; expanding an empty
 # array breaks under `set -u` on macOS bash 3.2, positional parameters do not)
 set --
 if [ -e "$output" ]; then
-  printf '"%s" already exists. Overwrite? [y/N]: ' "$output"
+  printf '"%s" already exists. [U]pdate (recommended), [r]eplace, or [c]ancel: ' "$output"
   read -r answer
   case "$answer" in
-    y | Y | yes)
+    "" | u | U | update)
+      set -- "$@" --update
+      ;;
+    r | R | replace)
       set -- "$@" --replace
       ;;
     *)

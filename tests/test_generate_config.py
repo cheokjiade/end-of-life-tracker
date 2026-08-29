@@ -247,6 +247,7 @@ def test_parse_gradle_records():
         ("io.netty", "netty-codec-http", "4.1.111.Final", 11),
         ("org.jetbrains.kotlin", "kotlin-stdlib", "2.0.0", 12),
         ("com.h2database", "h2", "2.2.224", 13),
+        ("org.acme", "single-quoted", "1.0.0", 15),
     ]
     assert all(r["found_in"][0]["manifest"] == "gradle" for r in records)
     assert all(r["found_in"][0]["path"] == "gradle/build.gradle"
@@ -438,6 +439,23 @@ def test_scan_folder_not_a_directory():
         raise AssertionError("expected SystemExit for missing folder")
 
 
+def test_scan_discovers_generic_gradle_nvmrc_and_isolates_bad_manifest():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "dependencies.gradle").write_text(
+            "implementation 'org.example:lib:1.2.3'\n", encoding="utf-8")
+        (root / ".nvmrc").write_text("v20.15.1\n", encoding="utf-8")
+        (root / "package.json").write_text(
+            '{"engines":{"node":{"bad":true}}}', encoding="utf-8")
+        scan = gc.scan_folder(root)
+    assert scan["files"] == [".nvmrc", "dependencies.gradle", "package.json"]
+    assert any(r["name"] == "org.example:lib" for r in scan["records"])
+    assert any(r["name"] == "node" and r["version"] == "20.15.1"
+               for r in scan["records"])
+    assert any(w["path"] == "package.json" and w["category"] == "parse_error"
+               for w in scan["warnings"])
+
+
 # ---------------------------------------------------------------------------
 # Config generation: sections, mapping, dedup, provenance, inventory
 # ---------------------------------------------------------------------------
@@ -563,6 +581,7 @@ def test_generate_config_gradle():
         ("netty-codec-http", "4.1.111.Final"),
         ("kotlin", "2.0"),          # kotlin-stdlib
         ("h2", "2.2.224"),
+        ("single-quoted", "1.0.0"),
         ("kotlin", "1.8"),          # kotlinx-coroutines-core — distinct version, own entry
         ("spring-boot", "3.3"),     # spring-boot-gradle-plugin via classpath
         ("guava", "33.2.1-jre"),    # named form in the kts file
@@ -586,9 +605,9 @@ def test_generate_config_gradle():
           if p.get("source") == "maven_central"]
     assert ("org.apache.commons", "commons-text", "1.11.0") in mc
     assert ("com.h2database", "h2", "2.2.224") in mc
-    # single-quoted Groovy declarations and testImplementation are not parsed
+    # single-quoted Groovy declarations are parsed; testImplementation is not.
     arts = {p.get("artifact") for p in prods}
-    assert "single-quoted" not in arts and "junit" not in arts
+    assert "single-quoted" in arts and "junit" not in arts
 
 
 def test_generate_config_node():
@@ -884,6 +903,48 @@ def test_update_merge_preserves_curation_and_unobserved_entries():
         "retained_not_observed": 1}
 
 
+def test_update_merge_preserves_multiple_versions_and_default_source():
+    existing = {"products": [
+        {"source": "maven_central", "group": "org.example",
+         "artifact": "shared", "version": "1.0", "label": "shared 1"},
+        {"source": "maven_central", "group": "org.example",
+         "artifact": "shared", "version": "2.0", "label": "shared 2"},
+        {"source": "endoflife_date", "product": "python",
+         "version": "3.11", "label": "Python"},
+    ]}
+    generated = {"products": [
+        {"source": "maven_central", "group": "org.example",
+         "artifact": "shared", "version": "2.0", "label": "shared 2",
+         "_found_in": [{"path": "b/pom.xml"}]},
+        {"source": "maven_central", "group": "org.example",
+         "artifact": "shared", "version": "1.0", "label": "shared 1",
+         "_found_in": [{"path": "a/pom.xml"}]},
+        {"product": "python", "version": "3.12", "label": "Python 3.12"},
+    ], "_inventory": {}}
+    merged = _merge_existing_config(existing, generated)
+    products = [p for p in merged["products"] if not p.get("_section")]
+    shared = [p for p in products if p.get("artifact") == "shared"]
+    assert [(p["version"], p["_found_in"][0]["path"]) for p in shared] == [
+        ("1.0", "a/pom.xml"), ("2.0", "b/pom.xml")]
+    python = next(p for p in products if p.get("product") == "python")
+    assert python["version"] == "3.12"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 2,
+        "retained_not_observed": 0}
+
+
+def test_cli_update_rejects_non_object_json():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text("{}", encoding="utf-8")
+        output = root / "out.json"
+        output.write_text("[]", encoding="utf-8")
+        assert generate_config_main([
+            str(root), "--name", "demo", "--output", str(output),
+            "--update"]) == 2
+        assert json.loads(output.read_text(encoding="utf-8")) == []
+
+
 TESTS = [
     test_version_helpers,
     test_entry_builders,
@@ -904,6 +965,7 @@ TESTS = [
     test_scan_folder_oversize_warning,
     test_scan_folder_refuses_huge_file_count,
     test_scan_folder_not_a_directory,
+    test_scan_discovers_generic_gradle_nvmrc_and_isolates_bad_manifest,
     test_generate_config_maven_multi,
     test_generate_config_gradle,
     test_generate_config_node,
@@ -918,6 +980,8 @@ TESTS = [
     test_runtime_ignores_found_in,
     test_transitive_dependencies_are_opt_in,
     test_update_merge_preserves_curation_and_unobserved_entries,
+    test_update_merge_preserves_multiple_versions_and_default_source,
+    test_cli_update_rejects_non_object_json,
 ]
 
 

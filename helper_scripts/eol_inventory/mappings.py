@@ -25,6 +25,7 @@ def _clean_version(v):
     """Strip semver range prefixes (^, ~, >=) and common Maven qualifiers."""
     if not v:
         return v
+    v = re.sub(r"^[vV]", "", v.strip())
     v = re.sub(r"^[\^~>=<\s]+", "", v).strip()
     v = re.sub(r"\s+.*$", "", v)  # take first token if range like ">=1.0.0 <2.0.0"
     return v

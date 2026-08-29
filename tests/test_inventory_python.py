@@ -156,12 +156,12 @@ def test_requirements_included_files_carry_their_own_provenance():
     pytest_rec = _one(records, "pytest")
     assert pytest_rec["version"] == "8.2.0"
     assert pytest_rec["found_in"] == [{
-        "path": "app/requirements-dev.txt",
+        "path": "requirements/app/requirements-dev.txt",
         "manifest": "requirements", "line": 2, "locator": "pytest"}]
 
     base = _one(records, "base-dep")
     assert base["found_in"] == [{
-        "path": "app/base/base.txt", "manifest": "requirements",
+        "path": "requirements/app/base/base.txt", "manifest": "requirements",
         "line": 1, "locator": "base-dep"}]
     assert not _has_warning(warnings, "include_cycle", "")
     assert not _has_warning(warnings, "include_escape", "")
@@ -202,6 +202,37 @@ def test_requirements_options_are_not_dependencies():
     assert "--index-url" not in names
     assert "https://pypi.org/simple" not in names
     assert not _records_named(records, "constraints.txt")
+
+
+def test_requirements_root_include_hashes_and_depth_guard():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "child.txt").write_text(
+            "requests==2.32.4 --hash=sha256:abc --hash=sha256:def\n",
+            encoding="utf-8")
+        (root / "requirements.txt").write_text(
+            "--requirement=child.txt\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert _one(records, "requests")["version"] == "2.32.4"
+        assert warnings == []
+
+        for index in range(67):
+            target = f"deep-{index + 1}.txt"
+            (root / f"deep-{index}.txt").write_text(
+                f"-r {target}\n", encoding="utf-8")
+        (root / "deep-67.txt").write_text("flask==3.0.0\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "deep-0.txt", "deep-0.txt", root=root)
+        assert records == []
+        assert _has_warning(warnings, "include_depth", "exceeds")
+
+        (root / "requirements.txt").write_text(
+            "-rchild.txt\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert _one(records, "requests")["version"] == "2.32.4"
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +444,18 @@ def test_pipfile_direct_dependencies_resolve_from_lock():
     assert records[0]["found_in"][0]["locator"] == "packages.flask"
 
 
+def test_pipfile_malformed_sibling_lock_warns():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pipfile = root / "Pipfile"
+        pipfile.write_text('[packages]\nrequests = "*"\n', encoding="utf-8")
+        (root / "Pipfile.lock").write_text("{broken", encoding="utf-8")
+        records, warnings = python_parser.parse_pipfile_records(
+            pipfile, "Pipfile", root=root)
+    assert _one(records, "requests")["version"] is None
+    assert _has_warning(warnings, "parse_error", "Pipfile.lock")
+
+
 # ---------------------------------------------------------------------------
 # Runtime evidence
 # ---------------------------------------------------------------------------
@@ -488,6 +531,7 @@ TESTS = [
     test_requirements_warnings_instead_of_guessed_versions,
     test_requirements_include_escape_and_cycle,
     test_requirements_options_are_not_dependencies,
+    test_requirements_root_include_hashes_and_depth_guard,
     test_pyproject_pep621_runtime_and_dependencies,
     test_pyproject_pep621_optional_and_warnings,
     test_pyproject_poetry_python_constraint_and_versions,
@@ -498,6 +542,7 @@ TESTS = [
     test_pipfile_lock_unpinned_entries_warn,
     test_pipfile_lock_malformed_json,
     test_pipfile_direct_dependencies_resolve_from_lock,
+    test_pipfile_malformed_sibling_lock_warns,
     test_python_version_file,
     test_runtime_txt_file,
     test_parsing_is_deterministic,

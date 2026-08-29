@@ -18,7 +18,13 @@ import re
 from pathlib import Path
 
 from ..mappings import _clean_version
-from ..models import add_location, new_record, new_warning
+from ..models import (
+    add_location,
+    guarded_local_file,
+    new_record,
+    new_warning,
+    scan_root_for,
+)
 
 _EXACT_VERSION_RE = re.compile(
     r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?$")
@@ -33,7 +39,7 @@ def _sibling_rel(rel_path, filename):
     return f"{dirpart}/{filename}" if dirpart else filename
 
 
-def _read_lock(directory, rel_path):
+def _read_lock(directory, rel_path, root):
     """(data, rel_lock_path, warning) for package.json's sibling locks.
 
     npm semantics: npm-shrinkwrap.json wins over package-lock.json; a
@@ -43,10 +49,14 @@ def _read_lock(directory, rel_path):
     """
     for filename in (_SHRINKWRAP_SIBLING, _LOCK_SIBLING):
         candidate = Path(directory) / filename
-        if not candidate.is_file():
+        guarded, warning = guarded_local_file(
+            candidate, root, _sibling_rel(rel_path, filename))
+        if warning:
+            return None, None, warning
+        if guarded is None:
             continue
         try:
-            with open(candidate, encoding="utf-8") as f:
+            with open(guarded, encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             return None, None, new_warning(
@@ -105,7 +115,7 @@ def _spec_warning(name, spec, rel_path):
         f"no lock evidence for {name} ({spec}); range preserved, not guessed")
 
 
-def parse_package_json_records(path, rel_path):
+def parse_package_json_records(path, rel_path, root=None):
     """Parse package.json; return (records, warnings)."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -113,15 +123,32 @@ def parse_package_json_records(path, rel_path):
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         return [], [new_warning(
             "parse_error", rel_path, f"package.json parse error: {exc}")]
+    if not isinstance(data, dict):
+        return [], [new_warning(
+            "parse_error", rel_path,
+            "package.json top-level value is not an object")]
 
-    lock, lock_rel, lock_warning = _read_lock(Path(path).parent, rel_path)
+    root_abs = Path(root).resolve() if root is not None else scan_root_for(
+        path, rel_path)
+    lock, lock_rel, lock_warning = _read_lock(
+        Path(path).parent, rel_path, root_abs)
     warnings = [lock_warning] if lock_warning else []
     records = []
 
     engines = data.get("engines") or {}
-    if engines.get("node"):
+    if not isinstance(engines, dict):
+        warnings.append(new_warning(
+            "parse_error", rel_path,
+            "package.json engines value is not an object; skipped"))
+        engines = {}
+    node_engine = engines.get("node")
+    if node_engine and not isinstance(node_engine, str):
+        warnings.append(new_warning(
+            "parse_error", rel_path,
+            "package.json engines.node value is not a string; skipped"))
+    elif node_engine:
         record = new_record(
-            "node", "node", version=_clean_version(engines["node"]),
+            "node", "node", version=_clean_version(node_engine),
             kind="runtime",
         )
         add_location(record, rel_path, "npm", locator="engines.node")
@@ -131,12 +158,19 @@ def parse_package_json_records(path, rel_path):
                            ("optionalDependencies", "optional"),
                            ("peerDependencies", "peer"),
                            ("devDependencies", "dev")):
-        for name, value in (data.get(section) or {}).items():
+        dependencies = data.get(section) or {}
+        if not isinstance(dependencies, dict):
+            warnings.append(new_warning(
+                "parse_error", rel_path,
+                f"package.json {section} value is not an object; skipped"))
+            continue
+        for name, value in dependencies.items():
             spec = str(value).strip()
             exact = _EXACT_VERSION_RE.fullmatch(spec)
             locked = None if exact else _lock_lookup(lock, name)
             if exact:
-                record = new_record("node", name, version=spec, scope=scope)
+                version = spec[1:] if spec[:1].lower() == "v" else spec
+                record = new_record("node", name, version=version, scope=scope)
             elif locked:
                 record = new_record("node", name, version=locked, scope=scope)
             else:
@@ -148,3 +182,24 @@ def parse_package_json_records(path, rel_path):
                 add_location(record, lock_rel, "npm", locator=f"lock:{name}")
             records.append(record)
     return records, warnings
+
+
+def parse_nvmrc_records(path, rel_path):
+    """Parse a concrete Node version from .nvmrc without executing nvm."""
+    try:
+        lines = Path(path).read_text(
+            encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return [], [new_warning(
+            "unreadable_file", rel_path, f"could not read .nvmrc: {exc}")]
+    value = next((line.strip() for line in lines if line.strip()), "")
+    version = value[1:] if value[:1].lower() == "v" else value
+    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", version):
+        if not value:
+            return [], []
+        return [], [new_warning(
+            "unresolved_version", rel_path,
+            f".nvmrc value {value!r} is not a concrete Node version")]
+    record = new_record("node", "node", version=version, kind="runtime")
+    add_location(record, rel_path, "npm", locator=".nvmrc")
+    return [record], []
