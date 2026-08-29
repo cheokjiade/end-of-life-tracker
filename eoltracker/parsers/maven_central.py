@@ -124,14 +124,19 @@ def _normalize_repository(value):
 def _is_primary_repository(url):
     """True when *url* is the primary repository itself.
 
-    Compared scheme-insensitively on host and path: a declared
+    Compared on host and path, scheme-insensitively: a declared
     http://repo1.maven.org/maven2 is the already-probed primary just as
-    much as the canonical https URL, and must not enter the chain.
+    much as the canonical https URL. A non-default port on the Central
+    host is NOT the primary (a distinct candidate that the chain may
+    probe); only the absent or scheme-default port matches.
     """
     candidate = urllib.parse.urlsplit(url)
     primary = urllib.parse.urlsplit(_MAVEN_REPOSITORY)
-    return (candidate.hostname, candidate.path.rstrip("/")) == (
-        primary.hostname, primary.path.rstrip("/"))
+    if (candidate.hostname, candidate.path.rstrip("/")) != (
+            primary.hostname, primary.path.rstrip("/")):
+        return False
+    default_port = {"http": 80, "https": 443}.get(candidate.scheme)
+    return candidate.port in (None, default_port)
 
 
 def _artifact_base_url(group, artifact, repository=_MAVEN_REPOSITORY):

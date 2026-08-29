@@ -1529,6 +1529,10 @@ SCHEME_VARIANTS = [
     "http://repo1.maven.org/maven2",
     "https://REPO1.MAVEN.ORG/maven2/",
     "https://repo1.maven.org/maven2",
+    "https://repo1.maven.org:443/maven2",
+    # Non-default port: NOT the primary -- the chain must probe it once
+    # (404 here) and continue on to the rescuing repository.
+    "https://repo1.maven.org:8443/maven2",
 ]
 
 
@@ -1541,7 +1545,10 @@ def scheme_variants_urlopen(request, timeout):
                                 b"<release>2.6.4</release>"
                                 b"</versioning></metadata>")
         raise http_404(request)  # in-use 2.6.6 not published on Central
-    assert "repo1.maven.org" not in url, url  # scheme variants never probed
+    if url.startswith("https://repo1.maven.org:8443/maven2"):
+        # Odd-port Central host: probed as a distinct candidate, 404s.
+        raise http_404(request)
+    assert "repo1.maven.org" not in url, url  # other variants never probed
     if url.endswith("maven-metadata.xml"):
         return FakeResponse(b"<metadata><versioning>"
                             b"<release>3.0.0</release>"
@@ -1567,8 +1574,8 @@ assert result["source_label"] == "rescue-b.example", result
 assert result["message"].startswith(
     "Version 2.6.6 not on Maven Central; found on rescue-b.example: "), result
 assert "latest: 2.6.4" in result["message"], result
-assert sum(1 for u, _ in calls if "repo1.maven.org" in u) == 3, calls
-print("OK primary-repository skip is scheme-insensitive (http/uppercase/dupes skipped)")
+assert sum(1 for u, _ in calls if "repo1.maven.org" in u) == 4, calls
+print("OK primary-repository skip is scheme-insensitive; odd-port Central is probed")
 
 
 # --- Version-only rescue where the rescued version IS Central's latest ------
