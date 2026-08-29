@@ -115,8 +115,8 @@ class FakeResponse:
         self._body = body
         self.headers = headers or {}
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        return self._body if size < 0 else self._body[:size]
 
     def __enter__(self):
         return self
@@ -430,10 +430,6 @@ def t_gzip_handling():
     assert nuget._http_get_json(SERVICE_INDEX_URL) == doc
 
     urllib.request.urlopen = lambda req, timeout=None: FakeResponse(
-        payload, {})  # no header: detected via gzip magic bytes
-    assert nuget._http_get_json(SERVICE_INDEX_URL) == doc
-
-    urllib.request.urlopen = lambda req, timeout=None: FakeResponse(
         json.dumps(doc).encode("utf-8"), {})  # plain JSON unaffected
     assert nuget._http_get_json(SERVICE_INDEX_URL) == doc
 
@@ -445,6 +441,32 @@ def t_gzip_handling():
         pass
     else:
         assert False, "corrupt gzip body should raise"
+
+    original_limit = nuget._NUGET_BODY_BYTES
+    try:
+        nuget._NUGET_BODY_BYTES = 64
+        urllib.request.urlopen = lambda req, timeout=None: FakeResponse(
+            b"x" * 65, {})
+        try:
+            nuget._http_get_json(SERVICE_INDEX_URL)
+        except ValueError as exc:
+            assert "byte limit" in str(exc)
+        else:
+            assert False, "oversize compressed response should raise"
+
+        expanded = gzip.compress(
+            json.dumps({"value": "x" * 500}).encode("utf-8"))
+        assert len(expanded) < 64
+        urllib.request.urlopen = lambda req, timeout=None: FakeResponse(
+            expanded, {"Content-Encoding": "gzip"})
+        try:
+            nuget._http_get_json(SERVICE_INDEX_URL)
+        except ValueError as exc:
+            assert "decompressed response" in str(exc)
+        else:
+            assert False, "gzip expansion should be bounded"
+    finally:
+        nuget._NUGET_BODY_BYTES = original_limit
 
 
 @test

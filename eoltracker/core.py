@@ -6,12 +6,56 @@ HTML table parsers. Parsers import from here; this module imports nothing
 from the rest of the package (keeps the import graph acyclic).
 """
 
+import gzip
 import html.parser
+import io
 import logging
 from datetime import datetime
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
+
+
+def read_response_bytes(response, max_bytes=MAX_HTTP_BODY_BYTES):
+    """Read a response body with a hard byte limit.
+
+    ``urllib`` response bodies and boto3 ``StreamingBody`` objects both
+    support ``read(size)``. Reading one byte beyond the limit lets callers
+    fail loudly instead of parsing a silently truncated document.
+    """
+    if max_bytes < 1:
+        raise ValueError("response byte limit must be positive")
+    headers = getattr(response, "headers", None)
+    content_length = headers.get("Content-Length") if headers is not None else None
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except (TypeError, ValueError):
+            # A malformed or non-numeric length cannot be trusted; the bounded
+            # read below remains authoritative.
+            declared_length = None
+        if declared_length is not None and declared_length > max_bytes:
+            raise ValueError(
+                f"response exceeds {max_bytes} byte limit "
+                f"(Content-Length: {content_length})")
+    body = response.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise ValueError(f"response exceeds {max_bytes} byte limit")
+    return body
+
+
+def decompress_gzip_bytes(raw, max_bytes=MAX_HTTP_BODY_BYTES):
+    """Decompress one gzip body without allowing unbounded expansion."""
+    if max_bytes < 1:
+        raise ValueError("decompressed byte limit must be positive")
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+        body = stream.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise ValueError(
+            f"decompressed response exceeds {max_bytes} byte limit")
+    return body
 
 
 def parse_date_field(value):

@@ -30,7 +30,7 @@ import os
 import time
 from datetime import date
 
-from .core import logger
+from .core import logger, read_response_bytes
 from .report import (
     analyse_results,
     format_report_html,
@@ -128,6 +128,9 @@ def _emit_partial_run_metrics(unfinished):
 # Config
 # ---------------------------------------------------------------------------
 
+_MAX_CONFIG_BYTES = 2_000_000
+
+
 def _log_product_findings(findings, origin):
     """Warn about per-product findings that did not reject the config."""
     for f in findings:
@@ -157,8 +160,9 @@ def load_config_from_s3(key=None):
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     origin = f"s3://{bucket}/{key}"
+    raw = read_response_bytes(obj["Body"], max_bytes=_MAX_CONFIG_BYTES)
     config, product_findings = load_validated_config_bytes(
-        obj["Body"].read(), origin=origin)
+        raw, origin=origin)
     _log_product_findings(product_findings, origin)
     return config
 

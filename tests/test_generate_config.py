@@ -221,6 +221,19 @@ def test_parse_pom_records_plain_and_broken():
     assert warnings2[0]["path"] == "samples/broken_pom.xml"
 
 
+def test_pom_rejects_dtd_and_entities():
+    with tempfile.TemporaryDirectory() as td:
+        pom = Path(td) / "pom.xml"
+        pom.write_text(
+            '<!DOCTYPE project [<!ENTITY boom "expanded">]>'
+            '<project><groupId>&boom;</groupId></project>', encoding="utf-8")
+        records, warnings = gc.parse_pom_records(pom, "pom.xml")
+    assert records == []
+    assert len(warnings) == 1
+    assert warnings[0]["category"] == "parse_error"
+    assert "forbidden DTD/entity" in warnings[0]["message"]
+
+
 def test_parse_pom_records_unresolved():
     records, warnings = gc.parse_pom_records(
         FIX / "samples" / "pom_unresolved.xml", "samples/pom_unresolved.xml")
@@ -945,6 +958,15 @@ def test_cli_update_rejects_non_object_json():
         assert json.loads(output.read_text(encoding="utf-8")) == []
 
 
+def test_terraform_excludes_non_runtime_directories():
+    terraform = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
+    for path in (
+            "helper_scripts", "tests", ".agents", ".venv", "venv", "env",
+            ".tox", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".idea",
+            ".vscode"):
+        assert f'"{path}"' in terraform, path
+
+
 TESTS = [
     test_version_helpers,
     test_entry_builders,
@@ -953,6 +975,7 @@ TESTS = [
     test_pom_property_mappings,
     test_parse_pom_records,
     test_parse_pom_records_plain_and_broken,
+    test_pom_rejects_dtd_and_entities,
     test_parse_pom_records_unresolved,
     test_parse_gradle_records,
     test_parse_package_json_records,
@@ -982,6 +1005,7 @@ TESTS = [
     test_update_merge_preserves_curation_and_unobserved_entries,
     test_update_merge_preserves_multiple_versions_and_default_source,
     test_cli_update_rejects_non_object_json,
+    test_terraform_excludes_non_runtime_directories,
 ]
 
 

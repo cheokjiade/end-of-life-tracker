@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _GO_PROXY_BASE = "https://proxy.golang.org"
 # Cache namespaces (a run checks many modules against one proxy):
@@ -67,7 +67,7 @@ def _fetch_proxy(url):
         "User-Agent": "EOL-Tracker/1.0",
     })
     with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.read().decode("utf-8", "replace")
+        return read_response_bytes(resp).decode("utf-8", "replace")
 
 
 def _fetch_cached(key, url):

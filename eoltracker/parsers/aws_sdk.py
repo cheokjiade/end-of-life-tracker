@@ -13,7 +13,7 @@ No specific EOL dates are published in the matrix — only the GA date.
 import re
 import urllib.request
 
-from ..core import _HtmlTableExtractor, _error_result, logger
+from ..core import _HtmlTableExtractor, _error_result, logger, read_response_bytes
 
 _AWS_SDK_URL = "https://docs.aws.amazon.com/sdkref/latest/guide/version-support-matrix.html"
 _AWS_SDK_REQUIRED_HEADERS = {"SDK", "Major version", "Current Phase", "General Availability Date"}
@@ -39,7 +39,7 @@ def _scrape_aws_sdk_lifecycle():
 
     req = urllib.request.Request(_AWS_SDK_URL, headers={"Accept": "text/html"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        html_text = resp.read().decode("utf-8", errors="replace")
+        html_text = read_response_bytes(resp).decode("utf-8", errors="replace")
 
     parser = _HtmlTableExtractor(_AWS_SDK_REQUIRED_HEADERS)
     parser.feed(html_text)

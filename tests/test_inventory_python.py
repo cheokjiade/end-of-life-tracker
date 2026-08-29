@@ -217,6 +217,31 @@ def test_requirements_root_include_hashes_and_depth_guard():
         assert _one(records, "requests")["version"] == "2.32.4"
         assert warnings == []
 
+        (root / "requirements.txt").write_text(
+            "requests==2.32.4 \\\n"
+            "    --hash=sha256:abc\n"
+            "flask==3.0.0\n"
+            "urllib3==2.2.2\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert _one(records, "requests")["found_in"][0]["line"] == 1
+        assert _one(records, "flask")["found_in"][0]["line"] == 3
+        assert _one(records, "urllib3")["found_in"][0]["line"] == 4
+        assert warnings == []
+
+        (root / "shared.txt").write_text(
+            "shared==1.0.0\n", encoding="utf-8")
+        (root / "left.txt").write_text(
+            "-r shared.txt\n", encoding="utf-8")
+        (root / "right.txt").write_text(
+            "-r shared.txt\n", encoding="utf-8")
+        (root / "requirements.txt").write_text(
+            "-r left.txt\n-r right.txt\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert len(_records_named(records, "shared")) == 1
+        assert warnings == []
+
         for index in range(67):
             target = f"deep-{index + 1}.txt"
             (root / f"deep-{index}.txt").write_text(

@@ -29,7 +29,8 @@ The wizard asks:
 
 1. which **project directory to scan** (Enter = the folder you were in),
 2. the **output file name** (Enter = `eol_config.<project>.json`),
-3. **confirmation before overwriting** an existing file (default is No),
+3. a safe choice between curation-preserving **update** (the default),
+   explicit **replace**, or cancel when the output already exists,
 4. then prints what it scanned, what it mapped, what needs review, and the
    exact command for the live tracker smoke run.
 
@@ -155,9 +156,11 @@ was missed.
 
 The default inventory is **direct dependencies and explicit runtimes only**;
 lock files resolve versions for those declarations rather than producing a
-full bill of materials. Pass `--include-transitive` to also include
-indirect/lockfile records (Go `// indirect` requires, `Pipfile.lock` and
-`packages.lock.json` graph entries), each still provenance-tracked.
+full bill of materials. Pass `--include-transitive` to also include Go
+`// indirect` requirements, `Pipfile.lock` graph entries, and other records
+explicitly marked indirect. Node and .NET lock files still resolve exact
+versions for direct declarations; `packages.lock.json` transitive graph
+entries are not emitted.
 
 ---
 

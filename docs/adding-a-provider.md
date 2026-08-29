@@ -48,7 +48,7 @@ bottom (no registry edits anywhere else).
 
 import urllib.request
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _FOO_URL = "https://example.com/eol-data"
 _FOO_CACHE = {}          # cache the fetch — a run checks many products against one source
@@ -61,7 +61,7 @@ def _fetch_foo():
         return _FOO_CACHE["data"]
     req = urllib.request.Request(_FOO_URL, headers={"User-Agent": "EOL-Tracker/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        raw = resp.read().decode("utf-8", "replace")
+        raw = read_response_bytes(resp).decode("utf-8", "replace")
     data = _parse_foo(raw)                       # keep parsing pure + testable
     if len(data) < _FOO_MIN_ROWS:                # loud failure on structural drift
         raise ValueError(f"Foo parsed only {len(data)} rows; source may have changed.")

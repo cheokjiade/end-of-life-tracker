@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _PYPI_JSON_API = "https://pypi.org/pypi"
 _PYPI_CACHE = {}          # normalized package name -> doc | None (404)
@@ -97,7 +97,7 @@ def _fetch_pypi_doc(package):
     })
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            doc = json.loads(resp.read().decode("utf-8"))
+            doc = json.loads(read_response_bytes(resp).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             _PYPI_CACHE[norm] = None

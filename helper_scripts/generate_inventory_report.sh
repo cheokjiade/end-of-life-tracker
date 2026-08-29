@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# generate_inventory_report.sh — render a Markdown (and optional CSV)
-# inventory report from an EOL tracker config file.
+# generate_inventory_report.sh — render Markdown, CSV, and HTML inventory
+# reports from an EOL tracker config file.
 #
 # Works on macOS and Linux (and on Windows via Git Bash / WSL). For native
 # Windows PowerShell, use generate_inventory_report.ps1 instead.

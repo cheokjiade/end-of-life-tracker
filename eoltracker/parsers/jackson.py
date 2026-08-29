@@ -9,7 +9,7 @@ import html.parser
 import re
 import urllib.request
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _JACKSON_WIKI_URL = "https://github.com/FasterXML/jackson/wiki/Jackson-Releases"
 # Canary: 2.18 is an LTS that should consistently appear; if it's absent
@@ -90,7 +90,7 @@ def _scrape_jackson_lifecycle():
         "User-Agent": "EOL-Tracker/1.0",
     })
     with urllib.request.urlopen(req, timeout=15) as resp:
-        html_text = resp.read().decode("utf-8", errors="replace")
+        html_text = read_response_bytes(resp).decode("utf-8", errors="replace")
 
     parser = _JacksonWikiParser()
     parser.feed(html_text)

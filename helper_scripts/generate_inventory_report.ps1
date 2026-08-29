@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Render a Markdown (and optional CSV) inventory report from an EOL
-    tracker config file (Windows).
+    Render Markdown, CSV, and HTML inventory reports from an EOL tracker
+    config file (Windows).
 
 .DESCRIPTION
     Native Windows PowerShell wrapper around
@@ -10,7 +10,8 @@
 
     The first argument selects the config: an explicit path or a shorthand
     ("a" -> eol_config.a.json). Remaining arguments are forwarded to the
-    Python CLI (--output FILE, --csv [FILE], --force).
+    Python CLI (--output FILE, --csv [FILE], --html [FILE], --no-csv,
+    --no-html, --force).
 
 .EXAMPLE
     .\helper_scripts\generate_inventory_report.ps1
@@ -22,7 +23,7 @@
 
 .EXAMPLE
     .\helper_scripts\generate_inventory_report.ps1 eol_config.a.json --csv
-    Explicit file name; also writes a CSV next to the Markdown report.
+    Explicit file name; writes Markdown, CSV, and HTML reports by default.
 #>
 param()
 

@@ -4,8 +4,8 @@ Reads an eol_config JSON file locally (no network) and writes Markdown,
 CSV, and self-contained HTML inventories by default. Reports include
 inventory report: tracked products grouped by ecosystem and provider,
 container images, unmapped dependencies, warnings, summary counts, and a
-manual-review checklist. Optional CSV output supports spreadsheet
-imports. Legacy configs without `_inventory` remain readable.
+manual-review checklist. CSV output supports spreadsheet imports. Legacy
+configs without `_inventory` remain readable.
 Standard-library only; project files are never executed.
 
 Usage:

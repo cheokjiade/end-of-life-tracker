@@ -14,7 +14,6 @@ metadata ignored). Registration content may arrive gzipped, which is handled
 transparently. A published date of 1900-01-01 is NuGet's "unknown" marker.
 """
 
-import gzip
 import json
 import re
 import urllib.error
@@ -22,12 +21,19 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime
 
-from ..core import _error_result, logger
+from ..core import (
+    MAX_HTTP_BODY_BYTES,
+    _error_result,
+    decompress_gzip_bytes,
+    logger,
+    read_response_bytes,
+)
 
 _NUGET_SERVICE_INDEX = "https://api.nuget.org/v3/index.json"
 _NUGET_STALE_MONTHS = 24
 _NUGET_UNKNOWN_DATE = date(1900, 1, 1)
 _NUGET_CACHE = {}
+_NUGET_BODY_BYTES = MAX_HTTP_BODY_BYTES
 
 # Registration resource types, best first (3.6.0+ supports SemVer 2.0.0).
 _REG_TYPE_RANK = {
@@ -56,10 +62,10 @@ def _http_get_json(url):
         "User-Agent": "EOL-Tracker/1.0",
     })
     with urllib.request.urlopen(req, timeout=15) as resp:
-        raw = resp.read()
+        raw = read_response_bytes(resp, max_bytes=_NUGET_BODY_BYTES)
         encoding = str(resp.headers.get("Content-Encoding") or "").lower()
-    if encoding == "gzip" or raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
+    if encoding == "gzip":
+        raw = decompress_gzip_bytes(raw, max_bytes=_NUGET_BODY_BYTES)
     return json.loads(raw.decode("utf-8", "replace"))
 
 

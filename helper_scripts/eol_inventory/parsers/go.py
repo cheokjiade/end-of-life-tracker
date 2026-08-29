@@ -9,9 +9,9 @@ Emitted records:
     - indirect requires             direct=False, kind="dependency" —
       emitted too, so the indirect count is derivable from the records
     - module-to-module replace targets: the replacement module+version is
-      what actually gets built, so it is recorded with provenance
-      (locator "replace:<old>"), and the replaced module's own record
-      gains a "replace=><target>" provenance location when present.
+      what actually gets built, so it inherits the replaced requirement's
+      directness and provenance while the stale old pin is removed. Replace
+      directives are applied after parsing, making their order irrelevant.
 
 Replace directives always produce a warning. Local-path replacements
 (./, ../, / or a Windows drive prefix) NEVER produce a public dependency
@@ -74,6 +74,7 @@ def parse_go_mod_records(path, rel_path):
 
     records = []
     warnings = []
+    replacements = []
     block = None
 
     def emit_dependency(name, version, direct, line, locator):
@@ -154,7 +155,7 @@ def parse_go_mod_records(path, rel_path):
             handle_require(code, lineno, indirect)
             continue
         if block == "replace":
-            handle_replace(code, lineno)
+            replacements.append((code, lineno))
             continue
         if block in _IGNORED_BLOCKS:
             continue
@@ -195,7 +196,10 @@ def parse_go_mod_records(path, rel_path):
         if tokens and tokens[0] == "require" and len(tokens) > 1:
             handle_require(tokens[1], lineno, indirect)
         elif tokens and tokens[0] == "replace" and len(tokens) > 1:
-            handle_replace(tokens[1], lineno)
+            replacements.append((tokens[1], lineno))
         # Anything else (exclude/retract single lines, stray text) is ignored.
+
+    for code, lineno in replacements:
+        handle_replace(code, lineno)
 
     return records, warnings

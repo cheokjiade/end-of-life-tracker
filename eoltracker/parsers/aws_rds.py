@@ -17,7 +17,7 @@ import re
 import urllib.request
 from datetime import date, datetime
 
-from ..core import _AWSCalendarParser, _error_result, logger
+from ..core import _AWSCalendarParser, _error_result, logger, read_response_bytes
 
 _AWS_DOCS_URLS = {
     "aurora-postgresql": (
@@ -119,7 +119,7 @@ def _scrape_aws_rds_calendar(engine):
 
     req = urllib.request.Request(url, headers={"Accept": "text/html"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        html_text = resp.read().decode("utf-8", errors="replace")
+        html_text = read_response_bytes(resp).decode("utf-8", errors="replace")
 
     parser = _AWSCalendarParser(target_heading)
     parser.feed(html_text)

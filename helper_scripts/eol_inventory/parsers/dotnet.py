@@ -26,12 +26,12 @@ parent directories is discovery's business).
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..models import (
     add_location,
     guarded_local_file,
+    load_safe_xml,
     new_record,
     new_warning,
     scan_root_for,
@@ -98,14 +98,7 @@ def _nearest_sidecar(project_dir, scan_root, filename):
 
 def _load_xml(path, rel_path, what):
     """ET root or (None, warning) — callers must handle the None."""
-    try:
-        return ET.parse(path).getroot(), None
-    except ET.ParseError as exc:
-        return None, new_warning(
-            "parse_error", rel_path, f"{what} parse error: {exc}")
-    except OSError as exc:
-        return None, new_warning(
-            "unreadable_file", rel_path, f"could not read {what}: {exc}")
+    return load_safe_xml(path, rel_path, what)
 
 
 def _collect_properties(root):
@@ -152,10 +145,10 @@ def _read_central_versions(props_abs, root, rel_path):
     guarded, warning = guarded_local_file(props_abs, root, rel_path)
     if guarded is None:
         return {}, warning
-    try:
-        document = ET.parse(guarded).getroot()
-    except (ET.ParseError, OSError):
-        return {}, None
+    document, parse_warning = load_safe_xml(
+        guarded, rel_path, "Directory.Packages.props")
+    if document is None:
+        return {}, parse_warning
     central = {}
     for elem in document.iter():
         if _local(elem.tag) != "PackageVersion":
@@ -191,27 +184,36 @@ def _read_lock_versions(lock_abs, root, rel_path):
     try:
         with open(guarded, encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}, None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        return {}, new_warning(
+            "parse_error", rel_path, f"packages.lock.json parse error: {exc}")
     if not isinstance(data, dict):
-        return {}, None
+        return {}, new_warning(
+            "parse_error", rel_path,
+            "packages.lock.json top-level value is not an object")
     dependencies = data.get("dependencies") or {}
     if not isinstance(dependencies, dict):
-        return {}, None
+        return {}, new_warning(
+            "parse_error", rel_path,
+            "packages.lock.json dependencies value is not an object")
     tfms = sorted(dependencies)
     lock = {}
     for wanted in ("Direct", "Transitive"):
         for tfm in tfms:
             packages = dependencies.get(tfm) or {}
             if not isinstance(packages, dict):
-                continue
+                return {}, new_warning(
+                    "parse_error", rel_path,
+                    f"packages.lock.json dependency group {tfm!r} is not an object")
             for pkg in sorted(packages):
                 key = pkg.lower()
                 if key in lock:
                     continue
                 info = packages.get(pkg) or {}
                 if not isinstance(info, dict):
-                    continue
+                    return {}, new_warning(
+                        "parse_error", rel_path,
+                        f"packages.lock.json package {pkg!r} is not an object")
                 if info.get("type") != wanted:
                     continue
                 version = info.get("resolved")

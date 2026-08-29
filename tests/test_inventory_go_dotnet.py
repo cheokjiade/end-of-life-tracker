@@ -147,6 +147,22 @@ def test_go_module_replace_warning_provenance_and_target():
     assert _has_warning(warnings, "go_replace", "github.com/old/dep")
 
 
+def test_go_replace_before_require_is_order_independent():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        path.write_text(
+            "module example.test/app\n"
+            "replace github.com/old/dep => github.com/new/dep v1.2.3\n"
+            "require github.com/old/dep v0.1.0\n", encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+    target = _one(records, "github.com/new/dep")
+    assert target["version"] == "1.2.3" and target["direct"] is True
+    assert _locators(target) == ["require:github.com/old/dep",
+                                 "replace:github.com/old/dep"]
+    assert not _records_named(records, "github.com/old/dep")
+    assert _has_warning(warnings, "go_replace", "github.com/old/dep")
+
+
 def test_go_same_module_version_pin_replace():
     records, warnings = _parse_go("go", "basic", "go.mod")
 
@@ -349,6 +365,32 @@ def test_dotnet_finds_central_versions_at_scan_root():
     assert warnings == []
 
 
+def test_dotnet_malformed_sidecars_and_entities_warn():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        project = root / "App.csproj"
+        project.write_text(
+            '<Project><ItemGroup><PackageReference Include="Serilog" '
+            'Version="4.0.0" /></ItemGroup></Project>', encoding="utf-8")
+        (root / "packages.lock.json").write_text("{broken", encoding="utf-8")
+        (root / "Directory.Packages.props").write_text(
+            "<Project>", encoding="utf-8")
+        records, warnings = dotnet_parser.parse_csproj_records(
+            project, "App.csproj", root=root)
+        assert _one(records, "Serilog")["version"] == "4.0.0"
+        assert _has_warning(warnings, "parse_error", "packages.lock.json")
+        assert _has_warning(warnings, "parse_error", "Directory.Packages.props")
+
+        project.write_text(
+            '<!DOCTYPE Project [<!ENTITY boom "expanded">]>'
+            '<Project><PropertyGroup><TargetFramework>&boom;</TargetFramework>'
+            '</PropertyGroup></Project>', encoding="utf-8")
+        records, warnings = dotnet_parser.parse_csproj_records(
+            project, "App.csproj", root=root)
+        assert records == []
+        assert _has_warning(warnings, "parse_error", "forbidden DTD/entity")
+
+
 def test_dotnet_global_json_malformed_and_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         bad = Path(tmpdir) / "global.json"
@@ -379,6 +421,7 @@ TESTS = [
     test_go_module_go_and_toolchain_directives,
     test_go_direct_requires_and_indirect_count,
     test_go_module_replace_warning_provenance_and_target,
+    test_go_replace_before_require_is_order_independent,
     test_go_same_module_version_pin_replace,
     test_go_local_replace_never_public_dependency,
     test_go_malformed_lines_warn_and_parsing_continues,
@@ -394,6 +437,7 @@ TESTS = [
     test_dotnet_global_json_sdk,
     test_dotnet_project_without_siblings_warns,
     test_dotnet_finds_central_versions_at_scan_root,
+    test_dotnet_malformed_sidecars_and_entities_warn,
     test_dotnet_global_json_malformed_and_empty,
     test_dotnet_parsing_is_deterministic,
 ]

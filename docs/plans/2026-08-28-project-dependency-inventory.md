@@ -437,7 +437,8 @@ With no arguments, `generate_config.sh` and `generate_config.ps1`:
 2. ask for the project directory, defaulting to the current directory;
 3. suggest a safe project slug and output filename;
 4. show what file types will be scanned;
-5. refuse to overwrite an existing file without confirmation;
+5. default to a curation-preserving update when the output exists, while
+   offering explicit replace or cancel choices;
 6. generate the config and the Markdown/CSV/HTML inventory;
 7. summarize mapped, unmapped, and warning counts; and
 8. offer the exact command for the live tracker smoke run.

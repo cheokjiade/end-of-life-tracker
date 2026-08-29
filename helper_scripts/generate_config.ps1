@@ -122,8 +122,8 @@ if ($existingMode) { $genArgs += $existingMode }
 & $python @genArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# 6) regenerate the Markdown inventory from the just-written config (--force:
-# a stale report from a previous run must not survive)
+# 6) regenerate all inventory formats from the just-written config (--force:
+# stale reports from a previous run must not survive)
 & $python (Join-Path $PSScriptRoot 'generate_inventory_report.py') $output --force
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

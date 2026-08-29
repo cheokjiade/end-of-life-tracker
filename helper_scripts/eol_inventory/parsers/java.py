@@ -16,11 +16,10 @@ Behavior notes preserved from the original generator:
 
 import re
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..mappings import _POM_PROPERTY_MAPPINGS
-from ..models import add_location, new_record, new_warning
+from ..models import add_location, load_safe_xml, new_record, new_warning
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -37,16 +36,9 @@ def _t(elem, name, ns=_POM_NS):
 
 def parse_pom_records(path, rel_path):
     """Parse pom.xml; return (records, warnings)."""
-    try:
-        tree = ET.parse(path)
-    except ET.ParseError as exc:
-        return [], [new_warning(
-            "parse_error", rel_path, f"POM parse error: {exc}")]
-    except OSError as exc:
-        return [], [new_warning(
-            "unreadable_file", rel_path, f"could not read POM: {exc}")]
-
-    root = tree.getroot()
+    root, warning = load_safe_xml(path, rel_path, "POM")
+    if root is None:
+        return [], [warning]
     # Detect namespace by inspecting root tag
     ns = ""
     if root.tag.startswith("{"):

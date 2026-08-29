@@ -50,7 +50,6 @@ _NAME_RE = re.compile(
 _VERSION_CHARSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._!+~-]*$")
 _LOCAL_PATH_RE = re.compile(
     r"^(?:\./|\.\./|\.\\|\.\.\\|/|\\|~(?:[/\\]|\Z)|[A-Za-z]:[/\\]|file:)")
-_CONTINUATION_RE = re.compile(r"\\\r?\n")
 
 
 def _is_version(spec):
@@ -194,7 +193,8 @@ def _emit_requirement(parsed, scope, manifest, rel_path, locator_prefix="",
 def parse_requirements_records(path, rel_path, root=None):
     """Parse a requirements file (following includes); (records, warnings)."""
     root_abs = Path(root).resolve() if root is not None else _root_of(path, rel_path)
-    return _parse_requirements_file(path, rel_path, root_abs, set(), 0)
+    return _parse_requirements_file(
+        path, rel_path, root_abs, active=set(), visited=set(), depth=0)
 
 
 def _root_of(path, rel_path):
@@ -207,17 +207,20 @@ def _sibling_rel(rel_path, filename):
     return f"{directory}/{filename}" if directory else filename
 
 
-def _parse_requirements_file(path, rel_path, root_abs, seen, depth):
+def _parse_requirements_file(path, rel_path, root_abs, active, visited, depth):
     if depth > MAX_PARSE_DEPTH:
         return [], [new_warning(
             "include_depth", rel_path,
             f"requirements include chain exceeds {MAX_PARSE_DEPTH} levels")]
     abs_path = Path(path).resolve()
-    if abs_path in seen:
+    if abs_path in active:
         return [], [new_warning(
             "include_cycle", rel_path,
             f"requirements include cycle at {rel_path}")]
-    active = seen | {abs_path}
+    if abs_path in visited:
+        return [], []
+    visited.add(abs_path)
+    next_active = active | {abs_path}
 
     try:
         size = abs_path.stat().st_size
@@ -237,16 +240,16 @@ def _parse_requirements_file(path, rel_path, root_abs, seen, depth):
             "unreadable_file", rel_path,
             f"could not read requirements file: {exc}")]
 
-    text = _CONTINUATION_RE.sub(" ", text)
     records = []
     warnings = []
-    for lineno, raw_line in enumerate(text.splitlines(), 1):
+    for lineno, raw_line in _logical_requirement_lines(text):
         line = _strip_comment(raw_line).strip()
         if not line:
             continue
         if line.startswith("-"):
-            _handle_option_line(line, abs_path, rel_path, root_abs, active, depth,
-                                records, warnings)
+            _handle_option_line(
+                line, abs_path, rel_path, root_abs, next_active, visited,
+                depth, records, warnings)
             continue
         # pip-tools appends integrity hashes to otherwise exact requirements.
         # Hashes describe artifacts; they are not part of the version spec.
@@ -263,6 +266,26 @@ def _parse_requirements_file(path, rel_path, root_abs, seen, depth):
     return records, warnings
 
 
+def _logical_requirement_lines(text):
+    """Yield ``(physical_start_line, logical_line)`` with continuations joined."""
+    parts = []
+    start = None
+    for lineno, raw in enumerate(text.splitlines(keepends=True), 1):
+        if start is None:
+            start = lineno
+        line = raw.rstrip("\r\n")
+        if raw.endswith(("\n", "\r")) and line.endswith("\\"):
+            parts.append(line[:-1])
+            continue
+        parts.append(line)
+        yield start, " ".join(parts)
+        parts = []
+        start = None
+    if parts:
+        # A final backslash without a newline is not a continuation.
+        yield start, " ".join(parts) + "\\"
+
+
 def _strip_comment(line):
     """Cut a "#" comment -- only at line start or preceded by whitespace
     (so URL fragments survive)."""
@@ -272,8 +295,8 @@ def _strip_comment(line):
     return line
 
 
-def _handle_option_line(line, abs_path, rel_path, root_abs, seen, depth,
-                        records, warnings):
+def _handle_option_line(line, abs_path, rel_path, root_abs, active, visited,
+                        depth, records, warnings):
     tokens = line.split()
     option = tokens[0]
     attached = None
@@ -302,7 +325,7 @@ def _handle_option_line(line, abs_path, rel_path, root_abs, seen, depth,
                 f"not followed"))
             return
         sub_records, sub_warnings = _parse_requirements_file(
-            inc_abs, inc_rel, root_abs, seen, depth + 1)
+            inc_abs, inc_rel, root_abs, active, visited, depth + 1)
         records.extend(sub_records)
         warnings.extend(sub_warnings)
     elif option in ("-e", "--editable"):

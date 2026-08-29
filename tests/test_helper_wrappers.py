@@ -104,11 +104,23 @@ def test_generator_wizards_offer_update_and_explicit_replace():
     assert "$genArgs += '--force'" not in powershell
 
 
+def test_wrapper_documentation_matches_default_report_formats():
+    readme = (HELPERS / "README.md").read_text(encoding="utf-8")
+    sources = [readme]
+    for name in BASH_WRAPPERS + PS_WRAPPERS:
+        sources.append((HELPERS / name).read_text(encoding="utf-8"))
+    combined = "\n".join(sources)
+    assert "Markdown (and optional CSV)" not in combined
+    assert "confirmation before overwriting" not in readme
+    assert "Markdown, CSV, and HTML" in readme
+
+
 TESTS = [
     test_wrapper_files_exist,
     test_bash_wrappers_parse,
     test_powershell_wrappers_parse,
     test_generator_wizards_offer_update_and_explicit_replace,
+    test_wrapper_documentation_matches_default_report_formats,
 ]
 
 

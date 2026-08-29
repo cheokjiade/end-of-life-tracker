@@ -27,6 +27,8 @@ Rules enforced here:
 """
 
 import fnmatch
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -104,6 +106,35 @@ def sort_warnings(warnings):
         w["category"], w["path"], w["message"],
     ): w for w in warnings}
     return [unique[k] for k in sorted(unique)]
+
+
+def load_safe_xml(path, rel_path, what):
+    """Return ``(root, warning)`` for bounded XML without DTD/entities.
+
+    Maven POM and MSBuild project formats do not require document type
+    declarations. Rejecting them before ElementTree parses the document avoids
+    entity-expansion attacks while keeping malformed inputs visible as scan
+    warnings.
+    """
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(MAX_FILE_BYTES + 1)
+    except OSError as exc:
+        return None, new_warning(
+            "unreadable_file", rel_path, f"could not read {what}: {exc}")
+    if len(raw) > MAX_FILE_BYTES:
+        return None, new_warning(
+            "oversize_input", rel_path,
+            f"file exceeds {MAX_FILE_BYTES} byte limit; skipped")
+    if re.search(br"<!\s*(?:DOCTYPE|ENTITY)\b", raw, flags=re.IGNORECASE):
+        return None, new_warning(
+            "parse_error", rel_path,
+            f"{what} contains a forbidden DTD/entity declaration")
+    try:
+        return ET.fromstring(raw), None
+    except ET.ParseError as exc:
+        return None, new_warning(
+            "parse_error", rel_path, f"{what} parse error: {exc}")
 
 
 # ---------------------------------------------------------------------------

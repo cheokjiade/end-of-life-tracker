@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # generate_config.sh — scan a project folder and generate an EOL tracker
-# config plus a Markdown inventory report.
+# config plus Markdown, CSV, and HTML inventory reports.
 #
 # Works on macOS and Linux (and on Windows via Git Bash / WSL). For native
 # Windows PowerShell, use generate_config.ps1 instead.
@@ -115,8 +115,8 @@ echo "(plus .eolignore and --exclude patterns; node_modules, .venv, target, dist
 # swallowed and the report step only runs on success
 "$PYTHON" "$SCRIPT_DIR/generate_config.py" "$scan_dir" --name "$slug" --output "$output" "$@"
 
-# 6) regenerate the Markdown inventory from the just-written config (--force:
-# a stale report from a previous run must not survive)
+# 6) regenerate all inventory formats from the just-written config (--force:
+# stale reports from a previous run must not survive)
 "$PYTHON" "$SCRIPT_DIR/generate_inventory_report.py" "$output" --force
 
 # 7) the exact command for the live tracker smoke run
