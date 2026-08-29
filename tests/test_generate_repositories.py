@@ -289,13 +289,75 @@ assert scan["repositories"] == ["https://settings-groovy.example/maven2"], \
 assert "settings.gradle" in [Path(f).name for f in scan["files"]], scan["files"]
 print("OK settings.gradle: dependencyResolutionManagement repos collected; pluginManagement excluded")
 
-# Settings content never produces dependency rows: the dep patterns require
-# dependency-configuration keywords (implementation/api/classpath/...).
+# Plain settings content (no plugin blocks) yields no dependency rows via
+# the direct dep scanner: the dep patterns require dependency-configuration
+# keywords (implementation/api/classpath/...). Plugin blocks differ — pinned
+# below.
 with tempfile.TemporaryDirectory() as tmp:
     p = _write(tmp, "settings.gradle.kts", SETTINGS_KTS)
     deps = parse_gradle(p)
 assert deps == [], deps
 print("OK settings files yield no dependency declarations")
+
+
+# --- C4: settings-file dep-scanning asymmetry (.kts scanned, Groovy not) ------
+
+# settings.gradle.kts matches the *.gradle.kts pass, so it is additionally
+# dep/plugin-scanned: a pluginManagement { plugins { ... } } block produces a
+# gradle-plugin tracker row (deliberate — such plugins are real, versioned,
+# trackable artifacts), while pluginManagement repositories stay excluded.
+SETTINGS_KTS_PLUGINS = """
+pluginManagement {
+    plugins {
+        id("com.example.some-plugin") version "1.0.0"
+    }
+    repositories {
+        maven { url = uri("https://plugins.example/maven2") }
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("https://settings-deps.example/maven2") }
+    }
+}
+rootProject.name = "demo"
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    _write(tmp, "settings.gradle.kts", SETTINGS_KTS_PLUGINS)
+    scan = scan_folder(tmp)
+assert [(g, a, v, kind) for g, a, v, _p, kind in scan["java"]] == [
+    ("com.example.some-plugin", "some-plugin-gradle-plugin", "1.0.0",
+     "gradle-plugin"),
+], scan["java"]
+assert scan["repositories"] == ["https://settings-deps.example/maven2"], \
+    scan["repositories"]
+print("OK settings.gradle.kts pluginManagement plugin produces the gradle-plugin row")
+
+# The identical Groovy settings.gradle is repository-only: the same plugin
+# block produces NO dep rows while repo collection still works.
+SETTINGS_GROOVY_PLUGINS = """
+pluginManagement {
+    plugins {
+        id 'com.example.some-plugin' version '1.0.0'
+    }
+    repositories {
+        maven { url 'https://plugins.example/maven2' }
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url 'https://settings-deps.example/maven2' }
+    }
+}
+rootProject.name = 'demo'
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    _write(tmp, "settings.gradle", SETTINGS_GROOVY_PLUGINS)
+    scan = scan_folder(tmp)
+assert scan["java"] == [], scan["java"]
+assert scan["repositories"] == ["https://settings-deps.example/maven2"], \
+    scan["repositories"]
+print("OK identical Groovy settings.gradle produces no dep rows (repos still collected)")
 
 # An unterminated repositories block yields NOTHING: a block is recorded
 # only when its closing brace is seen, so a truncated file silently drops

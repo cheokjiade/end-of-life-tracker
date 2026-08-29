@@ -368,12 +368,17 @@ extracted manually (the scanner silently misses it):
   are never tracked, and a `//` inside a string (e.g. a repo URL) survives. `test*`
   configurations and `project(...)` / `files(...)` / `fileTree(...)` declarations
   match nothing.
-- `settings.gradle` / `settings.gradle.kts`: repository declarations only —
+- `settings.gradle` / `settings.gradle.kts`: repository collection only —
   `dependencyResolutionManagement { repositories { ... } }` URLs are collected into
   the config-level `maven_repositories` list (`pluginManagement { repositories }`
   holds plugin repos and stays excluded; dotted spellings like
   `project.repositories { }` count, `publishing.repositories { }` does not).
-  Settings files declare no dependencies, so nothing else is parsed there.
+  Dependency scanning is asymmetric between the two spellings: `settings.gradle.kts`
+  matches the existing `*.gradle.kts` pass and is therefore additionally
+  dep/plugin-scanned — a `pluginManagement { plugins { id(...) version ... } }`
+  block produces a gradle-plugin tracker row (deliberate: such plugins are real,
+  versioned, trackable artifacts), while the Groovy `settings.gradle` is
+  repository-only and produces no dep rows.
 - Versions that never produce entries (no public registry resolves them): `-SNAPSHOT`,
   `${property}` placeholders and Groovy `$var` interpolations (any `$` in a version),
   Maven ranges (`[2.0,)`) including unterminated ones
