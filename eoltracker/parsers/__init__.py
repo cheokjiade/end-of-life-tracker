@@ -18,6 +18,13 @@ import pkgutil
 from ..core import _error_result, logger
 
 PROVIDERS, SOURCE_LABELS, _URL_FNS = {}, {}, {}
+_RESULT_KEYS = frozenset((
+    "label", "product", "version", "status", "message",
+    "days_remaining", "source",
+))
+_RESULT_STATUSES = frozenset((
+    "eol", "approaching", "ok", "error", "unknown", "untracked",
+))
 for _finder, _name, _ispkg in pkgutil.iter_modules(__path__):
     _mod = importlib.import_module(f"{__name__}.{_name}")
     src = getattr(_mod, "SOURCE", None)
@@ -31,6 +38,24 @@ for _finder, _name, _ispkg in pkgutil.iter_modules(__path__):
 def source_url_for(result):
     fn = _URL_FNS.get(result.get("source"))
     return fn(result) if fn else None
+
+
+def _validate_provider_result(result):
+    """Reject provider output that cannot satisfy the report contract."""
+    if not isinstance(result, dict):
+        raise TypeError(
+            f"provider returned {type(result).__name__}, expected dict")
+    missing = sorted(_RESULT_KEYS.difference(result))
+    if missing:
+        raise TypeError(f"provider result missing required keys: {missing}")
+    for key in ("label", "message", "source"):
+        if not isinstance(result[key], str) or not result[key]:
+            raise TypeError(f"provider result {key} must be a non-empty string")
+    if result["status"] not in _RESULT_STATUSES:
+        raise ValueError(f"provider result has unsupported status {result['status']!r}")
+    days = result["days_remaining"]
+    if days is not None and (not isinstance(days, int) or isinstance(days, bool)):
+        raise TypeError("provider result days_remaining must be an integer or null")
 
 
 def check_product(entry, today, index=None):
@@ -82,16 +107,18 @@ def check_product(entry, today, index=None):
                     entry,
                     f"unexpected {type(exc).__name__} while checking source "
                     f"'{source}'")
-            if not isinstance(result, dict):
+            try:
+                _validate_provider_result(result)
+            except (TypeError, ValueError) as exc:
                 # A broken provider contract must not leak into the report
                 # loop or formatters; normalize it like any other failure.
                 logger.error(
-                    "provider for source '%s' returned %s instead of a dict",
-                    source, type(result).__name__)
+                    "provider for source '%s' returned an invalid result: %s",
+                    source, exc)
                 result = _error_result(
                     entry,
                     f"provider for source '{source}' returned an invalid "
-                    f"result ({type(result).__name__})")
+                    f"result ({exc})")
     note = entry.get("policy_note")
     if note and isinstance(result, dict):
         result["policy_note"] = note

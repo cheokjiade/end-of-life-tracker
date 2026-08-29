@@ -68,6 +68,30 @@ def test_dispatch_isolates_provider_failures():
     assert "expected object" in malformed[0]["message"]
     assert "non-empty string" in malformed[2]["message"]
 
+    invalid_results = (
+        ({}, "missing required keys"),
+        ({
+            "label": "Broken", "product": "x", "version": "1",
+            "status": "invented", "message": "bad", "days_remaining": None,
+            "source": "test_invalid_result",
+        }, "unsupported status"),
+        ({
+            "label": "Broken", "product": "x", "version": "1",
+            "status": "ok", "message": "bad", "days_remaining": "soon",
+            "source": "test_invalid_result",
+        }, "days_remaining"),
+    )
+    source = "test_invalid_result"
+    try:
+        for provider_result, expected in invalid_results:
+            PROVIDERS[source] = lambda entry, today, value=provider_result: value
+            result = check_product({"source": source, "label": "Broken"}, TODAY)
+            assert result["status"] == "error"
+            assert result["source"] == source
+            assert expected in result["message"]
+    finally:
+        PROVIDERS.pop(source, None)
+
 
 def test_malformed_provider_documents_return_error_rows():
     real_cycles = endoflife_date.fetch_all_cycles
