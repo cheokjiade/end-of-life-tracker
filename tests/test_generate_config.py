@@ -596,8 +596,11 @@ def test_generate_config_node():
     assert [p for p in prods if p.get("product") == "react"] == [{
         "product": "react", "version": "18", "label": "React 18",
         "_comment": "From package.json (react@18.2.0)",
-        "_found_in": [{"path": "package.json", "manifest": "npm",
-                       "locator": "dependencies.react"}]}]
+        "_found_in": [
+            {"path": "package-lock.json", "manifest": "npm",
+             "locator": "lock:react"},
+            {"path": "package.json", "manifest": "npm",
+             "locator": "dependencies.react"}]}]
     ts = [p for p in prods if p.get("product") == "typescript"]
     assert ts and ts[0]["version"] == "5.4"
     # legacy skipped list is preserved with manifest basename provenance
@@ -614,9 +617,11 @@ def test_generate_config_node():
     assert [u["name"] for u in unmapped] == [
         "@company/tokens", "axios", "left-pad"]
     assert all(u["ecosystem"] == "node" for u in unmapped)
-    assert unmapped[0]["found_in"] == [{
-        "path": "package.json", "manifest": "npm",
-        "locator": "devDependencies.@company/tokens"}]
+    assert unmapped[0]["found_in"] == [
+        {"path": "package-lock.json", "manifest": "npm",
+         "locator": "lock:@company/tokens"},
+        {"path": "package.json", "manifest": "npm",
+         "locator": "devDependencies.@company/tokens"}]
     assert unmapped[1]["version"] == "1.6.8"
     assert config["_inventory"]["summary"] == {
         "files": 1, "records": 7, "products": 3, "unmapped": 3, "warnings": 0}
@@ -653,7 +658,12 @@ def test_generate_config_mixed():
     assert inv["summary"] == {"files": 3, "records": 10, "products": 9,
                               "unmapped": 1, "warnings": 0}
     assert inv["unmapped"][0]["name"] == "axios"
-    assert inv["unmapped"][0]["found_in"][0]["locator"] == "dependencies.axios"
+    assert inv["unmapped"][0]["found_in"] == [
+        {"path": "package-lock.json", "manifest": "npm",
+         "locator": "lock:axios"},
+        {"path": "package.json", "manifest": "npm",
+         "locator": "dependencies.axios"},
+    ]
 
 
 def test_generate_config_no_inference_when_security_explicit():
