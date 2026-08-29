@@ -151,24 +151,35 @@ def _xml_declaration_status(raw):
         return True, None
 
     encoding = None
+    text = None
     if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
         encoding = "utf-32"
     elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         encoding = "utf-16"
-    elif raw.startswith(b"<\x00\x00\x00"):
-        encoding = "utf-32-le"
-    elif raw.startswith(b"\x00\x00\x00<"):
-        encoding = "utf-32-be"
-    elif raw.startswith(b"<\x00?\x00"):
-        encoding = "utf-16-le"
-    elif raw.startswith(b"\x00<\x00?"):
-        encoding = "utf-16-be"
-    if encoding is None:
+    elif b"\x00" in raw:
+        # BOM-less XML may begin with a declaration, a document type, the root
+        # element, or whitespace. Try the bounded set of encodings ElementTree
+        # accepts and require the decoded document to begin like XML. Checking
+        # UTF-32 first prevents its byte pattern being mistaken for UTF-16.
+        for candidate in (
+                "utf-32-le", "utf-32-be", "utf-16-le", "utf-16-be"):
+            try:
+                decoded = raw.decode(candidate)
+            except UnicodeDecodeError:
+                continue
+            if decoded.lstrip("\ufeff \t\r\n").startswith("<"):
+                encoding = candidate
+                text = decoded
+                break
+        if encoding is None:
+            return False, "XML"
+    else:
         return False, None
-    try:
-        text = raw.decode(encoding)
-    except UnicodeDecodeError:
-        return False, encoding
+    if text is None:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            return False, encoding
     forbidden = re.search(
         r"<!\s*(?:DOCTYPE|ENTITY)\b", text, flags=re.IGNORECASE)
     return bool(forbidden), None

@@ -239,6 +239,13 @@ def test_pom_rejects_dtd_and_entities():
         records, warnings = gc.parse_pom_records(pom, "pom.xml")
         assert records == [] and warnings == []
 
+        for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+            pom.write_bytes(hostile.encode(encoding))
+            records, warnings = gc.parse_pom_records(pom, "pom.xml")
+            assert records == [], encoding
+            assert len(warnings) == 1, encoding
+            assert "forbidden DTD/entity" in warnings[0]["message"], encoding
+
 
 def test_parse_pom_records_unresolved():
     records, warnings = gc.parse_pom_records(
