@@ -25,16 +25,21 @@ artifacts, which are not published to Maven Central). The default is Maven
 Central.
 
 Entries may instead set a 'repositories' key: a list of such base URLs
-tried in order when the artifact is not found on the primary repository
-(first hit wins; an unusable URL is skipped with a logged warning). A row
-rescued this way carries the provenance prefix
-"Not on Maven Central; found on <host>:" and a source_label of the host;
-if the whole chain yields nothing the row is a not-found error naming the
-declared repositories. generate_config.py emits a config-level
-"maven_repositories" list that handler.py stamps onto entries lacking an
-explicit 'repository' (capped at 8 at load time), so hand-written configs
-can use the same entry-level 'repositories' key directly. An explicit
-'repository' keeps the single-repository behavior with no chain.
+tried in order when the artifact is not found on the primary repository,
+or when the primary lists the artifact but the pinned version could not
+be verified there (e.g. Central has the metadata while the in-use release
+lives only on the project's own repository). First artifact hit wins; an
+unusable URL is skipped with a logged warning; the chain is capped at the
+first 8 URLs (mirroring the handler's stamping cap). A row rescued this
+way carries the provenance prefix "Not on Maven Central; found on <host>:"
+and a source_label of the host; if the whole chain yields nothing the row
+is a not-found error naming the declared repositories (or, when the
+artifact itself resolved but the version did not, an unknown row naming
+them). generate_config.py emits a config-level "maven_repositories" list
+that handler.py stamps onto entries lacking an explicit 'repository'
+(capped at 8 at load time), so hand-written configs can use the same
+entry-level 'repositories' key directly. An explicit 'repository' keeps
+the single-repository behavior with no chain.
 """
 
 import re
@@ -49,6 +54,11 @@ from ..core import _error_result, logger
 _MAVEN_REPOSITORY = "https://repo1.maven.org/maven2"
 _HTTP_TIMEOUT_SECONDS = 10
 _MAX_METADATA_BYTES = 1024 * 1024
+# Cap on how many declared 'repositories' URLs one provider call probes,
+# mirroring handler.py's _MAX_STAMPED_REPOSITORIES: the chain runs up to
+# two sequential fetches per repository INSIDE one check, where the
+# runner's per-check time budget cannot intercede.
+_MAX_CHAIN_REPOSITORIES = 8
 # Two cache namespaces: one for "the latest gav of this artifact" and one
 # for "this specific gav". Canonical metadata has no search-result row cutoff,
 # including for artifacts with hundreds of releases (e.g. Netty). Both keys
@@ -306,7 +316,9 @@ def _provider_maven_central(entry, today):
              else urllib.parse.urlsplit(repository).netloc)
 
     # Fallback chain: declared repositories to try when the artifact is not
-    # found on the primary one. An explicit 'repository' keeps the
+    # found on the primary one, or when the primary lists the artifact but
+    # the in-use version could not be verified there (the version may live
+    # only on a declared repository). An explicit 'repository' keeps the
     # single-repository behavior (no chain).
     fallbacks = entry.get("repositories")
     if fallbacks is not None and not isinstance(fallbacks, list):
@@ -316,6 +328,14 @@ def _provider_maven_central(entry, today):
         return result
     if explicit_repository:
         fallbacks = None
+    if fallbacks and len(fallbacks) > _MAX_CHAIN_REPOSITORIES:
+        # Same cap as the handler's stamping: the chain probes up to two
+        # sequential URLs per repository inside ONE provider call, beyond
+        # the runner's per-check budget. Only counts are logged, never URLs.
+        logger.warning(
+            "%s: %d declared repositories listed; probing the first %d only",
+            label, len(fallbacks), _MAX_CHAIN_REPOSITORIES)
+        fallbacks = fallbacks[:_MAX_CHAIN_REPOSITORIES]
 
     try:
         latest = _fetch_maven_latest(group, artifact, repository)
@@ -330,7 +350,7 @@ def _provider_maven_central(entry, today):
         return result
 
     fell_back = False
-    if not latest and fallbacks:
+    if (not latest or in_use is None) and fallbacks:
         for candidate in fallbacks:
             try:
                 candidate_repo = _normalize_repository(candidate)
@@ -403,6 +423,16 @@ def _provider_maven_central(entry, today):
                 f"latest published is {latest_v} ({latest_date_text}); "
                 f"version {version} could not be verified there "
                 f"(private build, typo, or repository gap)"
+            )
+        elif fallbacks:
+            # The chain ran (the version was unverified on Maven Central)
+            # and no declared repository resolved it either — name the full
+            # attempted chain, not Central alone.
+            message = (
+                f"Version {version} could not be verified on {where} "
+                f"or {len(fallbacks)} declared repositories "
+                f"(private build, typo, or repository gap); "
+                f"latest published is {latest_v} ({latest_date_text})"
             )
         else:
             message = (

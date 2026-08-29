@@ -850,5 +850,391 @@ assert calls == [], calls
 print("OK malformed 'repositories' value is a no-network error row")
 
 
+# --- Fallback trigger also fires when the VERSION is missing on Central ------
+#
+# Live-repro shape (org.opensaml:opensaml:2.6.6): Maven Central HAS the
+# artifact (metadata's latest is 2.6.4) but the pinned 2.6.6 exists only on
+# the declared repository. The chain must fire on the unverified version,
+# rescue the row from the declared repository, and mark it ok with the
+# standard provenance prefix.
+
+clear_caches()
+calls.clear()
+
+
+def opensaml_urlopen(request, timeout):
+    url = request.full_url
+    calls.append((url, request.get_method()))
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"""<?xml version="1.0" encoding="UTF-8"?>
+<metadata><versioning>
+  <latest>2.6.4</latest><release>2.6.4</release>
+  <versions><version>2.6.4</version></versions>
+</versioning></metadata>
+""")
+        # In-use POM HEAD on Central: 2.6.6 is not published there.
+        if "/2.6.6/" in url:
+            raise http_404(request)
+        assert "/2.6.4/opensaml-2.6.4.pom" in url, url
+        return FakeResponse(headers={
+            "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+    assert "build.shibboleth.net" in url, url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"""<metadata><versioning>
+<release>3.0.0</release></versioning></metadata>""")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = opensaml_urlopen
+    result = maven._provider_maven_central({
+        "label": "OpenSAML 2.6.6",
+        "group": "org.opensaml",
+        "artifact": "opensaml",
+        "version": "2.6.6",
+        "repositories": [SHIBBOLETH],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["repository"] == (
+    "https://build.shibboleth.net/nexus/content/repositories/releases"), result
+assert result["source_label"] == "build.shibboleth.net", result
+assert result["message"].startswith(
+    "Not on Maven Central; found on build.shibboleth.net: "), result
+assert "In use: 2.6.6" in result["message"], result
+assert "latest: 3.0.0" in result["message"], result
+central_calls = [c for c in calls if c[0].startswith(maven._MAVEN_REPOSITORY)]
+assert len(central_calls) == 3, calls  # metadata GET + 2.6.4 HEAD + 2.6.6 HEAD
+print("OK central metadata present but version 404s -> chain rescues (ok row)")
+
+
+# Version found NOWHERE (artifact present on Central, version missing on
+# Central and on every declared repository) -> unknown row naming the full
+# attempted chain, with the latest the artifact metadata still reports.
+
+clear_caches()
+calls.clear()
+
+
+def version_missing_everywhere_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY) and \
+            url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.6.4</release>"
+                            b"</versioning></metadata>")
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = version_missing_everywhere_urlopen
+    result = maven._provider_maven_central({
+        "label": "OpenSAML 2.6.6",
+        "group": "org.opensaml",
+        "artifact": "opensaml",
+        "version": "2.6.6",
+        "repositories": [FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "unknown", result
+assert result["message"] == (
+    "Version 2.6.6 could not be verified on Maven Central "
+    "or 1 declared repositories (private build, typo, or repository gap); "
+    "latest published is 2.6.4 (date unknown)"), result
+print("OK version missing on Central and every declared repo -> unknown chain wording")
+
+
+# Entries WITHOUT a 'repositories' list keep the byte-identical Central-only
+# could-not-verify message (the chain never runs; no source-label override).
+
+clear_caches()
+calls.clear()
+
+
+def central_meta_404_poms_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.0.0</release>"
+                            b"</versioning></metadata>")
+    if "/1.0.0/" in url:
+        raise http_404(request)
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = central_meta_404_poms_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "unknown", result
+assert result["message"] == (
+    "Version 1.0.0 could not be verified on Maven Central "
+    "(private build, typo, or repository gap); "
+    "latest published is 2.0.0 (2025-02-25)"), result
+assert "source_label" not in result, result
+print("OK no-fallbacks could-not-verify message stays byte-identical")
+
+
+# --- Chain cap: at most 8 declared repositories probed per call ---------------
+#
+# A hand-written 300-URL list would otherwise drive up to 600 sequential
+# fetches inside ONE provider call, beyond the runner's per-check budget.
+
+clear_caches()
+calls.clear()
+captured = []
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+TEN_REPOS = [f"https://c{i}.example/repo" for i in range(1, 11)]
+
+
+def all_404_cap_urlopen(request, timeout):
+    calls.append(request.full_url)
+    raise http_404(request)
+
+
+try:
+    maven.urllib.request.urlopen = all_404_cap_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": TEN_REPOS,
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "error", result
+assert result["message"] == (
+    "Artifact org.example:widget not found on Maven Central "
+    "or 8 declared repositories"), result
+assert any("probing the first 8 only" in m for m in captured), captured
+assert not any(
+    "c9.example" in u or "c10.example" in u for u in calls), calls
+assert any("c8.example" in u for u in calls), calls
+print("OK 10-URL chain is capped at the first 8 with a count warning")
+
+
+# --- Adversarial-review pins: chain results stay truthful ---------------------
+
+# Trap (i): the winning fallback HAS the artifact but the in-use version
+# 404s on THAT repository -> unknown, never ok.
+
+clear_caches()
+calls.clear()
+
+
+def fallback_lacks_version_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        raise http_404(request)
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.5.0</release>"
+                            b"</versioning></metadata>")
+    if "/1.0.0/" in url:
+        raise http_404(request)
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = fallback_lacks_version_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "unknown", result
+assert result["message"].startswith(
+    "Not on Maven Central; found on repo.example: "), result
+assert "latest published is 2.5.0 (2025-02-25)" in result["message"], result
+assert "version 1.0.0 could not be verified there" in result["message"], result
+print("OK artifact rescued but version 404s on the fallback -> unknown, not ok")
+
+
+# Trap (iii): a garbage-XML repository mid-chain logs a warning and the
+# chain continues to the next candidate.
+
+clear_caches()
+calls.clear()
+captured = []
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+BAD_XML = "https://bad-xml.example/repo"
+
+
+def garbage_xml_chain_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        raise http_404(request)
+    if url.startswith(BAD_XML) and url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<not-closed>")
+    assert url.startswith(FALLBACK), url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.5.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = garbage_xml_chain_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [BAD_XML, FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://repo.example/custom", result
+assert any("declared repository lookup failed" in m for m in captured), captured
+print("OK garbage-XML repo mid-chain warns and the chain continues")
+
+
+# A blank/whitespace URL in the chain is skipped with a logged warning and
+# the chain continues.
+
+clear_caches()
+calls.clear()
+captured = []
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+try:
+    maven.urllib.request.urlopen = central_404_fallback_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": ["   ", FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://repo.example/custom", result
+assert any("skipping blank declared repository" in m for m in captured), captured
+print("OK blank URL in the chain logs a skip and the chain continues")
+
+
+# A credential-bearing URL in the chain is skipped and the URL itself is
+# never logged (the ValueError reason names the field, not the value).
+
+clear_caches()
+calls.clear()
+captured = []
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+try:
+    maven.urllib.request.urlopen = central_404_fallback_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": ["https://user:secret@example.com/repo", FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "ok", result
+assert result["repository"] == "https://repo.example/custom", result
+assert any("skipping declared repository" in m and "credentials" in m
+           for m in captured), captured
+assert not any("secret" in m for m in captured), captured
+assert not any("example.com" in m for m in captured), captured
+assert not any("example.com" in u for u in calls), calls
+print("OK credential-bearing URL skipped and never logged")
+
+
+# Cache partitioning under the fallback chain: a chain-resolved row is
+# served entirely from the per-repository caches on a repeat call, and a
+# different declared repository probes its own partition.
+
+clear_caches()
+calls.clear()
+REPO_A = "https://chain-a.example/maven2"
+REPO_B = "https://chain-b.example/maven2"
+CACHE_ENTRY = {
+    "label": "Widget",
+    "group": "org.example",
+    "artifact": "widget",
+    "version": "1.0.0",
+}
+
+
+def chain_cache_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        raise http_404(request)
+    assert "chain-a.example" in url, url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.5.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = chain_cache_urlopen
+    first = maven._provider_maven_central(
+        {**CACHE_ENTRY, "repositories": [REPO_A]}, date(2026, 8, 28))
+    after_first = len(calls)
+    second = maven._provider_maven_central(
+        {**CACHE_ENTRY, "repositories": [REPO_A]}, date(2026, 8, 28))
+    after_second = len(calls)
+    third = maven._provider_maven_central(
+        {**CACHE_ENTRY, "repositories": [REPO_B]}, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert first["status"] == "ok", first
+assert first["repository"] == "https://chain-a.example/maven2", first
+assert second == first, second
+assert after_second == after_first, (after_second, after_first)
+assert third["status"] == "error", third
+assert third["message"] == (
+    "Artifact org.example:widget not found on Maven Central "
+    "or 1 declared repositories"), third
+assert any("chain-b.example" in u for u in calls[after_second:]), calls
+print("OK chain results are cached per repository; other repos probe their own partition")
+
+
 clear_caches()
 print("OK test_maven_repository")
