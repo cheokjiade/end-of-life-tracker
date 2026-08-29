@@ -416,6 +416,24 @@ def test_dotnet_malformed_sidecars_and_entities_warn():
         assert _has_warning(warnings, "parse_error", "forbidden DTD/entity")
 
 
+def test_dotnet_falsey_malformed_lock_structures_warn():
+    cases = (
+        ({"dependencies": []}, "dependencies value"),
+        ({"dependencies": {"net8.0": []}}, "dependency group 'net8.0'"),
+        ({"dependencies": {"net8.0": {"Pkg": []}}}, "package 'Pkg'"),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        lock_file = root / "packages.lock.json"
+        for document, message in cases:
+            lock_file.write_text(json.dumps(document), encoding="utf-8")
+            versions, warning = dotnet_parser._read_lock_versions(
+                lock_file, root, "packages.lock.json")
+            assert versions == {}
+            assert warning["category"] == "parse_error"
+            assert message in warning["message"]
+
+
 def test_dotnet_global_json_malformed_and_empty():
     with tempfile.TemporaryDirectory() as tmpdir:
         bad = Path(tmpdir) / "global.json"
@@ -464,6 +482,7 @@ TESTS = [
     test_dotnet_project_without_siblings_warns,
     test_dotnet_finds_central_versions_at_scan_root,
     test_dotnet_malformed_sidecars_and_entities_warn,
+    test_dotnet_falsey_malformed_lock_structures_warn,
     test_dotnet_global_json_malformed_and_empty,
     test_dotnet_parsing_is_deterministic,
 ]

@@ -191,8 +191,10 @@ def _read_lock_versions(lock_abs, root, rel_path):
         return {}, new_warning(
             "parse_error", rel_path,
             "packages.lock.json top-level value is not an object")
-    dependencies = data.get("dependencies") or {}
-    if not isinstance(dependencies, dict):
+    dependencies = data.get("dependencies")
+    if dependencies is None:
+        dependencies = {}
+    elif not isinstance(dependencies, dict):
         return {}, new_warning(
             "parse_error", rel_path,
             "packages.lock.json dependencies value is not an object")
@@ -200,8 +202,10 @@ def _read_lock_versions(lock_abs, root, rel_path):
     lock = {}
     for wanted in ("Direct", "Transitive"):
         for tfm in tfms:
-            packages = dependencies.get(tfm) or {}
-            if not isinstance(packages, dict):
+            packages = dependencies.get(tfm)
+            if packages is None:
+                packages = {}
+            elif not isinstance(packages, dict):
                 return {}, new_warning(
                     "parse_error", rel_path,
                     f"packages.lock.json dependency group {tfm!r} is not an object")
@@ -209,8 +213,10 @@ def _read_lock_versions(lock_abs, root, rel_path):
                 key = pkg.lower()
                 if key in lock:
                     continue
-                info = packages.get(pkg) or {}
-                if not isinstance(info, dict):
+                info = packages.get(pkg)
+                if info is None:
+                    info = {}
+                elif not isinstance(info, dict):
                     return {}, new_warning(
                         "parse_error", rel_path,
                         f"packages.lock.json package {pkg!r} is not an object")
