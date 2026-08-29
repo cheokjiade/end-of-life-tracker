@@ -376,6 +376,39 @@ The scanner is a heuristic regex/JSON/XML pass, not a build — after running it
 output against the inputs and hand-map whatever it missed. Do not assume silence means
 absence.
 
+### --resolve-transitive (optional full-graph scan)
+
+By default the scanner reads **declared** dependencies only. With
+`python generate_config.py <folder> --name <project> --resolve-transitive` the full
+dependency graph is merged into the scan, resolved per ecosystem from the real sources
+(never hand-rolled — only the real tools resolve scopes, BOMs, platforms, and version
+catalogs accurately):
+
+- **npm** — a `package-lock.json` in the same directory as a scanned `package.json` is
+  parsed directly (lockfileVersion 2/3 `packages` map and lockfileVersion 1
+  `dependencies` tree; the `""` root entry and `link:`/`file:` resolved entries are
+  skipped). No tool required. Record kind: `npm-lock`.
+- **Maven** — for each `pom*.xml`, the output of `mvn -B -q dependency:list` is parsed
+  (strict `group:artifact:type:version:scope(:classifier)` lines; test scope skipped,
+  classifier components stripped). Requires `mvn` on PATH. Record kind:
+  `transitive-maven`.
+- **Gradle** — one run per project root (a directory containing `build.gradle` or
+  `build.gradle.kts`, deduped by directory) with a generated `eolDumpDeps` init script
+  (`gradle -q --init-script <tmp> eolDumpDeps`) printing resolved module coordinates per
+  configuration. Requires `gradle` on PATH. Record kind: `transitive-gradle`.
+
+**Products gating:** mapped transitives may promote to `products` rows (the `_comment`
+notes the transitive provenance, e.g. `Transitive via mvn (g:a:v)`; dedupe applies and a
+direct declaration wins), but **unmapped transitives never create rows** — no
+`maven_central` fallback, no `_skipped_npm_packages` entries. They are records-only in
+`_discovered_dependencies` (outcome `unmapped-transitive (tracked in records only)`).
+This keeps `products` reviewable and protects the Lambda time budget (R-04): a full
+graph can be hundreds of artifacts and must not flood the runnable set. When the tool is
+missing from PATH, fails, or times out, that manifest's resolution is skipped with one
+stderr warning and a `skipped: transitive resolution unavailable (<tool> not on PATH or
+failed)` record — generation completes. Without the flag the scan is byte-identical to
+the direct-deps-only behavior and starts no subprocess.
+
 ### _discovered_dependencies (the complete picture)
 
 A generated config carries two views: `products` is the **deduped runnable set** (first
@@ -400,7 +433,8 @@ Record shape:
 - `file`: base name of the manifest the declaration came from.
 - `kind`: `parent`, `dep`, `managed-dep`, `unversioned-dep`, `test-scope-dep`,
   `provided-scope-dep`, `system-scope-dep`, `gradle`, `gradle-plugin`, `gradle-catalog`,
-  `property`, `npm`.
+  `property`, `npm`, plus the `--resolve-transitive` kinds `transitive-maven`,
+  `transitive-gradle`, and `npm-lock`.
 - `outcome`, one of:
   - `tracked: <label>` - a `products` row exists with that label;
   - `duplicate-of: <label>` - same dedup key as an earlier declaration; the first one wins;
@@ -408,10 +442,17 @@ Record shape:
     version`, `SNAPSHOT version`, `unresolved property placeholder`, `internal group`,
     `no version (parent/BOM-managed)`, `classifier variant (duplicates the base artifact)`,
     `vue version spec with no matching published cycle`, `known-untracked test dependency`,
-    or the non-runtime scope itself (`test scope`, `provided scope`, `system scope`);
+    the non-runtime scope itself (`test scope`, `provided scope`, `system scope`), and
+    `transitive resolution unavailable (<tool> not on PATH or failed)` (with
+    `--resolve-transitive`, when the build tool is missing/failed/timed out for that
+    manifest);
   - `unmapped: see _skipped_npm_packages` - npm package with no mapping; the package and
     version are detailed in `_skipped_npm_packages` (`react-dom` is a known no-mapping
-    alias of `react` and appears only here).
+    alias of `react` and appears only here);
+  - `unmapped-transitive (tracked in records only)` - a transitive dependency
+    (`--resolve-transitive`) that maps to no tracker entry; review it here — products
+    gating deliberately keeps it out of `products` and `_skipped_npm_packages` (see the
+    section above).
 
 ### Real-world document patterns
 

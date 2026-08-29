@@ -19,6 +19,7 @@ from generate_config import (
     parse_gradle_dump,
     parse_mvn_dependency_list,
     parse_npm_lockfile,
+    parse_package_json,
 )
 
 
@@ -161,6 +162,19 @@ with tempfile.TemporaryDirectory() as tmp:
     bad.write_text("{not json", encoding="utf-8")
     assert parse_npm_lockfile(bad) == []
     print("OK npm lock: malformed JSON -> [] (never raises)")
+
+    # A UTF-8 BOM on a hand-edited lockfile is tolerated (utf-8-sig).
+    bom = Path(tmp) / "lock-bom.json"
+    bom.write_bytes(b"\xef\xbb\xbf" + json.dumps(
+        {"packages": {"node_modules/x": {"version": "1.0.0"}}}).encode("utf-8"))
+    assert parse_npm_lockfile(bom) == [("x", "1.0.0")]
+    print("OK npm lock: UTF-8 BOM tolerated")
+
+    # Same tolerance for the package.json parser the lockfiles sit beside.
+    pkg_bom = Path(tmp) / "package-bom.json"
+    pkg_bom.write_bytes(b"\xef\xbb\xbf" + b'{"dependencies": {"react": "18.2.0"}}')
+    assert parse_package_json(pkg_bom) == [("react", "18.2.0")]
+    print("OK package.json: UTF-8 BOM tolerated")
 
     # Missing file -> [] (OSError handled).
     assert parse_npm_lockfile(Path(tmp) / "does-not-exist.json") == []

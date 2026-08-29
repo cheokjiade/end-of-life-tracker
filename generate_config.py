@@ -61,8 +61,32 @@ Complete picture vs runnable set:
     shows the complete picture of what the manifests contained, not just
     what runs. Section markers are not declarations and get no record.
 
+Transitive resolution (--resolve-transitive):
+    By default only declared dependencies are scanned. With the flag, the
+    full dependency graph is merged into the scan per ecosystem — never
+    hand-rolled, always from the real sources: npm lockfiles are parsed
+    directly (package-lock.json beside each scanned package.json; no tool
+    needed), while Maven and Gradle graphs are resolved by shelling out to
+    the real build tools (mvn dependency:list per pom.xml; gradle
+    eolDumpDeps via a generated Kotlin-DSL init script per project root),
+    because only the real tools resolve scopes, BOMs, platforms, and
+    version catalogs accurately. Mapped transitives may add tracker rows
+    (deduped; a direct declaration wins; the _comment notes transitive
+    provenance). UNMAPPED transitives never create rows — no maven_central
+    fallback, no _skipped_npm_packages entries — they are recorded in
+    _discovered_dependencies only (outcome "unmapped-transitive (tracked
+    in records only)") to keep products reviewable and protect the Lambda
+    time budget (a full graph can be hundreds of artifacts). When mvn or
+    gradle is not on PATH (or fails, or times out), that manifest's
+    resolution is skipped with one stderr warning and a per-manifest
+    "skipped: transitive resolution unavailable" record; generation never
+    fails on tool unavailability. Without the flag the scan is
+    byte-identical to the direct-deps-only behavior and starts no
+    subprocess.
+
 Usage:
     python generate_config.py <folder> [--name PROJECT] [--output FILE]
+                               [--resolve-transitive]
 
 Examples:
     python generate_config.py "project-b" --name b
@@ -72,7 +96,10 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
@@ -923,9 +950,11 @@ def parse_package_json(path):
     Engine constraint engines.node, when present, is yielded as ("node", version).
     """
     try:
-        with open(path) as f:
+        # utf-8-sig: tolerate a UTF-8 BOM on hand-edited manifests (plain
+        # UTF-8/ASCII read unchanged).
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         print(f"  ! parse error in {path}: {exc}", file=sys.stderr)
         return []
 
@@ -1027,12 +1056,13 @@ def parse_npm_lockfile(path):
     entry, entries without a usable version, and link:/file: resolved
     entries are skipped — a linked or local path is not a registry version
     to track (so is any ':'-bearing version: npm:/git aliases). Parsed with
-    stdlib json; a malformed or unreadable lockfile prints one warning to
+    stdlib json (utf-8-sig, so a UTF-8 BOM on a hand-edited lockfile is
+    tolerated); a malformed or unreadable lockfile prints one warning to
     stderr and returns [] (never raises). Order-stable, deduped on
     (name, version).
     """
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         print(f"  ! parse error in {path}: {exc}", file=sys.stderr)
@@ -1083,20 +1113,187 @@ def parse_npm_lockfile(path):
 
 
 # ---------------------------------------------------------------------------
+# Tool-driven transitive resolution (runs only with --resolve-transitive)
+# ---------------------------------------------------------------------------
+
+_MVN_TIMEOUT_S = 180
+_GRADLE_TIMEOUT_S = 240
+
+# Kotlin-DSL init script: registers an eolDumpDeps task on every project
+# that prints one "<configuration>:<group>:<artifact>:<version>" line per
+# resolved module and a "<configuration>:UNRESOLVED" marker for
+# configurations whose resolution failed. Run with:
+#   gradle -q --init-script <this-file> eolDumpDeps
+_GRADLE_INIT_SCRIPT = """\
+allprojects {
+    tasks.register("eolDumpDeps") {
+        doLast {
+            project.configurations.matching { it.isCanBeResolved }.all { cfg ->
+                try {
+                    cfg.resolvedConfiguration.lenientConfiguration.modules.forEach { m ->
+                        val id = m.module.id
+                        println(cfg.name + ":" + id.group + ":" + id.name + ":" + id.version)
+                    }
+                } catch (e: Exception) {
+                    println(cfg.name + ":UNRESOLVED")
+                }
+            }
+        }
+    }
+}
+"""
+
+
+def _mvn_dependency_list(pom_path):
+    """Run mvn dependency:list for *pom_path*; return (gavs, error).
+
+    (gavs, None) on success; (None, reason) when mvn is not on PATH,
+    exits nonzero, times out, or produces no parseable output. Never
+    raises. shutil.which("mvn") resolves mvn.cmd on Windows via PATHEXT.
+    """
+    mvn = shutil.which("mvn")
+    if not mvn:
+        return None, "mvn not on PATH"
+    fd, out_path = tempfile.mkstemp(prefix="eol-mvn-deps-", suffix=".txt")
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            [mvn, "-B", "-q", "-f", str(pom_path), "dependency:list",
+             f"-DoutputFile={out_path}"],
+            capture_output=True, timeout=_MVN_TIMEOUT_S)
+        if proc.returncode != 0:
+            return None, f"mvn exited with status {proc.returncode}"
+        with open(out_path, encoding="utf-8", errors="replace") as f:
+            gavs = parse_mvn_dependency_list(f.read())
+    except subprocess.TimeoutExpired:
+        return None, f"mvn timed out after {_MVN_TIMEOUT_S}s"
+    except OSError as exc:
+        return None, f"mvn failed: {exc}"
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+    if not gavs:
+        return None, "mvn produced no parseable dependency list"
+    return gavs, None
+
+
+def _gradle_dependency_dump(project_dir):
+    """Run the eolDumpDeps init script in *project_dir*; return (gavs, error).
+
+    Writes the Kotlin-DSL init script to a temp file and runs
+    `gradle -q --init-script <tmp> eolDumpDeps` once for the project root.
+    (gavs, None) on success; (None, reason) when gradle is not on PATH,
+    exits nonzero, times out, or produces no parseable output. Never
+    raises.
+    """
+    gradle = shutil.which("gradle")
+    if not gradle:
+        return None, "gradle not on PATH"
+    fd, init_path = tempfile.mkstemp(prefix="eol-dump.", suffix=".init.gradle.kts")
+    os.close(fd)
+    try:
+        with open(init_path, "w", encoding="utf-8") as f:
+            f.write(_GRADLE_INIT_SCRIPT)
+        proc = subprocess.run(
+            [gradle, "-q", "--init-script", init_path, "eolDumpDeps"],
+            cwd=str(project_dir), capture_output=True, timeout=_GRADLE_TIMEOUT_S)
+        if proc.returncode != 0:
+            return None, f"gradle exited with status {proc.returncode}"
+        gavs = parse_gradle_dump(proc.stdout.decode("utf-8", errors="replace"))
+    except subprocess.TimeoutExpired:
+        return None, f"gradle timed out after {_GRADLE_TIMEOUT_S}s"
+    except OSError as exc:
+        return None, f"gradle failed: {exc}"
+    finally:
+        try:
+            os.unlink(init_path)
+        except OSError:
+            pass
+    if not gavs:
+        return None, "gradle produced no parseable dependency dump"
+    return gavs, None
+
+
+def _merge_transitive_deps(folder, java_deps, node_deps, files_seen,
+                           package_json_dirs):
+    """Resolve and merge transitive dependencies into the scan lists.
+
+    Maven: mvn dependency:list per pom*.xml (kind "transitive-maven").
+    Gradle: one eolDumpDeps run per project root — a dir containing
+    build.gradle or build.gradle.kts, deduped by dir (kind
+    "transitive-gradle"). npm: package-lock.json in the same directory as
+    a scanned package.json, parsed directly with no tool (kind "npm-lock").
+    Every tool failure/unavailability is printed as one stderr warning,
+    returned as a (kind, file, message) triple, and never raises.
+    """
+    unavailable = []
+    for pom in sorted(folder.rglob("pom*.xml")):
+        print(f"  Resolving transitive deps via mvn for {pom.name}...")
+        gavs, err = _mvn_dependency_list(pom)
+        if err:
+            print(f"  ! skipping transitive resolution for {pom.name}: {err}",
+                  file=sys.stderr)
+            unavailable.append(("transitive-maven", pom.name, err))
+            continue
+        for g, a, v in gavs:
+            java_deps.append((g, a, v, str(pom), "transitive-maven"))
+    roots = []
+    gradle_files = sorted(p for pattern in ("*.gradle.kts", "build.gradle")
+                          for p in folder.rglob(pattern))
+    for p in gradle_files:
+        if all(p.parent != d for d, _name in roots):
+            roots.append((p.parent, p.name))
+    for root, name in roots:
+        print(f"  Resolving transitive deps via gradle for {name}...")
+        gavs, err = _gradle_dependency_dump(root)
+        if err:
+            print(f"  ! skipping transitive resolution for {name}: {err}",
+                  file=sys.stderr)
+            unavailable.append(("transitive-gradle", name, err))
+            continue
+        for g, a, v in gavs:
+            java_deps.append((g, a, v, str(root), "transitive-gradle"))
+    for lock in sorted(folder.rglob("package-lock.json")):
+        if "node_modules" in lock.parts:
+            continue
+        if lock.parent not in package_json_dirs:
+            continue  # only lockfiles beside a parsed package.json
+        print(f"  Parsing npm lockfile {lock.name}...")
+        deps = parse_npm_lockfile(lock)
+        files_seen.append(str(lock))
+        for name, v in deps:
+            node_deps.append((name, v, str(lock), "npm-lock"))
+    return unavailable
+
+
+# ---------------------------------------------------------------------------
 # Folder scanning
 # ---------------------------------------------------------------------------
 
-def scan_folder(folder):
-    """Walk folder; return parsed-results dict keyed by language."""
+def scan_folder(folder, resolve_transitive=False):
+    """Walk folder; return parsed-results dict keyed by language.
+
+    With resolve_transitive=True the transitive dependency graph is
+    resolved and merged in before mapping: npm via package-lock.json
+    beside each scanned package.json (no tool needed), Maven via mvn
+    dependency:list per pom.xml, Gradle via an eolDumpDeps init script per
+    project root. Tool unavailability is recorded in the result's
+    "transitive_unavailable" key and never raises. With the default False
+    the behavior is exactly the direct-deps-only scan and no subprocess is
+    ever started.
+    """
     folder = Path(folder)
     if not folder.is_dir():
         raise SystemExit(f"Not a directory: {folder}")
 
     java_deps = []          # list of (group, artifact, version, source_file, kind)
     pom_properties = []     # list of (props_dict, source_file)
-    node_deps = []          # list of (name, version, source_file)
+    node_deps = []          # list of (name, version, source_file[, kind])
     declared_repos = []     # declared artifact-repo URLs (order-stable, deduped)
     files_seen = []
+    package_json_paths = []
 
     # Gradle version catalogs first, so build scripts can resolve their
     # libs.* references against them (multiple catalogs merge, last wins).
@@ -1130,12 +1327,20 @@ def scan_folder(folder):
                 if url not in declared_repos:
                     declared_repos.append(url)
 
+    package_json_paths = []
     for p in sorted(folder.rglob("package.json")):
         if "node_modules" in p.parts:
             continue
         files_seen.append(str(p))
+        package_json_paths.append(p)
         for name, v in parse_package_json(p):
             node_deps.append((name, v, str(p)))
+
+    transitive_unavailable = []
+    if resolve_transitive:
+        transitive_unavailable = _merge_transitive_deps(
+            folder, java_deps, node_deps, files_seen,
+            {p.parent for p in package_json_paths})
 
     return {
         "java":           java_deps,
@@ -1143,6 +1348,7 @@ def scan_folder(folder):
         "node":           node_deps,
         "repositories":   declared_repos,
         "files":          files_seen,
+        "transitive_unavailable": transitive_unavailable,
     }
 
 
@@ -1171,10 +1377,14 @@ def _discovered_summary(records):
     """One-line _comment tally of the _discovered_dependencies outcomes."""
     def count(prefix):
         return sum(1 for r in records if r["outcome"].startswith(prefix))
-    return (f"Declarations discovered: {len(records)} "
-            f"(tracked {count('tracked: ')}, duplicates {count('duplicate-of: ')}, "
-            f"skipped {count('skipped: ')}, unmapped {count('unmapped: ')}) "
-            "- see _discovered_dependencies for the complete picture.")
+    tally = (f"Declarations discovered: {len(records)} "
+             f"(tracked {count('tracked: ')}, duplicates {count('duplicate-of: ')}, "
+             f"skipped {count('skipped: ')}, unmapped {count('unmapped: ')}")
+    # unmapped-transitive only appears with --resolve-transitive; the tail
+    # stays byte-identical to the direct-deps-only tally when absent.
+    if count("unmapped-transitive"):
+        tally += f", unmapped-transitive {count('unmapped-transitive')}"
+    return tally + ") - see _discovered_dependencies for the complete picture."
 
 
 def generate_config(scan, project_name):
@@ -1245,6 +1455,14 @@ def generate_config(scan, project_name):
                         records.append(_discovered_record(
                             decl, fname, "property", f"duplicate-of: {dup_label}"))
 
+    # --- Transitive resolution availability (--resolve-transitive only) -------
+    for kind, fname, _msg in scan.get("transitive_unavailable") or []:
+        tool = "mvn" if kind == "transitive-maven" else "gradle"
+        records.append(_discovered_record(
+            f"{tool} transitive resolution", fname, kind,
+            f"skipped: transitive resolution unavailable "
+            f"({tool} not on PATH or failed)"))
+
     # --- Java/Maven dependencies ---------------------------------------------
     if scan["java"]:
         added_section = False
@@ -1262,15 +1480,27 @@ def generate_config(scan, project_name):
                 records.append(_discovered_record(
                     decl, fname, kind, f"skipped: {scope} scope"))
                 continue
+            transitive = kind in ("transitive-maven", "transitive-gradle")
             entry, skip_reason = _map_java_dep_with_reason(g, a, v)
             if entry is None:
-                records.append(_discovered_record(
-                    decl, fname, kind, f"skipped: {skip_reason}"))
+                if transitive:
+                    # Products gating: an unmapped transitive must not
+                    # become a maven_central row — records-only keeps the
+                    # runnable set reviewable and the Lambda time budget
+                    # intact (--resolve-transitive docs).
+                    records.append(_discovered_record(
+                        decl, fname, kind,
+                        "unmapped-transitive (tracked in records only)"))
+                else:
+                    records.append(_discovered_record(
+                        decl, fname, kind, f"skipped: {skip_reason}"))
                 continue
             if not added_section:
                 products.append({"_section": "=== Java dependencies ==="})
                 added_section = True
-            comment = f"From {fname} ({g}:{a}:{v})"
+            tool = "mvn" if kind == "transitive-maven" else "gradle"
+            comment = (f"Transitive via {tool} ({g}:{a}:{v})" if transitive
+                       else f"From {fname} ({g}:{a}:{v})")
             added, dup_label = add(entry, comment=comment)
             if added:
                 records.append(_discovered_record(
@@ -1282,29 +1512,42 @@ def generate_config(scan, project_name):
     # --- npm dependencies ----------------------------------------------------
     if scan["node"]:
         added_section = False
-        for name, v, src in scan["node"]:
+        for dep in scan["node"]:
+            name, v, src = dep[0], dep[1], dep[2]
+            # 3-tuples are direct package.json declarations (kind "npm");
+            # --resolve-transitive appends 4-tuples with kind "npm-lock".
+            kind = dep[3] if len(dep) > 3 else "npm"
             decl = f"{name}@{v or ''}"
             fname = os.path.basename(src)
             entry = _map_npm_dep(name, v)
             if entry is None:
+                if kind == "npm-lock":
+                    # Products gating: unmapped lockfile packages must not
+                    # flood _skipped_npm_packages — records-only.
+                    records.append(_discovered_record(
+                        decl, fname, kind,
+                        "unmapped-transitive (tracked in records only)"))
+                    continue
                 # Track unmapped for the user's review
                 if name not in {"react-dom"}:  # known-no-mapping
                     skipped_npm.append({"name": name, "version": v, "source": fname})
                 outcome = ("skipped: vue version spec with no matching published cycle"
                            if name == "vue"
                            else "unmapped: see _skipped_npm_packages")
-                records.append(_discovered_record(decl, fname, "npm", outcome))
+                records.append(_discovered_record(decl, fname, kind, outcome))
                 continue
             if not added_section:
                 products.append({"_section": "=== npm dependencies ==="})
                 added_section = True
-            added, dup_label = add(entry, comment=f"From {fname} ({name}@{v})")
+            comment = (f"Transitive via {fname} ({name}@{v})" if kind == "npm-lock"
+                       else f"From {fname} ({name}@{v})")
+            added, dup_label = add(entry, comment=comment)
             if added:
                 records.append(_discovered_record(
-                    decl, fname, "npm", f"tracked: {entry['label']}"))
+                    decl, fname, kind, f"tracked: {entry['label']}"))
             else:
                 records.append(_discovered_record(
-                    decl, fname, "npm", f"duplicate-of: {dup_label}"))
+                    decl, fname, kind, f"duplicate-of: {dup_label}"))
 
     # --- Infer transitive platforms from detected ones -----------------------
     # Spring Boot's release train pairs each Boot minor with a Spring Security
@@ -1393,6 +1636,14 @@ def main():
     parser.add_argument("folder", help="Folder to scan (recursively) for dependency files")
     parser.add_argument("--name", help="Project name (default: folder basename)", default=None)
     parser.add_argument("--output", help="Output file (default: eol_config.<name>.json)", default=None)
+    parser.add_argument(
+        "--resolve-transitive", action="store_true",
+        help="Also resolve transitive dependencies: mvn dependency:list per "
+             "pom.xml and an eolDumpDeps gradle init-script run per project "
+             "root (both tools must be on PATH; skipped with a warning "
+             "otherwise), plus package-lock.json for npm. Mapped transitives "
+             "may add tracker rows; unmapped transitives are recorded in "
+             "_discovered_dependencies only")
     args = parser.parse_args()
 
     folder = args.folder
@@ -1400,7 +1651,9 @@ def main():
     output = args.output or f"eol_config.{project_name}.json"
 
     print(f"Scanning {folder!r}...")
-    scan = scan_folder(folder)
+    if args.resolve_transitive:
+        print("  Transitive resolution : enabled (--resolve-transitive)")
+    scan = scan_folder(folder, resolve_transitive=args.resolve_transitive)
 
     print(f"  Files scanned        : {len(scan['files'])}")
     print(f"  Java/Maven dep decls : {len(scan['java'])}")
