@@ -145,9 +145,10 @@ def test_dockerfile_multistage_arg_aliases():
 def test_dockerfile_edge_cases():
     records, warnings = _parse_dockerfile("docker", "Dockerfile.edge")
 
-    golang = _one(records, "golang")
-    assert golang["version"] == "1.23.0-alpine"
-    assert golang["found_in"][0]["line"] == 7
+    golang = _records_named(records, "golang")
+    assert [r["version"] for r in golang] == ["1.23", "1.23.0-alpine"]
+    assert golang[0]["digest"] == "sha256:0123456789abcdef"
+    assert golang[1]["found_in"][0]["line"] == 7
 
     # Continuation-joined FROM keeps the first physical line number.
     alpine = _one(records, "alpine")
@@ -158,7 +159,7 @@ def test_dockerfile_edge_cases():
     # scratch and the stage-alias reuse are silent.
     assert not _records_named(records, "scratch")
     assert not _records_named(records, "build")
-    assert len(records) == 2
+    assert len(records) == 5
 
     assert _has_warning(warnings, "latest_tag", "python' has no tag")
     assert _has_warning(warnings, "latest_tag", "python:latest")
@@ -171,6 +172,14 @@ def test_dockerfile_parsing_is_deterministic():
         _parse_dockerfile("docker", "Dockerfile")
     assert _parse_dockerfile("docker", "Dockerfile.edge") == \
         _parse_dockerfile("docker", "Dockerfile.edge")
+
+
+def test_stage_alias_can_match_image_name():
+    records, warnings = docker_parser._parse_dockerfile_text(
+        "FROM alpine:3.20 AS alpine\nFROM alpine\n", "Dockerfile")
+    assert warnings == []
+    assert len(records) == 1
+    assert records[0]["name"] == "alpine"
 
 
 def test_gitlab_top_level_image_and_services():
@@ -369,6 +378,28 @@ def test_gitlab_include_glob_and_circular_and_depth():
         assert _has_warning(warnings, "ci_include_depth", "exceeds")
 
 
+def test_gitlab_globbed_include_cannot_follow_escaping_symlink():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base = Path(tmpdir)
+        root = base / "scan"
+        include_dir = root / ".gitlab" / "ci"
+        include_dir.mkdir(parents=True)
+        outside = base / "outside.yml"
+        outside.write_text("image: python:3.12\n", encoding="utf-8")
+        link = include_dir / "escape.yml"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            return  # Symlink creation may require Windows developer mode.
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            'include:\n  - local: "/.gitlab/ci/*.yml"\n', encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+        assert records == []
+        assert _has_warning(warnings, "ci_include_escape", "outside.yml")
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle mappings
 # ---------------------------------------------------------------------------
@@ -391,9 +422,9 @@ def test_map_image_dep_recognized_images():
         ("node", "20", "nodejs", "20"),
         ("node", "22-bookworm", "nodejs", "22"),
         ("golang", "1.23.0-alpine", "golang", "1.23"),
-        ("dotnet/runtime", "8.0", "dotnet", "8"),
-        ("dotnet/aspnet", "8.0.404", "dotnet", "8"),
-        ("dotnet/sdk", "9.0", "dotnet", "9"),
+        ("mcr.microsoft.com/dotnet/runtime", "8.0", "dotnet", "8"),
+        ("mcr.microsoft.com/dotnet/aspnet", "8.0.404", "dotnet", "8"),
+        ("mcr.microsoft.com/dotnet/sdk", "9.0", "dotnet", "9"),
         ("ubuntu", "24.04", "ubuntu", "24.04"),
         ("ubuntu", "24.04.1", "ubuntu", "24.04"),
         ("debian", "12-slim", "debian", "12"),
@@ -417,6 +448,7 @@ def test_map_image_dep_unmapped():
     assert mappings._map_image_dep("nginx", "stable-alpine") is None
     assert mappings._map_image_dep("python", None) is None
     assert mappings._map_image_dep(None, "1.0") is None
+    assert mappings._map_image_dep("ghcr.io/library/python", "3.12") is None
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +460,7 @@ TESTS = [
     test_dockerfile_multistage_arg_aliases,
     test_dockerfile_edge_cases,
     test_dockerfile_parsing_is_deterministic,
+    test_stage_alias_can_match_image_name,
     test_gitlab_top_level_image_and_services,
     test_gitlab_image_forms_and_variable_resolution,
     test_gitlab_services_forms,
@@ -438,6 +471,7 @@ TESTS = [
     test_gitlab_anchors_and_tabs,
     test_gitlab_include_guards,
     test_gitlab_include_glob_and_circular_and_depth,
+    test_gitlab_globbed_include_cannot_follow_escaping_symlink,
     test_image_cycle_helpers,
     test_map_image_dep_recognized_images,
     test_map_image_dep_unmapped,

@@ -83,12 +83,34 @@ def split_image_reference(ref):
     return ref, None, digest
 
 
-def normalize_image_name(repo):
-    """Strip a known registry host and the official 'library/' prefix.
+def image_identity(repo):
+    """Return (identity, registry, repository) without losing provenance.
 
-    Unknown registry hosts stay in the name; they are part of the
-    image's identity on no public registry.
+    Only Docker Hub official-library images receive the familiar short
+    identity (``python``). Other registries remain part of the identity so a
+    lookalike such as ``ghcr.io/library/python`` cannot inherit the official
+    Python lifecycle mapping.
     """
+    parts = repo.split("/")
+    first = parts[0].lower()
+    explicit_registry = (len(parts) > 1 and
+                         ("." in first or ":" in first or first == "localhost"))
+    if explicit_registry:
+        registry = first
+        repository = "/".join(parts[1:])
+    else:
+        registry = "docker.io"
+        repository = repo if len(parts) > 1 else f"library/{repo}"
+    if registry in ("docker.io", "index.docker.io", "registry-1.docker.io") \
+            and repository.startswith("library/"):
+        identity = repository[len("library/"):]
+    else:
+        identity = f"{registry}/{repository}"
+    return identity, registry, repository
+
+
+def normalize_image_name(repo):
+    """Human-friendly repository name; full identity is stored separately."""
     parts = repo.split("/")
     if len(parts) > 1 and parts[0].lower() in KNOWN_REGISTRY_HOSTS:
         parts = parts[1:]
@@ -116,7 +138,19 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
                 f"with no resolvable value"))
             return
     repo, tag, digest = split_image_reference(resolved)
+    identity, registry, repository = image_identity(repo)
     name = normalize_image_name(repo)
+    record = new_record("container", name, version=tag, kind="image")
+    record.update({
+        "image_reference": resolved,
+        "image_identity": identity,
+        "registry": registry,
+        "repository": repository,
+        "tag": tag,
+        "digest": digest,
+    })
+    add_location(record, rel_path, manifest, line=line, locator=locator)
+    records.append(record)
     if digest:
         warnings.append(new_warning(
             "digest_reference", rel_path,
@@ -130,9 +164,6 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
             "latest_tag", rel_path,
             f"line {line}: image {resolved!r} {why}"))
         return
-    record = new_record("container", name, version=tag, kind="image")
-    add_location(record, rel_path, manifest, line=line, locator=locator)
-    records.append(record)
 
 
 def parse_dockerfile_records(path, rel_path):
@@ -200,16 +231,18 @@ def _parse_dockerfile_text(text, rel_path):
         if as_match:
             alias = as_match.group(1)
             rest = rest[:as_match.start()].strip()
-        if alias:
-            aliases.add(alias)
         if not rest:
             continue
 
         repo, _, _ = split_image_reference(rest)
-        if repo in aliases or repo.lower() == "scratch":
+        if repo.lower() in aliases or repo.lower() == "scratch":
+            if alias:
+                aliases.add(alias.lower())
             continue
         emit_image_record(
             rest, rel_path, "dockerfile", start_line, f"FROM {rest}",
             records, warnings, values=args)
+        if alias:
+            aliases.add(alias.lower())
 
     return records, warnings

@@ -1,4 +1,4 @@
-"""Human-readable inventory rendering: Markdown and CSV.
+"""Human-readable inventory rendering: Markdown, CSV, and HTML.
 
 `build_inventory_view` flattens a generated config into a plain view
 dict: product rows (label, version, provider, inferred state,
@@ -12,6 +12,7 @@ inputs.
 """
 
 import csv
+import html
 import io
 import re
 from datetime import date
@@ -123,6 +124,11 @@ def _product_row(entry):
     """One normalized tracked/container row from a product entry."""
     provenance = _norm_locations(entry.get("_found_in"))
     ecosystem = _infer_ecosystem(entry, provenance)
+    details = []
+    for key in ("policy_note", "note", "image_reference", "registry",
+                "repository", "tag", "digest", "reference_url"):
+        if entry.get(key) not in (None, ""):
+            details.append(f"{key}={entry[key]}")
     return {
         "label": _product_label(entry),
         "version": entry.get("version"),
@@ -131,11 +137,16 @@ def _product_row(entry):
         "ecosystem": ecosystem,
         "container": ecosystem == "container",
         "provenance": provenance,
+        "details": "; ".join(details),
     }
 
 
 def _unmapped_row(item):
     """One normalized unmapped row from an `_inventory.unmapped` item."""
+    details = []
+    for key in ("image_reference", "registry", "repository", "tag", "digest"):
+        if item.get(key) not in (None, ""):
+            details.append(f"{key}={item[key]}")
     return {
         "ecosystem": item.get("ecosystem", "other"),
         "name": str(item.get("name", "")),
@@ -143,6 +154,7 @@ def _unmapped_row(item):
         "version_spec": item.get("version_spec"),
         "reason": str(item.get("reason", "")),
         "found_in": _norm_locations(item.get("found_in")),
+        "details": "; ".join(details),
     }
 
 
@@ -166,6 +178,7 @@ def _legacy_unmapped_rows(config, known_names):
                       "generation time)",
             "found_in": [{"path": str(skipped.get("source", "")),
                           "manifest": "npm"}],
+            "details": "",
         })
     return rows
 
@@ -193,6 +206,9 @@ def build_inventory_view(config, project_name=None):
     containers = []
     for entry in config.get("products") or []:
         if not isinstance(entry, dict) or entry.get("_section"):
+            continue
+        if entry.get("source") == "manual" \
+                and "untracked" in _comment_text(entry) and inventory:
             continue
         row = _product_row(entry)
         (containers if row["container"] else products).append(row)
@@ -326,15 +342,16 @@ def render_markdown(view):
     for ecosystem, provider in sorted(groups):
         lines.append(f"### {ecosystem} / {provider}")
         lines.append("")
-        lines.append("| Product | Version | Source | Found in | Inferred |")
-        lines.append("| --- | --- | --- | --- | --- |")
+        lines.append("| Product | Version | Source | Found in | Details | Inferred |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
         for row in groups[(ecosystem, provider)]:
             found = format_found_in(row["provenance"]) or "not recorded"
-            lines.append("| {} | {} | {} | {} | {} |".format(
+            lines.append("| {} | {} | {} | {} | {} | {} |".format(
                 _md_cell(row["label"]),
                 _md_cell(row["version"] or ""),
                 _md_cell(row["provider"]),
                 _md_cell(found),
+                _md_cell(row["details"]),
                 "yes" if row["inferred"] else "",
             ))
         lines.append("")
@@ -345,29 +362,31 @@ def render_markdown(view):
         if containers:
             lines.append("### Tracked images")
             lines.append("")
-            lines.append("| Image | Tag | Source | Found in |")
-            lines.append("| --- | --- | --- | --- |")
+            lines.append("| Image | Tag | Source | Found in | Details |")
+            lines.append("| --- | --- | --- | --- | --- |")
             for row in containers:
-                lines.append("| {} | {} | {} | {} |".format(
+                lines.append("| {} | {} | {} | {} | {} |".format(
                     _md_cell(row["label"]),
                     _md_cell(row["version"] or ""),
                     _md_cell(row["provider"]),
                     _md_cell(format_found_in(row["provenance"])
                              or "not recorded"),
+                    _md_cell(row["details"]),
                 ))
             lines.append("")
         if container_unmapped:
             lines.append("### Unmapped images")
             lines.append("")
-            lines.append("| Image | Version | Reason | Found in |")
-            lines.append("| --- | --- | --- | --- |")
+            lines.append("| Image | Version | Reason | Found in | Details |")
+            lines.append("| --- | --- | --- | --- | --- |")
             for item in container_unmapped:
-                lines.append("| {} | {} | {} | {} |".format(
+                lines.append("| {} | {} | {} | {} | {} |".format(
                     _md_cell(item["name"]),
                     _md_cell(item["version"] or item["version_spec"] or ""),
                     _md_cell(item["reason"]),
                     _md_cell(format_found_in(item["found_in"])
                              or "not recorded"),
+                    _md_cell(item["details"]),
                 ))
             lines.append("")
 
@@ -450,7 +469,7 @@ def render_csv(view):
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     writer.writerow(["kind", "ecosystem", "provider", "name", "version",
-                     "review_state", "inferred", "found_in"])
+                     "review_state", "inferred", "found_in", "details"])
     for row in tracked + containers:
         writer.writerow([
             "product",
@@ -461,6 +480,7 @@ def render_csv(view):
             "inferred" if row["inferred"] else "tracked",
             "yes" if row["inferred"] else "",
             format_found_in(row["provenance"]) or "not recorded",
+            row["details"],
         ])
     for item in view["unmapped"]:
         writer.writerow([
@@ -472,8 +492,52 @@ def render_csv(view):
             "unmapped",
             "",
             format_found_in(item["found_in"]) or "not recorded",
+            "; ".join(part for part in (item["reason"], item["details"])
+                      if part),
         ])
     return buf.getvalue()
+
+
+def render_html(view):
+    """Render a deterministic, self-contained and escaped HTML inventory."""
+    esc = lambda value: html.escape(str(value if value is not None else ""))
+    rows = []
+    for row in _sorted_rows(view["products"] + view["containers"]):
+        rows.append(
+            "<tr><td>tracked</td><td>{}</td><td>{}</td><td>{}</td>"
+            "<td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                esc(row["ecosystem"]), esc(row["label"]),
+                esc(row["version"]), esc(row["provider"]),
+                esc(format_found_in(row["provenance"]) or "not recorded"),
+                esc(row["details"])))
+    for item in view["unmapped"]:
+        rows.append(
+            "<tr class=\"untracked\"><td>untracked</td><td>{}</td>"
+            "<td>{}</td><td>{}</td><td>manual</td><td>{}</td><td>{}</td></tr>".format(
+                esc(item["ecosystem"]), esc(item["name"]),
+                esc(item.get("version") or item.get("version_spec")),
+                esc(format_found_in(item["found_in"]) or "not recorded"),
+                esc("; ".join(part for part in
+                    (item["reason"], item["details"]) if part))))
+    warning_items = "".join(
+        "<li><strong>{}</strong> {}: {}</li>".format(
+            esc(w["category"]), esc(w["path"]), esc(w["message"]))
+        for w in view["warnings"])
+    return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dependency inventory: {project}</title>
+<style>body{{font:16px system-ui,sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#18212b}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd5df;padding:.5rem;text-align:left;vertical-align:top}}th{{background:#eef3f7}}.untracked{{background:#fff4d6}}code{{word-break:break-all}}</style></head>
+<body><h1>Dependency inventory: {project}</h1>
+<p>Scan date: {date} | Files scanned: {files} | Warnings: {warning_count}</p>
+<table><thead><tr><th>State</th><th>Ecosystem</th><th>Product</th><th>Version</th><th>Provider</th><th>Found in</th><th>Details</th></tr></thead><tbody>{rows}</tbody></table>
+<h2>Warnings</h2><ul>{warnings}</ul>
+<h2>Manual review checklist</h2><ul><li>Review every untracked row and warning.</li><li>Confirm inferred lifecycle mappings before deployment.</li></ul>
+</body></html>
+""".format(project=esc(view["meta"]["project"]),
+           date=esc(view["meta"]["scan_date"]),
+           files=esc(view["meta"]["files_scanned"]),
+           warning_count=esc(view["meta"]["warning_count"]),
+           rows="".join(rows), warnings=warning_items)
 
 
 # ---------------------------------------------------------------------------

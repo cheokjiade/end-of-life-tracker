@@ -807,8 +807,60 @@ def _emit_poetry_dependency(name, value, scope, locator, records, warnings,
 
 
 # ---------------------------------------------------------------------------
-# Pipfile.lock
+# Pipfile and Pipfile.lock
 # ---------------------------------------------------------------------------
+
+def parse_pipfile_records(path, rel_path):
+    """Parse direct Pipfile declarations, enriched by a sibling lock file."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        tables = _MiniToml(text).parse()
+    except (OSError, _UnsupportedToml) as exc:
+        message = exc.message if isinstance(exc, _UnsupportedToml) else str(exc)
+        return [], [new_warning("parse_error", rel_path,
+                                f"Pipfile parse error: {message}")]
+
+    lock = {}
+    lock_path = Path(path).with_name("Pipfile.lock")
+    if lock_path.is_file():
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            lock = {}
+
+    records, warnings = [], []
+    for section, lock_section, scope in (
+            ("packages", "default", "runtime"),
+            ("dev-packages", "develop", "dev")):
+        packages = tables.get(section)
+        if not isinstance(packages, dict):
+            continue
+        locked = lock.get(lock_section) if isinstance(lock, dict) else {}
+        for name in sorted(packages):
+            value = packages[name]
+            spec = value if isinstance(value, str) else (
+                value.get("version") if isinstance(value, dict) else None)
+            version = None
+            if isinstance(spec, str):
+                candidate = spec[2:] if spec.startswith("==") else spec
+                if _is_version(candidate):
+                    version = candidate
+            lock_info = locked.get(name) if isinstance(locked, dict) else None
+            lock_version = lock_info.get("version") if isinstance(lock_info, dict) else None
+            if version is None and isinstance(lock_version, str) \
+                    and lock_version.startswith("=="):
+                version = lock_version[2:]
+            record = new_record("python", name, version=version,
+                                version_spec=None if version else spec,
+                                scope=scope, direct=True)
+            add_location(record, rel_path, "pipfile",
+                         locator=f"{section}.{name}")
+            if version is None:
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"{name} has no exact direct Pipfile version; not guessed"))
+            records.append(record)
+    return records, warnings
 
 def parse_pipfile_lock_records(path, rel_path):
     """Parse Pipfile.lock; returns (records, warnings).

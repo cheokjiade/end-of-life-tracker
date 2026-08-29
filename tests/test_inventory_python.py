@@ -389,6 +389,30 @@ def test_pipfile_lock_malformed_json():
     assert warnings[0]["category"] == "parse_error"
 
 
+def test_pipfile_direct_dependencies_resolve_from_lock():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pipfile = root / "Pipfile"
+        pipfile.write_text(
+            '[packages]\nrequests = "*"\nflask = "==3.0.3"\n'
+            '[dev-packages]\npytest = "*"\n', encoding="utf-8")
+        (root / "Pipfile.lock").write_text(json.dumps({
+            "default": {"requests": {"version": "==2.32.3"},
+                        "flask": {"version": "==3.0.3"}},
+            "develop": {"pytest": {"version": "==8.2.0"}},
+        }), encoding="utf-8")
+        records, warnings = python_parser.parse_pipfile_records(
+            pipfile, "Pipfile")
+    assert warnings == []
+    assert [(r["name"], r["version"], r["scope"], r["direct"])
+            for r in records] == [
+        ("flask", "3.0.3", "runtime", True),
+        ("requests", "2.32.3", "runtime", True),
+        ("pytest", "8.2.0", "dev", True),
+    ]
+    assert records[0]["found_in"][0]["locator"] == "packages.flask"
+
+
 # ---------------------------------------------------------------------------
 # Runtime evidence
 # ---------------------------------------------------------------------------
@@ -473,6 +497,7 @@ TESTS = [
     test_pipfile_lock_versions_and_provenance,
     test_pipfile_lock_unpinned_entries_warn,
     test_pipfile_lock_malformed_json,
+    test_pipfile_direct_dependencies_resolve_from_lock,
     test_python_version_file,
     test_runtime_txt_file,
     test_parsing_is_deterministic,

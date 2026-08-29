@@ -15,15 +15,18 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+_HELPER_DIR = ROOT / "helper_scripts"
+sys.path.insert(0, str(_HELPER_DIR))
 
-import generate_config as gc
+import eol_inventory as gc
+from generate_config import main as generate_config_main
 from eoltracker.parsers import PROVIDERS
 
-ROOT = Path(__file__).resolve().parents[1]
 FIX = ROOT / "tests" / "fixtures" / "inventory_mixed"
 
 
@@ -56,7 +59,7 @@ def test_scan_mixed_fixture_discovers_all_ecosystems():
     for r in scan["records"]:
         by_eco.setdefault(r["ecosystem"], []).append(r)
     assert sorted((eco, len(recs)) for eco, recs in by_eco.items()) == [
-        ("container", 5), ("dotnet", 6), ("go", 4), ("node", 2),
+        ("container", 6), ("dotnet", 6), ("go", 4), ("node", 2),
         ("python", 6),
     ]
     # gitlab include-following and direct discovery both parse deploy.yml;
@@ -77,6 +80,7 @@ def test_config_sections_and_products():
         "=== Go dependencies ===",
         "=== .NET dependencies ===",
         "=== Container images ===",
+        "=== Needs Manual Review ===",
     ]
     prods = _products(config)
     # python runtime evidence and the matching Dockerfile image merge into
@@ -151,19 +155,25 @@ def test_config_unmapped_items_and_summary():
     config = gc.generate_config(gc.scan_folder(str(FIX)), "mixed")
     unmapped = config["_inventory"]["unmapped"]
     assert [(u["ecosystem"], u["name"], u["reason"]) for u in unmapped] == [
+        ("container", "nginx", "image tag provides no endoflife.date cycle"),
         ("dotnet", "dotnet",
          "no endoflife.date cycle for this target framework"),
         ("python", "numpy", "no exact version (~=1.26.0)"),
         ("python", "python", "no exact version (>=3.11)"),
     ]
-    netfx = unmapped[0]
+    nginx = unmapped[0]
+    assert nginx["image_reference"] == "nginx:latest"
+    assert nginx["registry"] == "docker.io"
+    netfx = unmapped[1]
     assert netfx["version"] == "4.8"
     assert netfx["found_in"] == [{
         "path": "legacy/Legacy.csproj", "manifest": "dotnet",
         "locator": "TargetFramework"}]
-    # the latest-tag image is a warning, never a product or unmapped row
-    assert not any(u["name"] == "nginx" for u in unmapped)
+    # the latest-tag image remains explicit as an untracked manual row.
     assert not any(p.get("product") == "nginx" for p in _products(config))
+    manual = [p for p in _products(config) if p.get("source") == "manual"]
+    assert len(manual) == 4
+    assert next(p for p in manual if p["label"] == "nginx")["tag"] == "latest"
     assert config["_inventory"]["warnings"] == [
         {"category": "latest_tag", "path": "Dockerfile.edge",
          "message": "line 1: image 'nginx:latest' uses the latest tag"},
@@ -171,8 +181,9 @@ def test_config_unmapped_items_and_summary():
          "message": "numpy has no exact version (~=1.26.0); not guessed"},
     ]
     assert config["_inventory"]["summary"] == {
-        "files": 13, "records": 23, "products": 14, "unmapped": 3,
+        "files": 13, "records": 24, "products": 14, "unmapped": 4,
         "warnings": 2, "indirect": 1}
+    assert config["_inventory"]["include_transitive"] is False
     assert not config.get("_skipped_npm_packages")
 
 
@@ -187,7 +198,8 @@ def test_config_is_deterministic():
 def test_cli_output_only_names_registered_sources():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "out.json"
-        rc = gc.main([str(FIX), "--output", str(out), "--force"])
+        rc = generate_config_main(
+            [str(FIX), "--output", str(out), "--replace"])
         assert rc == 0
         raw = out.read_bytes()
         assert all(b < 128 for b in raw)  # generated configs stay ASCII
@@ -199,12 +211,15 @@ def test_cli_output_only_names_registered_sources():
             assert source in PROVIDERS, (source, entry)
             if source == "endoflife_date":
                 assert entry.get("product") and entry.get("version"), entry
-            else:
+            elif source != "manual":
                 key = "module" if source == "go_proxy" else "package"
                 assert entry.get(key) and entry.get("version"), entry
+            else:
+                assert entry.get("label") and entry.get("_found_in"), entry
         inv = config["_inventory"]
         assert inv["summary"]["products"] == len(
-            [p for p in config["products"] if not p.get("_section")])
+            [p for p in config["products"]
+             if not p.get("_section") and p.get("source") != "manual"])
         # the config is directly consumable: the runtime ignores the
         # underscore metadata, so simulate dispatching one registry entry
         from datetime import date

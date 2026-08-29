@@ -98,6 +98,10 @@ def _unmapped_item(record, reason):
     if record["version_spec"]:
         item["version_spec"] = record["version_spec"]
     item["found_in"] = sort_locations(record["found_in"])
+    for key in ("image_reference", "image_identity", "registry",
+                "repository", "tag", "digest", "scope", "direct"):
+        if record.get(key) is not None:
+            item[key] = record[key]
     return item
 
 
@@ -140,13 +144,14 @@ def _dotnet_entry(record):
 
 def _container_entry(record):
     """(entry, skip_reason) for a container image record."""
-    entry = _map_image_dep(record["name"], record["version"])
+    identity = record.get("image_identity", record["name"])
+    entry = _map_image_dep(identity, record["version"])
     if entry is not None:
         return entry, None
-    return None, _image_skip_reason(record["name"], record["version"])
+    return None, _image_skip_reason(identity, record["version"])
 
 
-def generate_config(scan, project_name):
+def generate_config(scan, project_name, include_transitive=False):
     """Build an EOL config dict (with `_inventory`) from a scan result."""
     products = []
     seen_keys = {}          # entry key -> product entry (for _found_in merge)
@@ -270,7 +275,8 @@ def generate_config(scan, project_name):
     if python_records:
         added_section = False
         for record in python_records:
-            if record["kind"] == "dependency" and not record["direct"]:
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
                 continue
             entry, reason = _python_entry(record)
             if entry is None:
@@ -289,7 +295,8 @@ def generate_config(scan, project_name):
     if go_records:
         added_section = False
         for record in go_records:
-            if record["kind"] == "dependency" and not record["direct"]:
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
                 continue
             entry, reason = _go_entry(record)
             if entry is None:
@@ -331,6 +338,10 @@ def generate_config(scan, project_name):
                 added_section = True
             raw = record["found_in"][0].get(
                 "locator", f"{record['name']}:{record['version']}")
+            for key in ("image_reference", "image_identity", "registry",
+                        "repository", "tag", "digest"):
+                if record.get(key) is not None:
+                    entry[key] = record[key]
             add(entry, record, comment=comment_for(record, raw))
 
     # --- Infer transitive platforms from detected ones -----------------------
@@ -360,13 +371,9 @@ def generate_config(scan, project_name):
                 seen_keys[key] = inferred_entry
                 products.append(inferred_entry)
 
-    # A section header whose section lost every product to cross-ecosystem
-    # provenance merges would render as an empty divider: drop those.
-    products = _drop_empty_sections(products)
-
-    # --- Build config --------------------------------------------------------
-    real_products = [p for p in products if not p.get("_section")]
-    warnings = sort_warnings(scan["warnings"])
+    # Unmapped evidence is also represented as manual tracker rows. The manual
+    # provider reports these as `untracked`, so the normal EOL report never
+    # silently drops inventory that lacks a live data source.
     unmapped = sorted(
         unmapped_by_key.values(),
         key=lambda item: (
@@ -375,13 +382,42 @@ def generate_config(scan, project_name):
             item["found_in"][0]["path"] if item["found_in"] else "",
         ),
     )
+    if unmapped:
+        products.append({"_section": "=== Needs Manual Review ==="})
+        for item in unmapped:
+            version = item.get("version") or item.get("version_spec")
+            entry = {
+                "source": "manual",
+                "label": item["name"],
+                "version": version,
+                "note": item["reason"],
+                "_found_in": item["found_in"],
+                "_comment": f"Untracked {item['ecosystem']} inventory item",
+            }
+            for key in ("image_reference", "image_identity", "registry",
+                        "repository", "tag", "digest", "scope", "direct"):
+                if item.get(key) is not None:
+                    entry[key] = item[key]
+            products.append(entry)
 
+    # A section header whose section lost every product to cross-ecosystem
+    # provenance merges would render as an empty divider: drop those.
+    products = _drop_empty_sections(products)
+
+    # --- Build config --------------------------------------------------------
+    real_products = [p for p in products if not p.get("_section")]
+    tracked_products = [p for p in real_products
+                        if not (p.get("source") == "manual"
+                                and p.get("_comment", "").startswith(
+                                    "Untracked "))]
+    warnings = sort_warnings(scan["warnings"])
     config = {
         "_comment": [
             f"EOL config for the {project_name} project.",
             f"Auto-generated by generate_config.py on {date.today()}.",
             f"Files scanned: {len(scan['files'])}.",
-            f"Tracker entries: {len(real_products)}.",
+            f"Tracked entries: {len(tracked_products)}; "
+            f"manual-review entries: {len(real_products) - len(tracked_products)}.",
             "",
             "REVIEW THIS FILE BEFORE DEPLOYING — auto-mapping is best-effort.",
             "Common things to check:",
@@ -409,10 +445,11 @@ def generate_config(scan, project_name):
         "generator_version": GENERATOR_VERSION,
         "scan_root": scan["root_name"],
         "manifests": list(scan["files"]),
+        "include_transitive": bool(include_transitive),
         "summary": {
             "files": len(scan["files"]),
             "records": len(records),
-            "products": len(real_products),
+            "products": len(tracked_products),
             "unmapped": len(unmapped),
             "warnings": len(warnings),
             "indirect": sum(1 for r in records if r["direct"] is False),

@@ -35,6 +35,7 @@ from .parsers.dotnet import (
     parse_global_json_records,
 )
 from .parsers.python import (
+    parse_pipfile_records,
     parse_pipfile_lock_records,
     parse_pyproject_records,
     parse_python_version_records,
@@ -63,6 +64,8 @@ def _parse_python_manifest(path, rel_path):
         return parse_pyproject_records(path, rel_path)
     if name == "pipfile.lock":
         return parse_pipfile_lock_records(path, rel_path)
+    if name == "pipfile":
+        return parse_pipfile_records(path, rel_path)
     if name == ".python-version":
         return parse_python_version_records(path, rel_path)
     if name == "runtime.txt":
@@ -92,7 +95,7 @@ _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False),
     ("gradle", ("*.gradle.kts", "build.gradle"), parse_gradle_records, False),
     ("npm", ("package.json",), parse_package_json_records, False),
-    ("python", ("requirements*.txt", "pyproject.toml", "Pipfile.lock",
+    ("python", ("requirements*.txt", "pyproject.toml", "Pipfile", "Pipfile.lock",
                 ".python-version", "runtime.txt"),
      _parse_python_manifest, False),
     ("go", ("go.mod",), parse_go_mod_records, False),

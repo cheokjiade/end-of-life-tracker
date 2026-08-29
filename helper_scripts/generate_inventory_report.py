@@ -1,6 +1,7 @@
 """Render a human-readable dependency inventory from an EOL tracker config.
 
-Reads an eol_config JSON file locally (no network) and writes a Markdown
+Reads an eol_config JSON file locally (no network) and writes Markdown,
+CSV, and self-contained HTML inventories by default. Reports include
 inventory report: tracked products grouped by ecosystem and provider,
 container images, unmapped dependencies, warnings, summary counts, and a
 manual-review checklist. Optional CSV output supports spreadsheet
@@ -25,7 +26,8 @@ import tempfile
 
 from eol_inventory import report_writer
 
-_CSV_UNSET = object()   # distinguishes "--csv absent" from a bare "--csv"
+_CSV_UNSET = object()
+_HTML_UNSET = object()
 
 
 def _atomic_write_text(text, output):
@@ -59,8 +61,15 @@ def main(argv=None):
                         default=None)
     parser.add_argument("--csv", nargs="?", const=None, default=_CSV_UNSET,
                         metavar="FILE",
-                        help="Also write CSV (default file: "
+                        help="CSV output path (default file: "
                              "reports/inventory/<slug>-inventory.csv)")
+    parser.add_argument("--html", nargs="?", const=None, default=_HTML_UNSET,
+                        metavar="FILE", help="HTML output path (default file: "
+                        "reports/inventory/<slug>-inventory.html)")
+    parser.add_argument("--no-csv", action="store_true",
+                        help="Do not generate CSV")
+    parser.add_argument("--no-html", action="store_true",
+                        help="Do not generate HTML")
     parser.add_argument("--force", action="store_true",
                         help="Overwrite existing output files without asking")
     args = parser.parse_args(argv)
@@ -69,15 +78,24 @@ def main(argv=None):
     slug = report_writer.project_slug(config_path)
     output = args.output or os.path.join(
         "reports", "inventory", f"{slug}-inventory.md")
-    if args.csv is _CSV_UNSET:
+    if args.no_csv:
         csv_output = None
-    elif args.csv is None:
+    elif args.csv is _CSV_UNSET or args.csv is None:
         csv_output = os.path.join(
             "reports", "inventory", f"{slug}-inventory.csv")
     else:
         csv_output = args.csv
 
-    targets = [output] + ([csv_output] if csv_output else [])
+    if args.no_html:
+        html_output = None
+    elif args.html is _HTML_UNSET or args.html is None:
+        html_output = os.path.join(
+            "reports", "inventory", f"{slug}-inventory.html")
+    else:
+        html_output = args.html
+
+    targets = [output]
+    targets.extend(t for t in (csv_output, html_output) if t)
     existing = [t for t in targets if os.path.exists(t)]
     if existing and not args.force:
         for target in existing:
@@ -108,10 +126,14 @@ def main(argv=None):
     _atomic_write_text(report_writer.render_markdown(view), output)
     if csv_output:
         _atomic_write_text(report_writer.render_csv(view), csv_output)
+    if html_output:
+        _atomic_write_text(report_writer.render_html(view), html_output)
 
     print(f"\nWrote {output}")
     if csv_output:
         print(f"Wrote {csv_output}")
+    if html_output:
+        print(f"Wrote {html_output}")
     print("\nReview the 'Manual review checklist' section of the report "
           "before relying on this inventory.")
     return 0

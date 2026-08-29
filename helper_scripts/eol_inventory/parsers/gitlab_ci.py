@@ -96,7 +96,12 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset()):
                           records, warnings, values=values)
 
     def follow_resolved(resolved, line):
-        resolved = Path(resolved)
+        try:
+            resolved = Path(resolved).resolve()
+        except OSError as exc:
+            warn("ci_include_missing",
+                 f"line {line}: local include could not be resolved: {exc}")
+            return
         try:
             inc_rel = resolved.relative_to(Path(root).resolve()).as_posix()
         except ValueError:

@@ -128,6 +128,8 @@ def parse_package_json_records(path, rel_path):
         records.append(record)
 
     for section, scope in (("dependencies", "runtime"),
+                           ("optionalDependencies", "optional"),
+                           ("peerDependencies", "peer"),
                            ("devDependencies", "dev")):
         for name, value in (data.get(section) or {}).items():
             spec = str(value).strip()

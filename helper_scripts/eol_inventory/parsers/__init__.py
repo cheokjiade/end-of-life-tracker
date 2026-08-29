@@ -16,6 +16,7 @@ from .go import parse_go_mod_records
 from .java import parse_gradle_records, parse_pom_records
 from .node import parse_package_json_records
 from .python import (
+    parse_pipfile_records,
     parse_pipfile_lock_records,
     parse_pyproject_records,
     parse_python_version_records,
@@ -29,6 +30,7 @@ __all__ = [
     "parse_package_json_records",
     "parse_requirements_records",
     "parse_pyproject_records",
+    "parse_pipfile_records",
     "parse_pipfile_lock_records",
     "parse_python_version_records",
     "parse_runtime_txt_records",

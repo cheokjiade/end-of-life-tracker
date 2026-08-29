@@ -13,6 +13,7 @@ Run from the repository root:  python tests/test_inventory_node.py
 import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -213,6 +214,20 @@ def test_parsing_is_deterministic():
     assert first == second
 
 
+def test_optional_and_peer_dependencies_are_direct_inventory():
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "package.json"
+        path.write_text(json.dumps({
+            "optionalDependencies": {"fsevents": "2.3.3"},
+            "peerDependencies": {"react": "18.2.0"},
+        }), encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            path, "package.json")
+    assert warnings == []
+    assert [(r["name"], r["scope"], r["direct"]) for r in records] == [
+        ("fsevents", "optional", True), ("react", "peer", True)]
+
+
 # ---------------------------------------------------------------------------
 
 TESTS = [
@@ -226,6 +241,7 @@ TESTS = [
     test_malformed_lock_warns_and_preserves_range,
     test_invalid_manifest_parse_error,
     test_parsing_is_deterministic,
+    test_optional_and_peer_dependencies_are_direct_inventory,
 ]
 
 

@@ -35,6 +35,7 @@ from eol_inventory.report_writer import (
     format_found_in,
     project_slug,
     render_csv,
+    render_html,
     render_markdown,
 )
 
@@ -274,9 +275,9 @@ def test_markdown_new_model():
     assert "### java / maven_central" in md
     assert "pom.xml:18; service/pom.xml:9" in md
     assert ("| commons-lang3 3.14.0 | 3.14.0 | maven_central "
-            "| not recorded |  |") in md
+            "| not recorded |  |  |") in md
     assert ("| Spring Security 6.3 | 6.3 | endoflife_date "
-            "| not recorded | yes |") in md
+            "| not recorded |  | yes |") in md
     assert md.count("| yes |") == 1
     unmapped = _section(md, "Unmapped and unresolved dependencies")
     assert ("| java | com.example:inflight | 2.0.0-SNAPSHOT | SNAPSHOT build "
@@ -316,10 +317,11 @@ def test_markdown_container_separation():
     assert "## Container images" in md
     images = _section(md, "Container images")
     assert "### Tracked images" in images
-    assert "| Python 3.12 | 3.12 | endoflife_date | Dockerfile:1 |" in images
+    assert ("| Python 3.12 | 3.12 | endoflife_date | Dockerfile:1 |  |"
+            in images)
     assert "### Unmapped images" in images
     assert ("| registry.example/app | 1.0 | no lifecycle mapping for this "
-            "image | .gitlab-ci.yml:4 |") in images
+            "image | .gitlab-ci.yml:4 |  |") in images
     tracked = _section(md, "Tracked products")
     assert "None." in tracked
     assert "Python 3.12" not in tracked
@@ -342,7 +344,7 @@ def test_markdown_legacy_config():
     assert "- Files scanned: not recorded" in md
     assert "- Warnings: 0" in md
     assert "### other / endoflife_date" in md
-    assert "| React 18 | 18 | endoflife_date | not recorded |  |" in md
+    assert "| React 18 | 18 | endoflife_date | not recorded |  |  |" in md
     unmapped = _section(md, "Unmapped and unresolved dependencies")
     assert ("| node | axios | 1.6.8 | legacy: skipped npm package (no "
             "mapping at generation time) | package.json |") in unmapped
@@ -368,7 +370,7 @@ def test_csv_output():
     text = render_csv(view)
     lines = text.splitlines()
     assert lines[0] == ("kind,ecosystem,provider,name,version,review_state,"
-                        "inferred,found_in")
+                        "inferred,found_in,details")
     rows = list(csv.reader(io.StringIO(text)))
     assert len(rows) == 1 + len(view["products"]) + len(view["unmapped"])
     products = [r for r in rows[1:] if r[0] == "product"]
@@ -378,7 +380,7 @@ def test_csv_output():
     assert all(r[2] == "" and r[5] == "unmapped" for r in unmapped)
     assert products[0] == [
         "product", "java", "maven_central", "Netty Codec HTTP 4.1.111.Final",
-        "4.1.111.Final", "tracked", "", "pom.xml:18; service/pom.xml:9"]
+        "4.1.111.Final", "tracked", "", "pom.xml:18; service/pom.xml:9", ""]
     assert render_csv(view) == render_csv(view)
 
 
@@ -388,6 +390,17 @@ def test_csv_quotes_special_values():
     view = build_inventory_view(config, project_name="demo")
     rows = list(csv.reader(io.StringIO(render_csv(view))))
     assert rows[1][3] == 'Netty "HTTP", full'
+
+
+def test_html_output_is_escaped_and_has_review_details():
+    config = _new_model_config()
+    config["products"][1]["label"] = "Netty <unsafe>"
+    rendered = render_html(build_inventory_view(config, project_name="demo"))
+    assert rendered.startswith("<!doctype html>")
+    assert "Netty &lt;unsafe&gt;" in rendered
+    assert "Netty <unsafe>" not in rendered
+    assert "SNAPSHOT build resolves on no public registry" in rendered
+    assert "Manual review checklist" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -426,12 +439,13 @@ def test_cli_render_refuse_and_force():
         cfg = Path(td) / "eol_config.demo.json"
         cfg.write_text(json.dumps(_new_model_config()), encoding="utf-8")
         out = Path(td) / "report.md"
-        assert _cli.main([str(cfg), "--output", str(out)]) == 0
+        base = [str(cfg), "--output", str(out), "--no-csv", "--no-html"]
+        assert _cli.main(base) == 0
         first = out.read_text(encoding="utf-8")
         assert first.startswith("# Dependency inventory: demo")
-        assert _cli.main([str(cfg), "--output", str(out)]) == 2
+        assert _cli.main(base) == 2
         assert out.read_text(encoding="utf-8") == first
-        assert _cli.main([str(cfg), "--output", str(out), "--force"]) == 0
+        assert _cli.main(base + ["--force"]) == 0
         assert out.read_text(encoding="utf-8") == first
         assert list(Path(td).glob(".inventory_report-*")) == []
 
@@ -447,17 +461,19 @@ def test_cli_csv_with_and_without_value():
             md = Path("reports") / "inventory" / "demo-inventory.md"
             csv_path = Path("reports") / "inventory" / "demo-inventory.csv"
             assert md.is_file() and csv_path.is_file()
+            assert (Path("reports") / "inventory" /
+                    "demo-inventory.html").is_file()
             assert md.read_text(encoding="utf-8").startswith(
                 "# Dependency inventory: demo")
             assert csv_path.read_text(encoding="utf-8").startswith(
                 "kind,ecosystem,provider,name,version,review_state,"
-                "inferred,found_in")
+                "inferred,found_in,details")
         finally:
             os.chdir(old_cwd)
         with tempfile.TemporaryDirectory() as td2:
             explicit = Path(td2) / "rows.csv"
             rc = _cli.main([str(cfg), "--output", str(Path(td2) / "r.md"),
-                            "--csv", str(explicit), "--force"])
+                            "--csv", str(explicit), "--no-html", "--force"])
             assert rc == 0 and explicit.is_file()
             header = list(csv.reader(
                 io.StringIO(explicit.read_text(encoding="utf-8"))))[0]
@@ -486,6 +502,7 @@ TESTS = [
     test_markdown_deterministic,
     test_csv_output,
     test_csv_quotes_special_values,
+    test_html_output_is_escaped_and_has_review_details,
     test_project_slug,
     test_cli_render_refuse_and_force,
     test_cli_csv_with_and_without_value,

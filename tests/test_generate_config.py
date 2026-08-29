@@ -12,16 +12,22 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]
+_HELPER_DIR = ROOT / "helper_scripts"
+sys.path.insert(0, str(_HELPER_DIR))
 
-import generate_config as gc
+import eol_inventory as gc
+from generate_config import (
+    _merge_existing_config,
+    main as generate_config_main,
+)
 import eol_inventory.discovery as discovery_module
 from eol_inventory.models import add_location, new_record
 
-ROOT = Path(__file__).resolve().parents[1]
 FIX = ROOT / "tests" / "fixtures" / "generate_config"
 
 
@@ -442,6 +448,7 @@ def test_generate_config_maven_multi():
         "=== Platforms (from POM properties) ===",
         "=== Java dependencies ===",
         "=== Inferred from Spring Boot release train ===",
+        "=== Needs Manual Review ===",
     ]
     assert config["alert_thresholds_days"] == [30, 60, 90]
     assert config["notify_when"] == "always"
@@ -751,10 +758,10 @@ def test_warnings_sorted_and_deduplicated():
 # ---------------------------------------------------------------------------
 
 def _run_cli(argv):
-    return gc.main(argv)
+    return generate_config_main(argv)
 
 
-def test_cli_refuses_overwrite_without_force():
+def test_cli_refuses_overwrite_without_replace():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "package.json").write_text(json.dumps(
@@ -764,7 +771,7 @@ def test_cli_refuses_overwrite_without_force():
         rc = _run_cli([str(root), "--output", str(out)])
         assert rc == 2
         assert out.read_text() == "keep"
-        rc = _run_cli([str(root), "--output", str(out), "--force"])
+        rc = _run_cli([str(root), "--output", str(out), "--replace"])
         assert rc == 0
         config = json.loads(out.read_text())
         assert config["_inventory"]["scan_root"] == root.name
@@ -778,12 +785,12 @@ def test_cli_output_is_ascii_and_deterministic():
         (root / "package.json").write_text(json.dumps(
             {"name": "app", "dependencies": {"caf\u00e9-pkg": "^1.0.0"}}))
         out = root / "out.json"
-        rc = _run_cli([str(root), "--output", str(out), "--force"])
+        rc = _run_cli([str(root), "--output", str(out), "--replace"])
         assert rc == 0
         raw = out.read_bytes()
         assert all(b < 128 for b in raw)
         first = raw
-        _run_cli([str(root), "--output", str(out), "--force"])
+        _run_cli([str(root), "--output", str(out), "--replace"])
         assert out.read_bytes() == first
         config = json.loads(raw.decode("ascii"))
         assert config["_inventory"]["unmapped"][0]["name"] == "café-pkg"
@@ -794,11 +801,11 @@ def test_cli_strict_fails_on_warnings():
         root = Path(td)
         (root / "pom.xml").write_text("<project><unclosed>")
         out = root / "out.json"
-        rc = _run_cli([str(root), "--output", str(out), "--force"])
+        rc = _run_cli([str(root), "--output", str(out), "--replace"])
         assert rc == 0
-        rc = _run_cli([str(root), "--output", str(out), "--force", "--strict"])
+        rc = _run_cli([str(root), "--output", str(out), "--replace", "--strict"])
         assert rc == 1
-        rc = _run_cli([str(root), "--output", str(out), "--force", "--strict",
+        rc = _run_cli([str(root), "--output", str(out), "--replace", "--strict",
                        "--exclude", "pom.xml"])
         assert rc == 0
 
@@ -816,6 +823,65 @@ def test_runtime_ignores_found_in():
     assert result is not None
     assert "_found_in" not in result
     assert result["label"] == "Offline Check"
+
+
+def test_transitive_dependencies_are_opt_in():
+    py_dep = new_record("python", "urllib3", version="2.2.2",
+                        direct=False)
+    add_location(py_dep, "Pipfile.lock", "pipfile_lock",
+                 locator="default.urllib3")
+    go_dep = new_record("go", "golang.org/x/text", version="0.18.0",
+                        direct=False)
+    add_location(go_dep, "go.mod", "go", locator="require:golang.org/x/text")
+    scan = {"root_name": "transitive", "files": ["Pipfile.lock", "go.mod"],
+            "records": [py_dep, go_dep], "warnings": []}
+    direct = gc.generate_config(scan, "transitive")
+    assert _products(direct) == []
+    assert direct["_inventory"]["include_transitive"] is False
+    complete = gc.generate_config(scan, "transitive", include_transitive=True)
+    assert [(p["source"], p.get("package") or p.get("module"))
+            for p in _products(complete)] == [
+        ("pypi_registry", "urllib3"), ("go_proxy", "golang.org/x/text")]
+    assert complete["_inventory"]["include_transitive"] is True
+
+
+def test_update_merge_preserves_curation_and_unobserved_entries():
+    existing = {
+        "notify_when": "problems_only",
+        "products": [
+            {"_section": "=== Curated ==="},
+            {"source": "pypi_registry", "package": "requests",
+             "version": "2.31.0", "label": "Requests",
+             "policy_note": "Keep this note", "reference_url": "https://example.test"},
+            {"source": "manual", "label": "Internal appliance",
+             "version": "7", "note": "Owner maintained"},
+        ],
+        "_inventory": {"generator_version": "old"},
+    }
+    generated = {
+        "notify_when": "always",
+        "products": [
+            {"_section": "=== Python dependencies ==="},
+            {"source": "pypi_registry", "package": "requests",
+             "version": "2.32.3", "label": "requests 2.32.3",
+             "_found_in": [{"path": "requirements.txt", "manifest": "python"}]},
+            {"source": "pypi_registry", "package": "flask",
+             "version": "3.0.3", "label": "flask 3.0.3"},
+        ],
+        "_inventory": {"generator_version": "new"},
+    }
+    merged = _merge_existing_config(existing, generated)
+    assert merged["notify_when"] == "problems_only"
+    requests = next(p for p in merged["products"] if p.get("package") == "requests")
+    assert requests["version"] == "2.32.3"
+    assert requests["policy_note"] == "Keep this note"
+    assert requests["reference_url"] == "https://example.test"
+    assert any(p.get("label") == "Internal appliance" for p in merged["products"])
+    assert any(p.get("_section") == "=== Newly Discovered ==="
+               for p in merged["products"])
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 1, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 1}
 
 
 TESTS = [
@@ -846,10 +912,12 @@ TESTS = [
     test_generate_config_entry_key_dedup_merges_provenance,
     test_generate_config_deterministic,
     test_warnings_sorted_and_deduplicated,
-    test_cli_refuses_overwrite_without_force,
+    test_cli_refuses_overwrite_without_replace,
     test_cli_output_is_ascii_and_deterministic,
     test_cli_strict_fails_on_warnings,
     test_runtime_ignores_found_in,
+    test_transitive_dependencies_are_opt_in,
+    test_update_merge_preserves_curation_and_unobserved_entries,
 ]
 
 
