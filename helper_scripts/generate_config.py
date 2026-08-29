@@ -1,16 +1,22 @@
 """Generate an EOL tracker config and inventory from a project's dependencies.
 
-Scans a folder for Maven, Gradle, and Node manifests; emits an
+Scans a folder for Java, Node, Python, Go, and .NET manifests plus
+Dockerfile and GitLab CI image declarations; emits an
 eol_config.<project>.json file suitable for use with lambda_function.py.
 Every mapped product carries structured provenance (`_found_in`), and the
 config carries an ignored `_inventory` object with warnings and unmapped
 items. Standard-library only; project files are never executed.
 
 Supported formats:
-    pom.xml             — Maven (multi-module)
-    *.gradle.kts        — Gradle Kotlin DSL
-    build.gradle        — Gradle Groovy DSL (same regex patterns)
-    package.json        — Node (node_modules and other build dirs excluded)
+    pom.xml, *.gradle.kts, build.gradle   — Maven / Gradle (multi-module)
+    package.json                          — Node (lock files resolve ranges)
+    requirements*.txt, pyproject.toml,
+    Pipfile.lock, .python-version, runtime.txt — Python
+    go.mod                                — Go
+    *.csproj, *.fsproj, *.vbproj,
+    Directory.Packages.props, global.json — .NET
+    Dockerfile, Dockerfile.*, *.Dockerfile — container images
+    .gitlab-ci.yml/.yaml, .gitlab/*.yml   — GitLab CI images
 
 Usage:
     python generate_config.py <folder> [--name PROJECT] [--output FILE]

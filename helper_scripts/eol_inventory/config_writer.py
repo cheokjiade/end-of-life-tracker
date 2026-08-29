@@ -5,22 +5,60 @@ product additionally carries an ignored `_found_in` array (the Lambda
 runtime, like for `_comment`, never reads underscore-prefixed keys), and
 the config gains an ignored `_inventory` object with schema metadata,
 structured warnings, and unmapped records.
+
+Mapping policy per ecosystem (see the plan:
+docs/plans/2026-08-28-project-dependency-inventory.md):
+
+    java       lifecycle mappings, Maven Central fallback (unchanged)
+    node       lifecycle mappings, then npm_registry for remaining exact
+               direct packages; unresolved specs stay in the inventory
+    python     pypi_registry for exact pins; runtime evidence maps to the
+               endoflife.date python product; unpinned/URL/local/path
+               specs stay in the inventory
+    go         go_proxy for exact direct requires; the go/toolchain
+               runtime maps to golang; indirect requires are excluded
+               from products and counted in the summary
+    dotnet     nuget_registry for exact direct packages; TargetFramework
+               and SDK evidence maps to the endoflife.date dotnet product
+               (never for .NET Framework/netstandard, which have no cycle)
+    container  registry-normalized image mappings; unknown images and
+               cycle-less tags stay in the inventory
+
+The generator never creates an entry naming an unregistered provider:
+every source used here is registered in eoltracker/parsers/.
 """
 
 import os
 from datetime import date
 
 from .mappings import (
+    _NPM_MAPPINGS,
     _POM_PROPERTY_MAPPINGS,
+    _dotnet_runtime_cycle,
     _eol_entry,
+    _go_proxy_entry,
+    _image_skip_reason,
+    _major,
+    _major_minor,
+    _map_image_dep,
     _map_java_dep,
     _map_npm_dep,
+    _npm_registry_entry,
+    _nuget_entry,
+    _pypi_entry,
 )
 from .models import (
     GENERATOR_VERSION,
     SCHEMA_VERSION,
     sort_locations,
     sort_warnings,
+)
+
+# npm names whose lifecycle handler deliberately returns None (tracked
+# via another package, e.g. react-dom via react): skipped silently, not
+# unmapped and not sent to npm_registry.
+_NPM_SILENT_SKIPS = frozenset(
+    name for name, handler in _NPM_MAPPINGS.items() if handler("0") is None
 )
 
 
@@ -30,6 +68,8 @@ def _entry_key(entry):
     return (
         src,
         entry.get("product"),
+        entry.get("package"),
+        entry.get("module"),
         entry.get("group"), entry.get("artifact"),
         entry.get("sdk"),   entry.get("major"),
         entry.get("version"),
@@ -38,6 +78,13 @@ def _entry_key(entry):
 
 def _basename(rel_path):
     return rel_path.rsplit("/", 1)[-1] if rel_path else rel_path
+
+
+def _spec_reason(record):
+    """Inventory reason for a record without an exact version."""
+    if record["version_spec"]:
+        return f"no exact version ({record['version_spec']})"
+    return "no version declared"
 
 
 def _unmapped_item(record, reason):
@@ -54,11 +101,56 @@ def _unmapped_item(record, reason):
     return item
 
 
+def _python_entry(record):
+    """(entry, skip_reason) for a python record; both None never happens."""
+    if record["version"]:
+        if record["kind"] == "runtime":
+            cycle = _major_minor(record["version"])
+            return _eol_entry("python", cycle, f"Python {cycle}"), None
+        return _pypi_entry(record["name"], record["version"]), None
+    return None, _spec_reason(record)
+
+
+def _go_entry(record):
+    """(entry, skip_reason) for a go record; skip_reason None = project."""
+    if record["kind"] == "module":
+        return None, None  # the project itself, not a dependency
+    if record["version"]:
+        if record["kind"] == "runtime":
+            cycle = _major_minor(record["version"])
+            return _eol_entry("golang", cycle, f"Go {cycle}"), None
+        return _go_proxy_entry(record["name"], record["version"]), None
+    return None, _spec_reason(record)
+
+
+def _dotnet_entry(record):
+    """(entry, skip_reason) for a dotnet record."""
+    if record["kind"] == "runtime":
+        cycle = _dotnet_runtime_cycle(record["version"])
+        if cycle:
+            return _eol_entry("dotnet", cycle, f".NET {cycle}"), None
+        # .NET Framework / netstandard have no endoflife.date cycle.
+        reason = ("no endoflife.date cycle for this target framework"
+                  if record["version"] else _spec_reason(record))
+        return None, reason
+    if record["version"]:
+        return _nuget_entry(record["name"], record["version"]), None
+    return None, _spec_reason(record)
+
+
+def _container_entry(record):
+    """(entry, skip_reason) for a container image record."""
+    entry = _map_image_dep(record["name"], record["version"])
+    if entry is not None:
+        return entry, None
+    return None, _image_skip_reason(record["name"], record["version"])
+
+
 def generate_config(scan, project_name):
     """Build an EOL config dict (with `_inventory`) from a scan result."""
     products = []
     seen_keys = {}          # entry key -> product entry (for _found_in merge)
-    unmapped = []
+    unmapped_by_key = {}    # identity key -> unmapped item (merged provenance)
     skipped_npm = []        # legacy mirror of node unmapped items
 
     def add(entry, record, comment=None):
@@ -82,6 +174,21 @@ def generate_config(scan, project_name):
         seen_keys[key] = entry
         products.append(entry)
         return True
+
+    def add_unmapped(record, reason):
+        """Record one unmapped item; identical items merge provenance."""
+        item = _unmapped_item(record, reason)
+        key = (item["ecosystem"], item["name"], item.get("version"),
+               item.get("version_spec"), item["reason"])
+        existing = unmapped_by_key.get(key)
+        if existing is None:
+            unmapped_by_key[key] = item
+            return
+        merged = list(existing["found_in"])
+        for loc in item["found_in"]:
+            if loc not in merged:
+                merged.append(loc)
+        existing["found_in"] = sort_locations(merged)
 
     def comment_for(record, raw):
         return f"From {_basename(record['found_in'][0]['path'])} ({raw})"
@@ -109,14 +216,12 @@ def generate_config(scan, project_name):
         added_section = False
         for record in java_records:
             if record["version"] is None:
-                unmapped.append(_unmapped_item(
-                    record, "unresolved version expression"))
+                add_unmapped(record, "unresolved version expression")
                 continue
             entry = _map_java_dep(record["group"], record["artifact"],
                                   record["version"])
             if entry is None:
-                unmapped.append(_unmapped_item(
-                    record, _java_skip_reason(record)))
+                add_unmapped(record, _java_skip_reason(record))
                 continue
             if not added_section:
                 products.append({"_section": "=== Java dependencies ==="})
@@ -132,23 +237,100 @@ def generate_config(scan, project_name):
             entry = None
             if record["version"]:
                 entry = _map_npm_dep(record["name"], record["version"])
+                if entry is None and record["name"] not in _NPM_SILENT_SKIPS:
+                    # Remaining exact direct packages get release-recency
+                    # tracking from the npm registry.
+                    entry = _npm_registry_entry(record["name"],
+                                                record["version"])
             if entry is None:
-                # react-dom is tracked via 'react'; other unmapped packages
-                # land in the inventory (and the legacy skipped list).
-                if record["name"] not in {"react-dom"}:
-                    reason = ("no version declared" if not record["version"]
-                              else "no endoflife.date mapping for this package")
-                    unmapped.append(_unmapped_item(record, reason))
-                    skipped_npm.append({
-                        "name": record["name"],
-                        "version": record["version"],
-                        "source": _basename(record["found_in"][0]["path"]),
-                    })
+                if record["name"] in _NPM_SILENT_SKIPS:
+                    continue
+                # Only versionless non-exact records remain unmapped:
+                # versioned packages map to a lifecycle product or to
+                # npm_registry above. They also join the legacy skipped
+                # list for older report consumers.
+                add_unmapped(record, "no version declared")
+                skipped_npm.append({
+                    "name": record["name"],
+                    "version": record["version"],
+                    "source": _basename(record["found_in"][0]["path"]),
+                })
                 continue
             if not added_section:
                 products.append({"_section": "=== npm dependencies ==="})
                 added_section = True
             raw = f"{record['name']}@{record['version']}"
+            add(entry, record, comment=comment_for(record, raw))
+
+    # --- Python dependencies -------------------------------------------------
+    # Pipfile.lock records carry direct=False (the lock is a resolved
+    # graph, mirroring go's indirect requires): excluded from products
+    # and counted in the summary like all lock-graph records.
+    python_records = [r for r in records if r["ecosystem"] == "python"]
+    if python_records:
+        added_section = False
+        for record in python_records:
+            if record["kind"] == "dependency" and not record["direct"]:
+                continue
+            entry, reason = _python_entry(record)
+            if entry is None:
+                add_unmapped(record, reason)
+                continue
+            if not added_section:
+                products.append({"_section": "=== Python dependencies ==="})
+                added_section = True
+            raw = f"{record['name']}=={record['version']}"
+            add(entry, record, comment=comment_for(record, raw))
+
+    # --- Go dependencies ------------------------------------------------------
+    # Indirect requires (direct=False, from `// indirect` lines and module
+    # replacements) are excluded from products and counted in the summary.
+    go_records = [r for r in records if r["ecosystem"] == "go"]
+    if go_records:
+        added_section = False
+        for record in go_records:
+            if record["kind"] == "dependency" and not record["direct"]:
+                continue
+            entry, reason = _go_entry(record)
+            if entry is None:
+                if reason is not None:
+                    add_unmapped(record, reason)
+                continue
+            if not added_section:
+                products.append({"_section": "=== Go dependencies ==="})
+                added_section = True
+            raw = f"{record['name']} v{record['version']}"
+            add(entry, record, comment=comment_for(record, raw))
+
+    # --- .NET dependencies ----------------------------------------------------
+    dotnet_records = [r for r in records if r["ecosystem"] == "dotnet"]
+    if dotnet_records:
+        added_section = False
+        for record in dotnet_records:
+            entry, reason = _dotnet_entry(record)
+            if entry is None:
+                add_unmapped(record, reason)
+                continue
+            if not added_section:
+                products.append({"_section": "=== .NET dependencies ==="})
+                added_section = True
+            raw = f"{record['name']} {record['version']}"
+            add(entry, record, comment=comment_for(record, raw))
+
+    # --- Container images -----------------------------------------------------
+    container_records = [r for r in records if r["ecosystem"] == "container"]
+    if container_records:
+        added_section = False
+        for record in container_records:
+            entry, reason = _container_entry(record)
+            if entry is None:
+                add_unmapped(record, reason)
+                continue
+            if not added_section:
+                products.append({"_section": "=== Container images ==="})
+                added_section = True
+            raw = record["found_in"][0].get(
+                "locator", f"{record['name']}:{record['version']}")
             add(entry, record, comment=comment_for(record, raw))
 
     # --- Infer transitive platforms from detected ones -----------------------
@@ -178,14 +360,21 @@ def generate_config(scan, project_name):
                 seen_keys[key] = inferred_entry
                 products.append(inferred_entry)
 
+    # A section header whose section lost every product to cross-ecosystem
+    # provenance merges would render as an empty divider: drop those.
+    products = _drop_empty_sections(products)
+
     # --- Build config --------------------------------------------------------
     real_products = [p for p in products if not p.get("_section")]
     warnings = sort_warnings(scan["warnings"])
-    unmapped.sort(key=lambda item: (
-        item["ecosystem"], item["name"],
-        item.get("version", ""), item.get("version_spec", ""),
-        item["found_in"][0]["path"] if item["found_in"] else "",
-    ))
+    unmapped = sorted(
+        unmapped_by_key.values(),
+        key=lambda item: (
+            item["ecosystem"], item["name"],
+            item.get("version", ""), item.get("version_spec", ""),
+            item["found_in"][0]["path"] if item["found_in"] else "",
+        ),
+    )
 
     config = {
         "_comment": [
@@ -226,12 +415,25 @@ def generate_config(scan, project_name):
             "products": len(real_products),
             "unmapped": len(unmapped),
             "warnings": len(warnings),
+            "indirect": sum(1 for r in records if r["direct"] is False),
         },
         "warnings": warnings,
         "unmapped": unmapped,
     }
 
     return config
+
+
+def _drop_empty_sections(products):
+    """Remove _section dividers with no products after them (deterministic)."""
+    kept = []
+    for idx, item in enumerate(products):
+        if item.get("_section"):
+            nxt = products[idx + 1] if idx + 1 < len(products) else None
+            if nxt is None or nxt.get("_section"):
+                continue
+        kept.append(item)
+    return kept
 
 
 def _java_skip_reason(record):

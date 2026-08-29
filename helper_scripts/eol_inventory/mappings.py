@@ -291,3 +291,63 @@ def _map_image_dep(name, tag):
         return None
     handler = _IMAGE_MAPPINGS.get((name or "").lower())
     return handler(tag) if handler else None
+
+
+def _image_skip_reason(name, tag):
+    """Why a container record has no tracker entry (ASCII, stable)."""
+    if (name or "").lower() not in _IMAGE_MAPPINGS:
+        return "no endoflife.date mapping for this image"
+    return "image tag provides no endoflife.date cycle"
+
+
+# ---------------------------------------------------------------------------
+# Registry-provider entry builders
+#
+# Entry shapes follow the provider contracts in eoltracker/parsers/ (see
+# docs/plans/2026-08-28-project-dependency-inventory.md): release recency
+# and unsafe-release signals, never EOL dates.
+# ---------------------------------------------------------------------------
+
+def _pypi_entry(package, version):
+    return {"source": "pypi_registry", "package": package,
+            "version": version, "label": f"{package} {version}"}
+
+
+def _npm_registry_entry(package, version):
+    return {"source": "npm_registry", "package": package,
+            "version": version, "label": f"{package} {version}"}
+
+
+def _nuget_entry(package, version):
+    return {"source": "nuget_registry", "package": package,
+            "version": version, "label": f"{package} {version}"}
+
+
+def _go_proxy_entry(module, version):
+    """Go module proxy entry; proxy versions carry the leading 'v'."""
+    v = str(version)
+    if not v.startswith("v"):
+        v = f"v{v}"
+    return {"source": "go_proxy", "module": module,
+            "version": v, "label": f"{module} {v}"}
+
+
+def _dotnet_runtime_cycle(version):
+    """endoflife.date dotnet cycle for a runtime/SDK version, or None.
+
+    .NET 5 and newer use major-only cycles ("9.0.100" -> "9"); the
+    netcoreapp 3.x cycles are major.minor ("3.1.400" -> "3.1"). .NET
+    Framework and netstandard targets have no endoflife.date cycle and
+    yield None, so they stay in the inventory instead of becoming a
+    broken tracker row. Cycles verified against the live API on
+    2026-08-29.
+    """
+    if not version:
+        return None
+    parts = str(version).split(".")
+    major_minor = ".".join(parts[:2])
+    if major_minor in ("3.1", "3.0"):
+        return major_minor
+    if parts[0].isdigit() and int(parts[0]) >= 5:
+        return parts[0]
+    return None

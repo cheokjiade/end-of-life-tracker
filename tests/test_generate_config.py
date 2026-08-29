@@ -525,7 +525,7 @@ def test_generate_config_maven_multi():
     assert inv["manifests"] == ["pom.xml", "service/pom.xml"]
     assert inv["warnings"] == []
     assert inv["summary"] == {"files": 2, "records": 15, "products": 10,
-                              "unmapped": 3, "warnings": 0}
+                              "unmapped": 3, "warnings": 0, "indirect": 0}
     # unmapped items keep their declaration sites and explicit reasons
     assert [(u["name"], u["reason"]) for u in inv["unmapped"]] == [
         ("com.example:inflight",
@@ -603,28 +603,35 @@ def test_generate_config_node():
              "locator": "dependencies.react"}]}]
     ts = [p for p in prods if p.get("product") == "typescript"]
     assert ts and ts[0]["version"] == "5.4"
-    # legacy skipped list is preserved with manifest basename provenance
-    assert config["_skipped_npm_packages"] == [
-        {"name": "axios", "version": "1.6.8", "source": "package.json"},
-        {"name": "left-pad", "version": "1.3.0", "source": "package.json"},
-        {"name": "@company/tokens", "version": "1.0.0", "source": "package.json"},
-    ]
+    # remaining exact direct packages become npm_registry release-recency
+    # rows (lock-resolved or pinned), with merged declaration provenance
+    axios = [p for p in prods if p.get("package") == "axios"]
+    assert axios == [{
+        "source": "npm_registry", "package": "axios", "version": "1.6.8",
+        "label": "axios 1.6.8",
+        "_comment": "From package.json (axios@1.6.8)",
+        "_found_in": [
+            {"path": "package-lock.json", "manifest": "npm",
+             "locator": "lock:axios"},
+            {"path": "package.json", "manifest": "npm",
+             "locator": "dependencies.axios"}]}]
+    left_pad = [p for p in prods if p.get("package") == "left-pad"]
+    assert left_pad == [{
+        "source": "npm_registry", "package": "left-pad", "version": "1.3.0",
+        "label": "left-pad 1.3.0",
+        "_comment": "From package.json (left-pad@1.3.0)",
+        "_found_in": [{"path": "package.json", "manifest": "npm",
+                       "locator": "dependencies.left-pad"}]}]
+    tokens = [p for p in prods if p.get("package") == "@company/tokens"]
+    assert tokens and tokens[0]["version"] == "1.0.0"
     # react-dom is deliberately not reported (tracked via 'react')
-    assert all(s["name"] != "react-dom"
-               for s in config["_skipped_npm_packages"])
-    # the same items appear in the structured inventory, sorted by name
-    unmapped = config["_inventory"]["unmapped"]
-    assert [u["name"] for u in unmapped] == [
-        "@company/tokens", "axios", "left-pad"]
-    assert all(u["ecosystem"] == "node" for u in unmapped)
-    assert unmapped[0]["found_in"] == [
-        {"path": "package-lock.json", "manifest": "npm",
-         "locator": "lock:@company/tokens"},
-        {"path": "package.json", "manifest": "npm",
-         "locator": "devDependencies.@company/tokens"}]
-    assert unmapped[1]["version"] == "1.6.8"
+    assert all(p.get("package") != "react-dom" for p in prods)
+    # every exact package is tracked now: nothing skipped or unmapped
+    assert not config.get("_skipped_npm_packages")
+    assert config["_inventory"]["unmapped"] == []
     assert config["_inventory"]["summary"] == {
-        "files": 1, "records": 7, "products": 3, "unmapped": 3, "warnings": 0}
+        "files": 1, "records": 7, "products": 6, "unmapped": 0,
+        "warnings": 0, "indirect": 0}
 
 
 def test_generate_config_mixed():
@@ -652,18 +659,23 @@ def test_generate_config_mixed():
     assert node_entry and node_entry[0]["version"] == "20"
     sec = [p for p in prods if p.get("product") == "spring-security"]
     assert sec and sec[0]["version"] == "6.3"
-    assert config["_skipped_npm_packages"] == [
-        {"name": "axios", "version": "1.7.2", "source": "package.json"}]
+    # axios has no lifecycle mapping but is lock-resolved to an exact
+    # version, so it becomes an npm_registry release-recency row
+    axios = [p for p in prods if p.get("package") == "axios"]
+    assert axios == [{
+        "source": "npm_registry", "package": "axios", "version": "1.7.2",
+        "label": "axios 1.7.2",
+        "_comment": "From package.json (axios@1.7.2)",
+        "_found_in": [
+            {"path": "package-lock.json", "manifest": "npm",
+             "locator": "lock:axios"},
+            {"path": "package.json", "manifest": "npm",
+             "locator": "dependencies.axios"}]}]
+    assert not config.get("_skipped_npm_packages")
     inv = config["_inventory"]
-    assert inv["summary"] == {"files": 3, "records": 10, "products": 9,
-                              "unmapped": 1, "warnings": 0}
-    assert inv["unmapped"][0]["name"] == "axios"
-    assert inv["unmapped"][0]["found_in"] == [
-        {"path": "package-lock.json", "manifest": "npm",
-         "locator": "lock:axios"},
-        {"path": "package.json", "manifest": "npm",
-         "locator": "dependencies.axios"},
-    ]
+    assert inv["unmapped"] == []
+    assert inv["summary"] == {"files": 3, "records": 10, "products": 10,
+                              "unmapped": 0, "warnings": 0, "indirect": 0}
 
 
 def test_generate_config_no_inference_when_security_explicit():
