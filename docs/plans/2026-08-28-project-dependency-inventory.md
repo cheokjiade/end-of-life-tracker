@@ -23,6 +23,51 @@ release recency and explicit unsafe signals such as yanked, deprecated,
 unlisted, or retracted releases when the authoritative registry exposes them.
 They do not claim that package release age is an EOL date.
 
+## Implementation status
+
+Complete as of commit `fedb34e` (branch `codex/dependency-inventory`, 2026-08).
+All sixteen incremental steps landed, including the documentation step this
+repository's guides were updated for. The completion criteria were met: five
+ecosystems plus both container sources scan deterministically, every discovered
+item carries structured provenance, the three registry providers operate
+through their official public APIs, reports and wrappers work on Windows
+PowerShell and Bash, network-free tests pass, live smoke checks were recorded,
+and the canonical `.agents/skills/` layout is respected.
+
+Decisions finalized during implementation (this document reflects the shipped
+behaviour):
+
+- **Untracked visibility:** the planned user-selectable `--include-untracked`
+  mode was replaced by unconditional visibility. Unmapped inventory items
+  always become explicit `manual` tracker rows (no EOL date, rendered
+  UNTRACKED) under a `=== Needs Manual Review ===` section, in addition to
+  their `_inventory.unmapped` records, so reports never silently drop
+  inventory. The default therefore needs no flag.
+- **Update versus replace:** the planned `--baseline` mode became the mutually
+  exclusive `--update` / `--replace` pair. `--update` merges scan evidence
+  into an existing config preserving curation fields (`_comment`,
+  `policy_note`, `note`, `reference_url`, `eol_date`, `latest`) and sections;
+  entries the scan did not observe are retained and counted as
+  `retained_not_observed` in `_inventory.update_summary`; additions join a
+  `=== Newly Discovered ===` section. `--replace` is the only wholesale
+  overwrite path.
+- **CLI surface:** `generate_config.py` ships `<folder>`, `--name`, `--output`,
+  repeatable `--exclude`, `--update | --replace`, `--include-transitive`, and
+  `--strict`. The planned `--dry-run`, `--offline`, and `--force` options were
+  not needed (atomic writes plus explicit overwrite refusal cover the same
+  risks); the report CLI gained `--csv [FILE]`, `--html [FILE]`, `--no-csv`,
+  `--no-html`, and `--force`.
+- **Report formats:** Markdown, CSV, and HTML are all written by default under
+  `reports/inventory/` (the plan anticipated optional CSV only); `--no-csv` /
+  `--no-html` suppress formats. Legacy configs and `_skipped_npm_packages`
+  remain reportable.
+- **Metadata:** per-entry provenance lands in `_found_in`; the ignored
+  `_inventory` object carries schema version 1, generator version, scan root,
+  manifest list, `include_transitive`, summary counts (files, records,
+  products, unmapped, warnings, indirect), structured warnings, and unmapped
+  items. The root `generate_config.py` is removed and Terraform excludes
+  `helper_scripts/` from the Lambda archive.
+
 ## Issue review
 
 ### Issue #1: local helper scripts
@@ -100,9 +145,10 @@ views:
   declarations, and warnings ignored by the runtime.
 
 The generator must never create an entry naming a provider that is not
-registered. A user-selectable `--include-untracked` mode may turn otherwise
-unmapped inventory items into `manual` product rows without an EOL date, but
-the default keeps operational reports focused on monitorable items.
+registered. Unmapped inventory items also become explicit `manual` product
+rows without an EOL date (rendered UNTRACKED), so reports never silently drop
+inventory; `_inventory.summary` separates tracked products from
+manual-review entries.
 
 ### Direct dependencies
 
@@ -361,9 +407,10 @@ reported. Do not infer EOL from module age.
 ## Human-readable inventory report
 
 `generate_inventory_report.py` reads a config locally and performs no network
-calls. Markdown is the default output, written under
-`reports/inventory/<project>-inventory.md`. Optional CSV output supports teams
-that want to filter or import the inventory into a spreadsheet.
+calls. Markdown, CSV, and self-contained HTML are all written by default
+under `reports/inventory/<project>-inventory.{md,csv,html}` (`--no-csv` /
+`--no-html` suppress a format; `--force` allows overwriting existing
+reports).
 
 The report contains:
 
@@ -391,7 +438,7 @@ With no arguments, `generate_config.sh` and `generate_config.ps1`:
 3. suggest a safe project slug and output filename;
 4. show what file types will be scanned;
 5. refuse to overwrite an existing file without confirmation;
-6. generate the config and Markdown inventory;
+6. generate the config and the Markdown/CSV/HTML inventory;
 7. summarize mapped, unmapped, and warning counts; and
 8. offer the exact command for the live tracker smoke run.
 
@@ -400,10 +447,11 @@ existing root runner. All wrappers resolve the repository root from their own
 location, preserve quoted paths containing spaces, return Python's exit code,
 and provide copy-paste recovery instructions when Python is missing.
 
-Useful non-interactive options include `--output`, `--force`, `--dry-run`,
-`--strict`, `--offline`, `--exclude`, `--include-untracked`, and `--baseline`.
-Baseline mode reports added, removed, version-changed, and unchanged items but
-does not overwrite the curated baseline.
+Useful non-interactive options include `--output`, `--name`, `--exclude`,
+`--update`, `--replace`, `--include-transitive`, and `--strict`. `--update`
+merges scan evidence into the existing curated config and records added,
+version-changed, unchanged, and retained-not-observed counts in
+`_inventory.update_summary`; it never deletes curated entries.
 
 ## Safety and compatibility
 

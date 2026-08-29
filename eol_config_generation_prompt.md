@@ -33,7 +33,7 @@ lowercase slug from the inputs and tell me what you chose).
 
 The tracker reads the `products` array and checks each entry against a **data source
 ("provider")**. Each entry names its provider via a `source` field; if `source` is
-omitted it defaults to `endoflife_date`. The eight providers and what they need:
+omitted it defaults to `endoflife_date`. The eleven providers and what they need:
 
 | `source`            | Backing data                                              | Reports            |
 |---------------------|-----------------------------------------------------------|--------------------|
@@ -43,8 +43,17 @@ omitted it defaults to `endoflife_date`. The eight providers and what they need:
 | `jackson_lifecycle` | FasterXML Jackson "Releases" wiki (open/closed branches)  | maintained or not  |
 | `maven_central`     | Maven Central repository metadata/POMs (release recency)  | staleness, not EOL |
 | `npm_registry`      | npm registry `registry.npmjs.org` (recency + deprecation) | staleness; deprecated = alert |
+| `pypi_registry`     | PyPI JSON API `pypi.org/pypi` (recency + yanked status)   | staleness; yanked = alert |
+| `nuget_registry`    | NuGet V3 API (recency + deprecation/unlisted state)       | staleness; deprecated/unlisted = alert |
+| `go_proxy`          | Go module proxy `proxy.golang.org` (recency + retraction) | staleness; retracted = alert |
 | `manual`            | none — hand-entered or untrackable component              | manual EOL date, else UNTRACKED |
 | `tyk_lifecycle`     | Tyk docs LTS support table (parsed from the tyk-docs repo) | Tyk LTS EOL date   |
+
+> If your input is a **clean dependency-manifest tree** rather than a messy
+> document, the repository's deterministic scanner already does this mapping:
+> `python helper_scripts/generate_config.py <folder> --name <project>` (Java,
+> Node, Python, Go, .NET, Dockerfile, GitLab CI images). Use the prompt below
+> for documents, mixed inputs, and judgment-heavy curation.
 
 **Critical mechanic — exact cycle matching.** For `endoflife_date`, the tracker finds
 the entry whose `cycle` field *exactly equals* your `version` string. There is no fuzzy
@@ -202,7 +211,48 @@ the in-use version `deprecated`.
   (NOT `@tanstack/react-query`), React Table v7 → `react-table`. Verify the
   `package`+`version` resolves at `https://registry.npmjs.org/<package>`.
 
-**7. `manual`.** For components with **no automated source anywhere**: commercial
+**7. `pypi_registry`.** For Python packages that publish no EOL dates. Reports
+when the pinned release was uploaded, the latest stable release and its date,
+and per-release yanked status/reason — a **yanked** pinned release is an
+alert. Release age is informational; no EOL is claimed.
+
+```json
+{"source": "pypi_registry", "package": "requests", "version": "2.32.4",
+ "label": "requests 2.32.4"}
+```
+
+- `package`: the exact PyPI project name (normalized case-insensitively).
+- Only for **exact pins** — unpinned requirements (`requests` or
+  `requests>=2`) have nothing to check; leave them for review instead.
+
+**8. `nuget_registry`.** For .NET packages. Uses the official NuGet V3
+endpoints; reports the pinned version's publication date, the latest listed
+stable version and date, and how far behind the pin is. **Deprecated** or
+**unlisted** pinned versions alert.
+
+```json
+{"source": "nuget_registry", "package": "Newtonsoft.Json", "version": "13.0.3",
+ "label": "Newtonsoft.Json 13.0.3"}
+```
+
+- `package`: the NuGet package ID (matched case-insensitively; the label
+  preserves input casing). Exact versions only, as with PyPI.
+
+**9. `go_proxy`.** For Go modules. Queries the official Go module proxy
+(`proxy.golang.org`, with its uppercase path escaping); reports the pinned
+version's timestamp and the latest stable semantic version. **Retraction** is
+alerted only when the proxy data establishes it, and is explicitly not
+reported otherwise.
+
+```json
+{"source": "go_proxy", "module": "golang.org/x/net", "version": "v0.44.0",
+ "label": "golang.org/x/net v0.44.0"}
+```
+
+- `module`: the module path (keep the case — escaping is handled internally).
+- `version`: keep the proxy's leading `v` (`v0.44.0`).
+
+**10. `manual`.** For components with **no automated source anywhere**: commercial
 software not covered by endoflife.date or a specialized provider, OS-bundled packages
 lacking an upstream endoflife.date slug (OpenSSH), or tools that publish no lifecycle
 at all (PuTTY).
@@ -219,7 +269,7 @@ at all (PuTTY).
   can't otherwise source. For an OS-bundled package with no upstream slug, set `eol_date`
   to the owning OS's EOL and say so in `note`.
 
-**8. `tyk_lifecycle`.** For Tyk API-gateway components (Gateway, Dashboard, MDCB, Pump).
+**11. `tyk_lifecycle`.** For Tyk API-gateway components (Gateway, Dashboard, MDCB, Pump).
 Tyk isn't on endoflife.date but publishes an LTS support table in its docs, which this
 provider scrapes automatically.
 
@@ -268,8 +318,20 @@ Apply this decision order per component you find:
    Node tooling)? → `npm_registry` with the npm `package` name (+ `version` if known). If
    it ALSO has an endoflife.date slug (`nodejs`, `angular`, `vue`, …), prefer
    `endoflife_date` for the real EOL.
-5. **AWS RDS/Aurora PostgreSQL minor version** mentioned in ops/infra docs? → `aws_rds_scrape`.
-6. **Commercial / infrastructure software?** Check endoflife.date FIRST — many are there
+5. **Python package pinned to an exact version** (`name==2.32.4`)? →
+   `pypi_registry` with `package` + exact `version`. Unpinned, URL-based,
+   local-path, or dynamically computed requirements cannot be checked — leave
+   them for manual review instead of guessing a version.
+6. **Go module required at an exact version?** → `go_proxy` with `module` +
+   `version` (keep the leading `v`). Treat only direct `require` lines as
+   dependencies; `// indirect` lines and local `replace` targets are provenance
+   context, not trackable products. Go's `go`/`toolchain` directive →
+   `endoflife_date` (`golang`, major.minor).
+7. **.NET package at an exact version?** → `nuget_registry` with `package` +
+   `version`. `TargetFramework`/SDK versions map to `endoflife_date` (`dotnet`)
+   — except .NET Framework and netstandard targets, which have no cycle there.
+8. **AWS RDS/Aurora PostgreSQL minor version** mentioned in ops/infra docs? → `aws_rds_scrape`.
+9. **Commercial / infrastructure software?** Check endoflife.date FIRST — many are there
    (`splunk`, `mongodb`, `jenkins`, `rhel`, `amazon-elasticache-redis`, `nginx`, `squid`,
    `tomcat`, …). **Tyk** (Gateway/Dashboard/MDCB/Pump) → `tyk_lifecycle`. Only when there
    is genuinely no automated source anywhere (PuTTY; an OS-bundled tool like OpenSSH with
@@ -277,18 +339,18 @@ Apply this decision order per component you find:
    it out (renders UNTRACKED). **Never drop a component — make it `manual` so it stays
    visible — but always prefer an automated source over a hardcoded manual date when one
    exists** (a live source stays current; a manual date rots and needs re-checking).
-7. **OS-distro packages** (bundled with Amazon Linux, RHEL, Ubuntu…): note the OS
-   provenance in `_comment`. If the package has an upstream endoflife.date slug (openssl,
-   squid, apache-http-server, nginx), use `endoflife_date`; if it does NOT (openssh), use
-   `manual` tied to the OS's EOL date.
-8. **Named in prose / a Confluence table**? Treat each row/bullet as a component: pull out
-   the product name + version, then apply steps 1–7. Tables like "Component | Version |
-   Owner" map cleanly; when a cell is a range or "latest", record your interpretation in
-   `_comment` and add it to the verification checklist.
-9. **After choosing a source, is the item platform/infra with no EOL date** (endoflife.date
-   `eol: false`, an `aws_sdk_lifecycle` GA line, or a `manual` UNTRACKED tool)? Research and
-   add an ASCII `policy_note` describing its release/support policy. Verify the claim before
-   writing. Do not add notes to ordinary libraries.
+10. **OS-distro packages** (bundled with Amazon Linux, RHEL, Ubuntu…): note the OS
+    provenance in `_comment`. If the package has an upstream endoflife.date slug (openssl,
+    squid, apache-http-server, nginx), use `endoflife_date`; if it does NOT (openssh), use
+    `manual` tied to the OS's EOL date.
+11. **Named in prose / a Confluence table**? Treat each row/bullet as a component: pull out
+    the product name + version, then apply steps 1–10. Tables like "Component | Version |
+    Owner" map cleanly; when a cell is a range or "latest", record your interpretation in
+    `_comment` and add it to the verification checklist.
+12. **After choosing a source, is the item platform/infra with no EOL date** (endoflife.date
+    `eol: false`, an `aws_sdk_lifecycle` GA line, or a `manual` UNTRACKED tool)? Research and
+    add an ASCII `policy_note` describing its release/support policy. Verify the claim before
+    writing. Do not add notes to ordinary libraries.
 
 ### Real-world document patterns
 
@@ -338,6 +400,11 @@ Mark with ⚠ any entry where you were uncertain whether the cycle is major-only
 major.minor, or whether the slug is correct. **If this chat has web access, actually
 fetch each `https://endoflife.date/api/{slug}.json`, confirm the exact `cycle` value,
 correct the config, and note "verified" instead of ⚠.**
+
+For registry-backed entries give the equivalent one-liner so the user can confirm the
+package+version resolve: `https://pypi.org/pypi/<package>/json` (PyPI), NuGet's
+registration endpoint (`https://api.nuget.org/v3-flatcontainer/<id>/<version>/...` or
+the package page), and `https://proxy.golang.org/<module>/@v/list` (Go).
 
 ## Needs-Manual-Review (required if anything was skipped/ambiguous)
 

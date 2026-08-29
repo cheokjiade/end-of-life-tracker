@@ -6,7 +6,8 @@ Track your stack — Spring Boot, Java, Nginx, Alpine, PostgreSQL, React, and [3
 
 ## Features
 
-- **Pluggable data sources.** Each product picks its provider — endoflife.date for the broad catalog, or the AWS-docs scraper for RDS/Aurora minor-version EOL.
+- **Pluggable data sources.** Each product picks its provider — endoflife.date for the broad catalog, the AWS-docs scraper for RDS/Aurora minor-version EOL, specialized scrapers for AWS SDKs, Jackson, and Tyk, and registry-recency providers for Maven, npm, PyPI, NuGet, and Go modules (11 providers in total).
+- **Scan your codebase.** `helper_scripts/` turns a project folder — Java, Node, Python, Go, and .NET manifests plus Dockerfile and GitLab CI image declarations — into a ready-to-run config with per-dependency provenance and a Markdown/CSV/HTML inventory report (see [Scan your project](#scan-your-project) below).
 - Reports latest patch version and release date for each tracked product
 - Shows latest available major/minor cycle so you know when a newer version exists
 - Configurable alert thresholds (e.g. warn at 30, 60, 90 days before EOL)
@@ -125,6 +126,40 @@ regenerating it wholesale.
 The HTML report is generated alongside the console output if configured, written under `reports/<project>/<year>/<month>/<day>/` (where `<project>` is derived from the configured `path` base name — `eol_report_a.html` → `a`, plain `eol_report.html` → `default`). It uses colour-coded rows and status badges, and is also the format sent via SES email.
 
 ![HTML report](docs/sample_html_report.png)
+
+## Scan your project
+
+Don't want to hand-write a product list? The `helper_scripts/` directory scans a project folder and generates the config for you. Interactive wrappers pick the Python interpreter and walk you through it:
+
+```bash
+# macOS / Linux (Git Bash / WSL also work)
+./helper_scripts/generate_config.sh
+```
+
+```powershell
+# Windows (PowerShell)
+.\helper_scripts\generate_config.ps1
+```
+
+Non-interactive:
+
+```bash
+python helper_scripts/generate_config.py path/to/my-project --name my-project
+```
+
+The scanner reads **Java/Kotlin** (`pom*.xml`, Gradle), **Node/TypeScript** (`package.json`, lock-resolved), **Python** (`requirements*.txt`, `pyproject.toml`, `Pipfile.lock`, `.python-version`), **Go** (`go.mod`), and **.NET** (`*.csproj`/`*.fsproj`/`*.vbproj`, `Directory.Packages.props`, `global.json`) manifests, plus container images from **Dockerfiles** and **GitLab CI** files (job/default/top-level `image:` and `services:`; local includes are followed only inside the scanned folder, and remote includes are recorded as warnings but never downloaded). Nothing is executed; the scanner itself makes no network calls.
+
+Every generated entry carries structured **provenance** (`_found_in`: file, line/locator) and the config gains an ignored `_inventory` object (warnings, unmapped items, summary counts), so every answer shows its evidence. Dependencies with no automated source become explicit `manual` rows that render as UNTRACKED instead of silently disappearing. **Direct dependencies only** by default; add `--include-transitive` for indirect/lockfile records too.
+
+If the output file already exists the scanner refuses to overwrite it: re-run with **`--update`** to merge fresh evidence while preserving your curation (`_comment`s, `policy_note`s, manual entries, sections — unobserved entries are kept, additions go under `=== Newly Discovered ===`), or **`--replace`** to overwrite wholesale.
+
+Then render the human-readable inventory — **Markdown, CSV, and HTML** by default under `reports/inventory/`:
+
+```bash
+python helper_scripts/generate_inventory_report.py eol_config.my-project.json
+```
+
+Review the report's *Manual review checklist*, smoke-run the config (`python lambda_function.py eol_config.my-project.json`), and deploy. Full instructions, options, and troubleshooting: [`helper_scripts/README.md`](helper_scripts/README.md).
 
 ## Configuration
 
@@ -503,8 +538,11 @@ EventBridge schedule rules (one per project, cron-driven)
         +-- dispatches each product entry by its "source" to a provider:
         |     +-- endoflife_date -> https://endoflife.date/api/{product}.json
         |     +-- aws_rds_scrape -> docs.aws.amazon.com release calendars
-        |     +-- ... other registry sources (see eoltracker/parsers/)
-        +-- categorises: EOL / Approaching / OK
+        |     +-- aws_sdk_lifecycle, jackson_lifecycle, tyk_lifecycle
+        |     +-- maven_central, npm_registry, pypi_registry,
+        |         nuget_registry, go_proxy (release recency)
+        |     +-- manual -> hand-entered EOL date or UNTRACKED
+        +-- categorises: EOL / Approaching / OK / Untracked
         |
         +---> this project's SNS topic (plain-text email)
         +---> SES (HTML email)
@@ -543,6 +581,18 @@ Once the file exists, any product entry with `"source": "my_source"` is routed t
 |--------|----------|------|-------------|
 | [endoflife.date](https://endoflife.date) | 450+ products (community-maintained, open-source) | None | Major/cycle |
 | AWS docs release calendars | RDS / Aurora PostgreSQL minor versions | None (public HTML pages) | Minor version |
+| AWS SDKs & Tools support matrix | AWS SDKs per major version | None (public page) | Lifecycle phase |
+| FasterXML Jackson wiki | Jackson branches | None (public wiki) | Maintained or not |
+| Tyk docs LTS table | Tyk Gateway/Dashboard/MDCB/Pump | None (public docs) | LTS EOL date |
+| Maven Central search API | Java/Kotlin libraries | None | Release recency (no EOL) |
+| npm registry | JavaScript/Node packages | None | Recency + deprecation alerts |
+| PyPI JSON API | Python packages | None | Recency + yanked-release alerts |
+| NuGet V3 API | .NET packages | None | Recency + deprecation/unlisted alerts |
+| Go module proxy | Go modules | None | Recency + retraction alerts |
+
+Registry sources report how stale a pinned version is and flag unsafe
+releases (yanked / deprecated / unlisted / retracted). They never claim that
+package age is an EOL date.
 
 ## License
 

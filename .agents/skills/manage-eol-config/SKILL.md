@@ -24,8 +24,27 @@ If the project name is omitted, infer a short lowercase slug and report it.
 
 Use every input the user placed in scope and retain provenance for each entry.
 
-- For a new config sourced only from clean `pom.xml`, `*.gradle*`, or `package.json` files, run `python generate_config.py <folder> --name <project>` from the repository root. Review `_skipped_npm_packages`; the generated file is a draft until verified.
-- For an update sourced from manifests, run the generator to a scratch config and diff that inventory against the baseline. Never point `--output` at the baseline.
+- For a new config sourced from a project folder of manifests and container
+  files, use the deterministic scanner (no LLM needed) from the repository
+  root: `python helper_scripts/generate_config.py <folder> --name <project>`.
+  It covers Java, Node, Python, Go, and .NET manifests plus Dockerfile and
+  GitLab CI image declarations, and scans **direct dependencies only** unless
+  `--include-transitive` is given. Review `_inventory.unmapped` and
+  `_inventory.warnings` (and legacy `_skipped_npm_packages`) when present; the
+  generated file is a draft until verified. The scanner refuses to overwrite
+  an existing output unless `--update` (curation-preserving merge) or
+  `--replace` (explicit wholesale) is given.
+- For an update sourced from manifests, prefer
+  `python helper_scripts/generate_config.py <folder> --name <project> --update`
+  so scan evidence merges into the baseline without deleting curation
+  (`_comment`, `policy_note`, sections, and unobserved entries are preserved;
+  additions land under `=== Newly Discovered ===`). To diff instead, write a
+  scratch config with `--output <scratch-file>` — never point `--output` at
+  the baseline.
+- Render the human-readable inventory with
+  `python helper_scripts/generate_inventory_report.py <config>` (Markdown,
+  CSV, and HTML under `reports/inventory/`) and use its manual-review
+  checklist; see `helper_scripts/README.md`.
 - For Confluence/wiki exports, CSV/XLSX files, architecture documents, tables, or prose, extract product, version, lifecycle date, status, and source-row provenance using the real-world document rules in `../../../eol_config_generation_prompt.md`. Do not modify the source document.
 - When a live Confluence, document-store, or spreadsheet connector is available,
   use it read-only. Platform-specific connectors are optional; the workflow must
@@ -38,7 +57,7 @@ Skip `_section` dividers when comparing products. Preserve distinct versions or 
 
 ## Generate or patch
 
-For a new config, map every supported component to the best automated provider, group entries with `_section` dividers, and add an `_comment` that identifies its input file, row, cell, property, or dependency coordinate.
+For a new config, map every supported component to the best automated provider, group entries with `_section` dividers, and add an `_comment` that identifies its input file, row, cell, property, or dependency coordinate. Keep scanner metadata intact when editing generated configs: `_found_in` (per-entry provenance) and `_inventory` (scan metadata, warnings, unmapped items) are underscore-prefixed and ignored by the runtime, but the inventory report reads them.
 
 For an update, classify each baseline entry as added, version-changed, removed, or unchanged:
 
