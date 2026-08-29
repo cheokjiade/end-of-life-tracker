@@ -9,7 +9,7 @@
 # Usage:
 #   ./helper_scripts/generate_config.sh                    # interactive wizard
 #   ./helper_scripts/generate_config.sh <dir> --name demo  # forwarded to the CLI
-#   ./helper_scripts/generate_config.sh <dir> --output FILE --force --strict
+#   ./helper_scripts/generate_config.sh <dir> --output FILE --replace --strict
 #
 set -euo pipefail
 
@@ -94,7 +94,7 @@ if [ -e "$output" ]; then
   read -r answer
   case "$answer" in
     y | Y | yes)
-      set -- "$@" --force
+      set -- "$@" --replace
       ;;
     *)
       echo "Aborted; nothing written." >&2
@@ -104,7 +104,7 @@ if [ -e "$output" ]; then
 fi
 
 # 4) show what file types will be scanned
-echo "Scanning for: pom*.xml, build.gradle, *.gradle.kts, package.json"
+echo "Scanning Java, Node, Python, Go, .NET, Dockerfile, and GitLab CI manifests"
 echo "(plus .eolignore and --exclude patterns; node_modules, .venv, target, dist, build, ... are skipped)"
 
 # 5) generate the config (the generator prints the mapped/unmapped/warning

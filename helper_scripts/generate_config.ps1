@@ -21,8 +21,8 @@
     Non-interactive: all arguments are forwarded to generate_config.py.
 
 .EXAMPLE
-    .\helper_scripts\generate_config.ps1 C:\code\my-project --force --strict
-    Overwrites any existing output and fails on scan warnings (for CI).
+    .\helper_scripts\generate_config.ps1 C:\code\my-project --replace --strict
+    Explicitly replaces any existing output and fails on scan warnings (for CI).
 #>
 param()
 
@@ -98,24 +98,24 @@ $output = Read-Host "Output file [$defaultOutput]"
 if (-not $output) { $output = $defaultOutput }
 
 # 3) refuse to overwrite an existing file without confirmation
-$force = $false
+$replaceExisting = $false
 if (Test-Path -LiteralPath $output) {
     $answer = Read-Host ('"' + $output + '" already exists. Overwrite? [y/N]: ')
     if ($answer -notin @('y', 'Y', 'yes')) {
         Write-Host "Aborted; nothing written."
         exit 1
     }
-    $force = $true
+    $replaceExisting = $true
 }
 
 # 4) show what file types will be scanned
-Write-Host "Scanning for: pom*.xml, build.gradle, *.gradle.kts, package.json"
+Write-Host "Scanning Java, Node, Python, Go, .NET, Dockerfile, and GitLab CI manifests"
 Write-Host "(plus .eolignore and --exclude patterns; node_modules, .venv, target, dist, build, ... are skipped)"
 
 # 5) generate the config (the generator prints the mapped/unmapped/warning
 # counts); a non-zero exit stops here so the report step only runs on success
 $genArgs = @((Join-Path $PSScriptRoot 'generate_config.py'), $scanDir, '--name', $slug, '--output', $output)
-if ($force) { $genArgs += '--force' }
+if ($replaceExisting) { $genArgs += '--replace' }
 & $python @genArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

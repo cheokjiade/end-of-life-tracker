@@ -25,9 +25,9 @@ They do not claim that package release age is an EOL date.
 
 ## Implementation status
 
-Complete as of commit `fedb34e` (branch `codex/dependency-inventory`, 2026-08).
-All sixteen incremental steps landed, including the documentation step this
-repository's guides were updated for. The completion criteria were met: five
+Complete on branch `codex/dependency-inventory` as of 2026-08. The core
+workflow was reconciled in `fedb34e`, followed by the canonical documentation
+update. All sixteen incremental steps landed. The completion criteria were met: five
 ecosystems plus both container sources scan deterministically, every discovered
 item carries structured provenance, the three registry providers operate
 through their official public APIs, reports and wrappers work on Windows
@@ -457,8 +457,8 @@ version-changed, unchanged, and retained-not-observed counts in
 
 - Keep `eoltracker/` and helper functionality standard-library-only.
 - Keep generated configs ASCII-safe with `ensure_ascii=True`.
-- Use atomic output replacement and require `--force` for non-interactive
-  overwrite.
+- Use atomic output replacement. Require `--replace` for generator overwrites;
+  the report generator uses `--force` for regenerating local report files.
 - Never execute project files, package managers, Dockerfiles, or CI YAML.
 - Never follow manifest includes or symlinks outside the scan root.
 - Apply file-size and total-file safeguards to avoid accidental huge scans.
