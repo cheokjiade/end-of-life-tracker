@@ -35,12 +35,14 @@ Mapping strategy:
     Gradle plugin ids -> best-effort Maven coordinates, then the normal
                    java mapping (kind "gradle-plugin").
     Declared repos -> artifact-repository URLs (pom <repositories>,
-                   gradle `repositories { }` blocks; publishing blocks and
-                   profile-conditional pom repositories ignored) are
-                   collected, deduped, and emitted as the config-level
-                   "maven_repositories" key — the runtime stamps them onto
-                   maven_central entries lacking an explicit 'repository'
-                   as fallback lookups when an artifact is not on Maven
+                   gradle `repositories { }` blocks in build.gradle(.kts)
+                   and settings.gradle(.kts); publishing and
+                   pluginManagement blocks plus profile-conditional pom
+                   repositories ignored) are collected, deduped, and
+                   emitted as the config-level "maven_repositories" key —
+                   the runtime stamps them onto maven_central entries
+                   lacking an explicit 'repository' as fallback lookups
+                   when an artifact or its version is not on Maven
                    Central.
     POM props   -> known names (tomcat.version, netty.version, logback.version,
                    quartz.version, kotlin.version, java.version) produce the
@@ -735,17 +737,22 @@ def parse_gradle(path, catalog=None):
 
 
 def _repositories_blocks(text):
-    """Yield (body, inside_publishing) for every `repositories { ... }` block.
+    """Yield (body, excluded) for every `repositories { ... }` block.
 
     One quote-aware pass over the text tracks which keyword opened each
     brace, so braces inside string literals never break the nesting count
     and nested blocks (maven { url = uri("...") }) stay contained within
-    their parent's body. *body* is the text between the braces of every
-    block opened by `repositories`; *inside_publishing* reports whether any
-    enclosing block was opened by `publishing` — a publishing repository is
-    a deployment target, not a dependency source. buildscript repositories
-    are dependency repositories (classpath deps resolve from them) and are
-    yielded normally. An unterminated block yields the remaining text.
+    their parent's body. Blocks are matched on the captured name: plain
+    `repositories` and dotted spellings (`project.repositories`) count.
+    *excluded* reports why the block is NOT a dependency-repository
+    source: it is enclosed by `publishing` (a deployment target) or
+    `pluginManagement` (plugin repositories, not dependency repos) —
+    whether as an ancestor block or via the dotted spelling itself
+    (`publishing.repositories { ... }`). buildscript repositories are
+    dependency repositories (classpath deps resolve from them) and are
+    yielded normally. An unterminated block yields nothing: a block is
+    recorded only when its closing brace is seen, so a truncated file
+    silently drops the incomplete tail rather than emit a wrong URL.
     """
     stack = []      # (block keyword, index just past its `{`)
     blocks = []
@@ -773,10 +780,22 @@ def _repositories_blocks(text):
             continue
         if ch == "}" and stack:
             name, start = stack.pop()
-            if name == "repositories":
-                inside_publishing = any(
-                    keyword == "publishing" for keyword, _pos in stack)
-                blocks.append((text[start:i], inside_publishing))
+            if name == "repositories" or name.endswith(".repositories"):
+                # Dependency-repository exclusions consider both the
+                # enclosing block keywords and the dotted spelling's own
+                # qualifier prefix: publishing (deployment target) and
+                # pluginManagement (plugin repos) never declare
+                # dependency repositories.
+                qualifiers = [
+                    segment for keyword, _pos in stack
+                    for segment in keyword.split(".")
+                ]
+                if name.endswith(".repositories"):
+                    qualifiers += name[: -len(".repositories")].split(".")
+                excluded = any(
+                    segment in ("publishing", "pluginManagement")
+                    for segment in qualifiers)
+                blocks.append((text[start:i], excluded))
         i += 1
     return blocks
 
@@ -785,13 +804,15 @@ def _gradle_repo_urls(text):
     """Artifact-repository URLs declared in dependency `repositories` blocks.
 
     Matches `url = uri("...")`, `url = "..."`, and `url "..."` in every
-    non-publishing `repositories { ... }` block. mavenCentral(),
+    non-excluded `repositories { ... }` block — publishing (deployment
+    targets) and pluginManagement (plugin repos) blocks are not dependency
+    sources, see :func:`_repositories_blocks`. mavenCentral(),
     mavenLocal() and google() declare no URL and yield nothing. Pure;
     order-stable and deduplicated.
     """
     urls = []
-    for body, inside_publishing in _repositories_blocks(text):
-        if inside_publishing:
+    for body, excluded in _repositories_blocks(text):
+        if excluded:
             continue
         for m in _GRADLE_REPO_URL_RE.finditer(body):
             url = m.group(2).strip()
@@ -805,7 +826,7 @@ def parse_gradle_repositories(path):
 
     Comments are stripped first (a commented-out repositories block is
     ignored); see :func:`_gradle_repo_urls` for the matched forms and the
-    publishing exclusion.
+    publishing/pluginManagement exclusions.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -1327,6 +1348,19 @@ def scan_folder(folder, resolve_transitive=False):
                 if url not in declared_repos:
                     declared_repos.append(url)
 
+    # settings.gradle: repository declarations only — modern Gradle puts
+    # dependency repositories in dependencyResolutionManagement there
+    # (pluginManagement repositories are plugin repos and stay excluded).
+    # Settings files declare no dependencies (the dep patterns above need
+    # implementation/api/classpath keywords), and settings.gradle.kts is
+    # already covered by the *.gradle.kts pattern, so this loop adds only
+    # the plain Groovy spelling's repo collection.
+    for p in sorted(folder.rglob("settings.gradle")):
+        files_seen.append(str(p))
+        for url in parse_gradle_repositories(p):
+            if url not in declared_repos:
+                declared_repos.append(url)
+
     package_json_paths = []
     for p in sorted(folder.rglob("package.json")):
         if "node_modules" in p.parts:
@@ -1429,6 +1463,16 @@ def generate_config(scan, project_name):
                     v = props[prop_name]
                     fname = os.path.basename(src)
                     decl = f"{prop_name}={v}"
+                    if not (v or "").strip():
+                        # A blank/whitespace property value (e.g.
+                        # <logback.version> </logback.version>) has no
+                        # version to track: mapping it would fabricate a
+                        # phantom row with an empty version ("Logback
+                        # Classic "). Skip it like placeholder values.
+                        records.append(_discovered_record(
+                            decl, fname, "property",
+                            "skipped: empty property value"))
+                        continue
                     if "$" in (v or ""):
                         # A property value that is itself an unresolved
                         # placeholder (e.g. <tomcat.version>${undefined.prop}

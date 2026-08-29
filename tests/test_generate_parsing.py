@@ -544,6 +544,47 @@ assert len(tracked) == 1 and tracked[0]["outcome"] == "tracked: Apache Tomcat 10
 print("OK pom property placeholder value skips; real property still tracks")
 
 
+# --- K4: blank/whitespace POM property values --------------------------------
+
+# A whitespace-only property value (<logback.version> </logback.version>)
+# parses to props["logback.version"] == "" and used to fabricate a phantom
+# tracker row with an empty version ("Logback Classic "). It must skip with
+# the empty-property reason and produce no row.
+scan = {
+    "java": [],
+    "pom_properties": [
+        ({"logback.version": " "}, "pom.xml"),
+        ({"logback.version": "1.5.18"}, "pom.xml"),
+    ],
+    "node": [],
+    "files": ["pom.xml"],
+}
+config = generate_config(scan, "demo")
+rows = [prod for prod in config["products"] if not prod.get("_section")]
+assert [r["label"] for r in rows] == ["Logback Classic 1.5.18"], rows
+records = config["_discovered_dependencies"]
+blank = [r for r in records if r["decl"] == "logback.version= "]
+assert len(blank) == 1, records
+assert blank[0]["kind"] == "property", blank
+assert blank[0]["outcome"] == "skipped: empty property value", records
+tracked = [r for r in records if r["decl"] == "logback.version=1.5.18"]
+assert len(tracked) == 1 and tracked[0]["outcome"] == (
+    "tracked: Logback Classic 1.5.18"), records
+print("OK pom property blank value skips; real property still tracks")
+
+# A truly empty element (<logback.version></logback.version>) carries no
+# text at all, so parse_pom never records it as a property: no row and no
+# property-mapping record either.
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "pom.xml", """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <properties><logback.version></logback.version></properties>
+</project>""")
+    _deps, props, _repos = parse_pom(p)
+assert "logback.version" not in props, props
+print("OK truly empty pom property element is not a property at all")
+
+
 # --- L: test-* configurations and non-dependency declarations ----------------
 
 with tempfile.TemporaryDirectory() as tmp:

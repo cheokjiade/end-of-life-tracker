@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from generate_config import (
     _gradle_repo_urls,
     generate_config,
+    parse_gradle,
     parse_gradle_repositories,
     parse_pom,
     scan_folder,
@@ -200,6 +201,111 @@ with tempfile.TemporaryDirectory() as tmp:
     repos = parse_gradle_repositories(p)
 assert repos == [], repos
 print("OK commented-out repositories blocks yield nothing")
+
+
+# --- C2: dotted block names + the pluginManagement exclusion -----------------
+
+# `project.repositories { ... }` is a dependency-repositories block (the
+# dotted spelling used to be missed entirely because the captured name was
+# compared verbatim). publishing and pluginManagement repositories stay
+# excluded — via an enclosing block or via the dotted spelling itself.
+DOTTED = """
+project.repositories {
+    maven { url = uri("https://project-dotted.example/repo") }
+}
+
+publishing.repositories {
+    maven { url = uri("https://publish-dotted.example/deploy") }
+}
+
+pluginManagement {
+    repositories {
+        maven { url = uri("https://plugins.example/maven2") }
+    }
+}
+
+pluginManagement.repositories {
+    maven { url = uri("https://plugins-dotted.example/maven2") }
+}
+
+repositories {
+    maven { url = uri("https://plain.example/repo") }
+}
+"""
+urls = _gradle_repo_urls(DOTTED)
+assert urls == [
+    "https://project-dotted.example/repo",
+    "https://plain.example/repo",
+], urls
+print("OK dotted project.repositories collected; publishing/pluginManagement (block + dotted) excluded")
+
+
+# --- C3: settings.gradle(.kts); unterminated blocks ---------------------------
+
+# Modern Gradle declares dependency repositories in settings files under
+# dependencyResolutionManagement { repositories { ... } } — collected.
+# pluginManagement { repositories { ... } } there holds plugin repos and
+# stays excluded.
+SETTINGS_KTS = """
+pluginManagement {
+    repositories {
+        maven { url = uri("https://plugins.example/maven2") }
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("https://settings-deps.example/maven2") }
+    }
+}
+rootProject.name = "demo"
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    _write(tmp, "settings.gradle.kts", SETTINGS_KTS)
+    scan = scan_folder(tmp)
+assert scan["repositories"] == ["https://settings-deps.example/maven2"], \
+    scan["repositories"]
+print("OK settings.gradle.kts: dependencyResolutionManagement repos collected; pluginManagement excluded")
+
+# The plain Groovy spelling is scanned for repositories too.
+SETTINGS_GROOVY = """
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url 'https://plugins-groovy.example/maven2' }
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url 'https://settings-groovy.example/maven2' }
+    }
+}
+rootProject.name = 'demo'
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "settings.gradle", SETTINGS_GROOVY)
+    scan = scan_folder(tmp)
+assert scan["repositories"] == ["https://settings-groovy.example/maven2"], \
+    scan["repositories"]
+assert "settings.gradle" in [Path(f).name for f in scan["files"]], scan["files"]
+print("OK settings.gradle: dependencyResolutionManagement repos collected; pluginManagement excluded")
+
+# Settings content never produces dependency rows: the dep patterns require
+# dependency-configuration keywords (implementation/api/classpath/...).
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "settings.gradle.kts", SETTINGS_KTS)
+    deps = parse_gradle(p)
+assert deps == [], deps
+print("OK settings files yield no dependency declarations")
+
+# An unterminated repositories block yields NOTHING: a block is recorded
+# only when its closing brace is seen, so a truncated file silently drops
+# the incomplete tail rather than emit a wrong URL.
+UNTERMINATED = """
+repositories {
+    maven { url = uri("https://unterminated.example/repo") }
+"""
+assert _gradle_repo_urls(UNTERMINATED) == []
+print("OK unterminated repositories block yields nothing")
 
 
 # --- D: scan_folder aggregation + config-level maven_repositories ------------
