@@ -1,0 +1,9 @@
+deploy-image-job:
+  image: mcr.microsoft.com/dotnet/aspnet:8.0
+  script:
+    - echo ok
+
+publish-image-job:
+  image: "$CI_REGISTRY_IMAGE/web:2.1"
+  script:
+    - echo ok

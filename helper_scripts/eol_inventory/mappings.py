@@ -221,3 +221,73 @@ def _map_java_dep(group, artifact, version):
 def _map_npm_dep(name, version):
     handler = _NPM_MAPPINGS.get(name)
     return handler(_clean_version(version)) if handler else None
+
+
+# ---------------------------------------------------------------------------
+# Container image repository -> tracker entry mappings
+#
+# Image names are normalized registry-free repository paths ("python",
+# "dotnet/aspnet"; see parsers/docker.py normalize_image_name). Only
+# tags that yield a valid endoflife.date cycle string map to a product;
+# everything else stays in the inventory. Slugs verified against
+# endoflife.date on 2026-08-29.
+# ---------------------------------------------------------------------------
+
+def _tag_numeric_parts(tag):
+    """Leading numeric dot components of a tag: '3.12.4-slim' -> ['3','12','4']."""
+    base = re.split(r"[-+]", tag, maxsplit=1)[0]
+    parts = []
+    for piece in base.split("."):
+        if piece.isdigit():
+            parts.append(piece)
+        else:
+            break
+    return parts
+
+
+def _cycle_major(tag):
+    """'20.15.1-alpine' -> '20'; None when the tag has no leading number."""
+    parts = _tag_numeric_parts(tag)
+    return parts[0] if parts else None
+
+
+def _cycle_major_minor(tag):
+    """'3.12.4-slim' -> '3.12', '24.04.1' -> '24.04'; None under 2 parts."""
+    parts = _tag_numeric_parts(tag)
+    return f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else None
+
+
+def _image_entry(product, cycle, label):
+    if cycle is None:
+        return None
+    return _eol_entry(product, cycle, label)
+
+
+_IMAGE_MAPPINGS = {
+    "python":         lambda tag: _image_entry("python", _cycle_major_minor(tag), f"Python {_cycle_major_minor(tag)}"),
+    "node":           lambda tag: _image_entry("nodejs", _cycle_major(tag), f"Node.js {_cycle_major(tag)}"),
+    "golang":         lambda tag: _image_entry("golang", _cycle_major_minor(tag), f"Go {_cycle_major_minor(tag)}"),
+    "dotnet/runtime": lambda tag: _image_entry("dotnet", _cycle_major(tag), f".NET {_cycle_major(tag)}"),
+    "dotnet/aspnet":  lambda tag: _image_entry("dotnet", _cycle_major(tag), f".NET {_cycle_major(tag)}"),
+    "dotnet/sdk":     lambda tag: _image_entry("dotnet", _cycle_major(tag), f".NET {_cycle_major(tag)}"),
+    "ubuntu":         lambda tag: _image_entry("ubuntu", _cycle_major_minor(tag), f"Ubuntu {_cycle_major_minor(tag)}"),
+    "debian":         lambda tag: _image_entry("debian", _cycle_major(tag), f"Debian {_cycle_major(tag)}"),
+    "alpine":         lambda tag: _image_entry("alpine", _cycle_major_minor(tag), f"Alpine {_cycle_major_minor(tag)}"),
+    "postgres":       lambda tag: _image_entry("postgresql", _cycle_major(tag), f"PostgreSQL {_cycle_major(tag)}"),
+    "mysql":          lambda tag: _image_entry("mysql", _cycle_major_minor(tag), f"MySQL {_cycle_major_minor(tag)}"),
+    "redis":          lambda tag: _image_entry("redis", _cycle_major_minor(tag), f"Redis {_cycle_major_minor(tag)}"),
+    "nginx":          lambda tag: _image_entry("nginx", _cycle_major_minor(tag), f"nginx {_cycle_major_minor(tag)}"),
+}
+
+
+def _map_image_dep(name, tag):
+    """Map a normalized image name + tag to a tracker entry, or None.
+
+    None means no lifecycle mapping: either the repository is unknown
+    or the tag provides no valid release cycle. The record stays in
+    the inventory either way.
+    """
+    if not tag:
+        return None
+    handler = _IMAGE_MAPPINGS.get((name or "").lower())
+    return handler(tag) if handler else None
