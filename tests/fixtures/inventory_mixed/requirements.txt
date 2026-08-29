@@ -1,0 +1,4 @@
+# pinned runtime deps
+requests==2.32.3
+flask==3.0.3
+numpy~=1.26.0

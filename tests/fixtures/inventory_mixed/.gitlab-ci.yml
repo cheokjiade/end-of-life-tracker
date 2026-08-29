@@ -1,0 +1,8 @@
+include:
+  - local: ".gitlab/ci/deploy.yml"
+
+db-test:
+  stage: test
+  image: postgres:16-alpine
+  script:
+    - psql --version
