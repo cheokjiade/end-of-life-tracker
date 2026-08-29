@@ -33,7 +33,11 @@ Mapping strategy:
                    latest.*) — are skipped; ext suffixes (1.0@jar) are
                    truncated to 1.0.
     Gradle plugin ids -> best-effort Maven coordinates, then the normal
-                   java mapping (kind "gradle-plugin").
+                   java mapping (kind "gradle-plugin"). Ids in
+                   _GRADLE_PLUGIN_COORD_ALIASES publish under different
+                   coordinates and are pinned; unknown ids stay best-effort
+                   (a wrong guess surfaces as a visible tracker-health
+                   error row).
     Declared repos -> artifact-repository URLs (pom <repositories>,
                    gradle `repositories { }` blocks in build.gradle(.kts)
                    and settings.gradle(.kts); publishing and
@@ -684,6 +688,23 @@ _GRADLE_REPO_URL_RE = re.compile(
 _GRADLE_BLOCK_NAME_RE = re.compile(r"([A-Za-z_][\w.]*)\s*\{\Z")
 
 
+# Known-exception table for plugin ids whose published Maven coordinates do
+# NOT follow the generic rule (group = full plugin id, artifact = last
+# segment + "-gradle-plugin"). Checked before the generic synthesis; the
+# generic rule stays the best-effort fallback for unknown ids, so a wrong
+# guess surfaces as a visible tracker-health error row ("Artifact ... not
+# found on Maven Central or the declared repositories") on every run - the
+# repo's fail-loud philosophy treats that as review signal; add newly
+# diverged ids here.
+_GRADLE_PLUGIN_COORD_ALIASES = {
+    # id("io.spring.dependency-management") publishes as
+    # io.spring.gradle:dependency-management-plugin (verified live); the
+    # generic guess is a permanent not-found error row.
+    "io.spring.dependency-management": ("io.spring.gradle",
+                                        "dependency-management-plugin"),
+}
+
+
 def _gradle_plugin_coords(plugin_id):
     """Best-effort Maven coordinates for a Gradle plugin id.
 
@@ -691,9 +712,15 @@ def _gradle_plugin_coords(plugin_id):
     (org.springframework.boot:spring-boot-gradle-plugin,
     io.gitlab.arturbosch.detekt:detekt-gradle-plugin, ...); Kotlin plugin ids
     and aliases all ship inside org.jetbrains.kotlin:kotlin-gradle-plugin.
+    Ids in _GRADLE_PLUGIN_COORD_ALIASES publish elsewhere and map through
+    that table first; every other id keeps the generic best-effort synthesis
+    below, so a mismatching guess becomes a visible tracker-health error row
+    to review rather than a silently wrong date.
     """
     if plugin_id == "org.jetbrains.kotlin" or plugin_id.startswith("org.jetbrains.kotlin."):
         return "org.jetbrains.kotlin", "kotlin-gradle-plugin"
+    if plugin_id in _GRADLE_PLUGIN_COORD_ALIASES:
+        return _GRADLE_PLUGIN_COORD_ALIASES[plugin_id]
     return plugin_id, plugin_id.rsplit(".", 1)[-1] + "-gradle-plugin"
 
 

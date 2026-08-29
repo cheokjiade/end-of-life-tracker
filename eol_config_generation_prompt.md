@@ -350,7 +350,13 @@ extracted manually (the scanner silently misses it):
   `implementation`/`api`/`compileOnly`/`runtimeOnly`/`classpath` (buildscript blocks)
   (`group: 'g', name: 'a', version: 'v'`), `platform(...)` BOM imports, plugins blocks
   (`id("g.a") version "v"`, `kotlin("jvm") version "v"` — plugin ids are converted to
-  best-effort Maven coordinates), `libs.*` references resolved against
+  best-effort Maven coordinates; a small alias table pins the known exceptions whose
+  published artifact diverges from the generic group = plugin-id / artifact =
+  last-segment + `-gradle-plugin` rule, e.g. `io.spring.dependency-management` maps to
+  `io.spring.gradle:dependency-management-plugin`, and the list grows as ids are
+  verified; unknown ids remain best-effort - a wrong guess surfaces as a visible
+  not-found tracker-health error row, which the fail-loud philosophy treats as review
+  signal), `libs.*` references resolved against
   `libs.versions.toml` (best-effort TOML subset: `[versions]`, `[libraries]`,
   `[bundles]`; unresolvable aliases are skipped), and `url = uri("...")` /
   `url = "..."` / `url "..."` declarations inside dependency `repositories { }`

@@ -141,6 +141,69 @@ assert entry["version"] == "3.4", entry
 print("OK plugin coordinates map through the standard java mapping path")
 
 
+# --- D2: plugin-id coordinate alias table ------------------------------------
+
+# io.spring.dependency-management publishes as
+# io.spring.gradle:dependency-management-plugin; the generic synthesis would
+# guess io.spring.dependency-management:dependency-management-gradle-plugin,
+# which is not on Maven Central or normal plugin repos (live-verified: a
+# permanent not-found tracker-health error row). Both DSL spellings must
+# take the alias coordinates.
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle.kts", """
+plugins {
+    id("io.spring.dependency-management") version "1.1.7"
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [("io.spring.gradle", "dependency-management-plugin", "1.1.7",
+                 "gradle-plugin")], deps
+print("OK kts plugins block: io.spring.dependency-management takes the alias coords")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle", """
+plugins {
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [("io.spring.gradle", "dependency-management-plugin", "1.1.7",
+                 "gradle-plugin")], deps
+print("OK groovy plugins block: io.spring.dependency-management takes the alias coords")
+
+entry = _map_java_dep("io.spring.gradle", "dependency-management-plugin", "1.1.7")
+assert entry["source"] == "maven_central", entry
+assert entry["group"] == "io.spring.gradle", entry
+assert entry["artifact"] == "dependency-management-plugin", entry
+assert entry["version"] == "1.1.7", entry
+print("OK alias plugin coordinates map through the standard java mapping path")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle.kts", """
+plugins {
+    id("com.example.foo") version "1.0.0"
+}
+""")
+    deps = parse_gradle(p)
+assert deps == [("com.example.foo", "foo-gradle-plugin", "1.0.0",
+                 "gradle-plugin")], deps
+print("OK unknown plugin ids keep the generic best-effort synthesis")
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = _write(tmp, "build.gradle.kts", """
+plugins {
+    id("org.springframework.boot") version "3.4.5"
+    kotlin("jvm") version "2.1.20"
+}
+""")
+    deps = parse_gradle(p)
+assert ("org.springframework.boot", "boot-gradle-plugin", "3.4.5", "gradle-plugin") in deps, deps
+assert ("org.jetbrains.kotlin", "kotlin-gradle-plugin", "2.1.20", "gradle-plugin") in deps, deps
+assert len(deps) == 2, deps
+print("OK spring-boot and kotlin(jvm) plugin ids unchanged by the alias table")
+
+
 # --- E: Maven version ranges and Gradle dynamic versions are skipped --------
 
 assert _is_maven_version_range("[2.16.0,)")
