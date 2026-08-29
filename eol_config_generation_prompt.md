@@ -89,12 +89,14 @@ Top-level object:
 
 - `alert_thresholds_days`: keep `[30, 60, 90]` unless the inputs imply otherwise.
 - `maven_repositories` (optional): a list of Maven 2 repository base URLs declared in
-  the project's manifests (pom `<repositories>`, Gradle `repositories { }` blocks).
-  `generate_config.py` collects and dedupes them automatically. At load the runtime
-  offers the first 8 (config order) to every `maven_central` entry that has neither
-  an explicit `repository` nor its own `repositories` list, so artifacts hosted
-  outside Maven Central still resolve. Must be a list of non-empty URL strings
-  (anything else is rejected before the run starts).
+  the project's manifests (pom `<repositories>`, Gradle `repositories { }` blocks in
+  build and settings files). `generate_config.py` collects and dedupes them
+  automatically. At load the runtime offers the first 8 (config order) to every
+  `maven_central` entry that has neither an explicit `repository` nor its own
+  `repositories` list, so artifacts not present on Maven Central at all still
+  resolve; a version missing on Central but present in a declared repository is
+  also resolved. Must be a list of non-empty URL strings (anything else is
+  rejected before the run starts).
 - `notify_when`: `"always"` (daily report regardless) or `"alerts_only"` (only when
   something is EOL/approaching — including undated at-risk phases — or the tracker
   reports `error`/`unknown` health failures). Default to `"always"`.
@@ -207,14 +209,20 @@ pinned version is — no EOL is claimed.
   `https://build.shibboleth.net/nexus/content/repositories/releases`). Base
   URL only — no credentials, query string, or fragment (scheme and host are
   lowercased). Omit the field for anything available on Maven Central.
-- Optional `repositories`: a **list** of such base URLs, tried in order when
-  the artifact is not found on Maven Central (first hit wins; the rescued row
-  is labelled "Not on Maven Central; found on \<host\>:"; if nothing is found
-  anywhere the row errors with "not found on Maven Central or N declared
-  repositories"). A config-level `maven_repositories` list is stamped onto
-  `maven_central` entries lacking an explicit `repository` at load time
-  (first 8, config order), so per-entry `repositories` is only needed to
-  override or narrow that fallback.
+- Optional `repositories`: a **list** of such base URLs, tried in order when the
+  artifact is not found on Maven Central, or when Central lists the artifact but
+  the pinned **version** could not be verified there (e.g. the release lives only
+  on the project's own repository). First artifact hit wins; the rescued row is
+  labelled "Not on Maven Central; found on \<host\>:"; if nothing is found anywhere
+  the row errors with "not found on Maven Central or N declared repositories"
+  (artifact missing) or is **unknown** with "Version \<v\> could not be verified on
+  Maven Central or N declared repositories (private build, typo, or repository
+  gap); latest published is ..." (version missing). At most 8 URLs are probed per
+  row. A config-level `maven_repositories` list is stamped onto `maven_central`
+  entries lacking an explicit `repository` at load time (first 8, config order),
+  so per-entry `repositories` is only needed to override or narrow that fallback.
+  An explicit per-entry `repository` **disables the fallback chain** (explicit
+  wins — no `repositories` list is consulted).
 
 **6. `npm_registry`.** For npm / JavaScript libraries that publish no EOL dates
 (Material UI, Axios, Redux, Day.js, DOMPurify, and most webjars/frontend deps). Like
@@ -347,12 +355,19 @@ extracted manually (the scanner silently misses it):
   `[bundles]`; unresolvable aliases are skipped), and `url = uri("...")` /
   `url = "..."` / `url "..."` declarations inside dependency `repositories { }`
   blocks (including `buildscript { repositories { ... } }` — classpath deps resolve
-  from them; `publishing` repositories are deployment targets and are excluded;
+  from them; `publishing` and `pluginManagement` repositories are deployment/plugin
+  targets and are excluded;
   `mavenCentral()`/`mavenLocal()`/`google()` declare no URL). Groovy `//` and `/* ... */` comments
   are stripped first while string literals are respected — commented-out dependencies
   are never tracked, and a `//` inside a string (e.g. a repo URL) survives. `test*`
   configurations and `project(...)` / `files(...)` / `fileTree(...)` declarations
   match nothing.
+- `settings.gradle` / `settings.gradle.kts`: repository declarations only —
+  `dependencyResolutionManagement { repositories { ... } }` URLs are collected into
+  the config-level `maven_repositories` list (`pluginManagement { repositories }`
+  holds plugin repos and stays excluded; dotted spellings like
+  `project.repositories { }` count, `publishing.repositories { }` does not).
+  Settings files declare no dependencies, so nothing else is parsed there.
 - Versions that never produce entries (no public registry resolves them): `-SNAPSHOT`,
   `${property}` placeholders and Groovy `$var` interpolations (any `$` in a version),
   Maven ranges (`[2.0,)`) including unterminated ones
