@@ -28,18 +28,34 @@ Entries may instead set a 'repositories' key: a list of such base URLs
 tried in order when the artifact is not found on the primary repository,
 or when the primary lists the artifact but the pinned version could not
 be verified there (e.g. Central has the metadata while the in-use release
-lives only on the project's own repository). First artifact hit wins; an
-unusable URL is skipped with a logged warning; the chain is capped at the
-first 8 URLs (mirroring the handler's stamping cap). A row rescued this
-way carries the provenance prefix "Not on Maven Central; found on <host>:"
-and a source_label of the host; if the whole chain yields nothing the row
-is a not-found error naming the declared repositories (or, when the
-artifact itself resolved but the version did not, an unknown row naming
-them). generate_config.py emits a config-level "maven_repositories" list
-that handler.py stamps onto entries lacking an explicit 'repository'
-(capped at 8 at load time), so hand-written configs can use the same
-entry-level 'repositories' key directly. An explicit 'repository' keeps
-the single-repository behavior with no chain.
+lives only on the project's own repository). A candidate is probed only
+when it can actually rescue the row: an artifact-missing trigger stops at
+the first candidate that lists the artifact (first artifact hit wins),
+while a version-missing trigger keeps probing until a candidate also
+confirms the in-use version — a candidate that lists the artifact but not
+the version does not win. A candidate whose normalized URL equals the
+primary (the ordinary <id>central</id> declaration) is skipped silently:
+the primary has already been probed. An unusable URL is skipped with a
+logged warning; the chain is capped at the first 8 URLs (mirroring the
+handler's stamping cap — the cap warning fires only when the chain
+actually runs). A row rescued on a missing artifact carries the
+provenance prefix "Not on Maven Central; found on <host>:" and a
+source_label of the host, with latest and in-use data both from the
+rescuing repository. A row rescued on a missing version carries the
+prefix "Version <v> not on Maven Central; found on <host>:" — the
+artifact was never missing from Central — and keeps Central's
+authoritative latest (latest_patch, latest_patch_date, and the on_latest
+comparison all reference Central) while the in-use release date and the
+row's repository/source_label provenance come from the rescuing host. If
+the whole chain yields nothing the row is a not-found error naming the
+declared repositories (or, when the artifact itself resolved on Central,
+an unknown row naming them); when instead the artifact resolved on a
+fallback but the version did not, the unknown row names that winning
+host, not the repository list. generate_config.py emits a config-level
+"maven_repositories" list that handler.py stamps onto entries lacking an
+explicit 'repository' (capped at 8 at load time), so hand-written configs
+can use the same entry-level 'repositories' key directly. An explicit
+'repository' keeps the single-repository behavior with no chain.
 """
 
 import re
@@ -328,14 +344,6 @@ def _provider_maven_central(entry, today):
         return result
     if explicit_repository:
         fallbacks = None
-    if fallbacks and len(fallbacks) > _MAX_CHAIN_REPOSITORIES:
-        # Same cap as the handler's stamping: the chain probes up to two
-        # sequential URLs per repository inside ONE provider call, beyond
-        # the runner's per-check budget. Only counts are logged, never URLs.
-        logger.warning(
-            "%s: %d declared repositories listed; probing the first %d only",
-            label, len(fallbacks), _MAX_CHAIN_REPOSITORIES)
-        fallbacks = fallbacks[:_MAX_CHAIN_REPOSITORIES]
 
     try:
         latest = _fetch_maven_latest(group, artifact, repository)
@@ -350,7 +358,22 @@ def _provider_maven_central(entry, today):
         return result
 
     fell_back = False
+    # Whether the primary lists the artifact at all: an artifact-missing
+    # rescue takes latest AND in-use from the winning candidate, while a
+    # version-only rescue keeps Central's authoritative latest and takes
+    # only the in-use verification from the winner.
+    central_had_artifact = bool(latest)
     if (not latest or in_use is None) and fallbacks:
+        if len(fallbacks) > _MAX_CHAIN_REPOSITORIES:
+            # Same cap as the handler's stamping: the chain probes up to two
+            # sequential URLs per repository inside ONE provider call, beyond
+            # the runner's per-check budget. Only counts are logged, never
+            # URLs. Inside the chain branch: an entry fully verified on the
+            # primary probes nothing and logs nothing.
+            logger.warning(
+                "%s: %d declared repositories listed; probing the first %d only",
+                label, len(fallbacks), _MAX_CHAIN_REPOSITORIES)
+            fallbacks = fallbacks[:_MAX_CHAIN_REPOSITORIES]
         for candidate in fallbacks:
             try:
                 candidate_repo = _normalize_repository(candidate)
@@ -360,6 +383,11 @@ def _provider_maven_central(entry, today):
                 continue
             if not candidate_repo:
                 logger.warning("%s: skipping blank declared repository", label)
+                continue
+            if candidate_repo == _MAVEN_REPOSITORY:
+                # Already probed as the primary above; the ordinary
+                # <id>central</id> declaration must not short-circuit the
+                # chain. Skipped silently — nothing is wrong.
                 continue
             try:
                 candidate_latest = _fetch_maven_latest(
@@ -373,8 +401,14 @@ def _provider_maven_central(entry, today):
                     "%s: declared repository lookup failed (%s)",
                     label, type(exc).__name__)
                 continue
+            if central_had_artifact and candidate_in_use is None:
+                # Version-missing trigger: a candidate that lists the
+                # artifact but not the in-use version does not rescue the
+                # row — keep probing the chain for one that has the version.
+                continue
             repository = candidate_repo
-            latest = candidate_latest
+            if not central_had_artifact:
+                latest = candidate_latest
             in_use = candidate_in_use
             fell_back = True
             break
@@ -449,9 +483,14 @@ def _provider_maven_central(entry, today):
         message = f"In use: {version}; latest: {latest_v}"
 
     if fell_back:
-        # Provenance first: this row was rescued from a declared repository,
-        # not found on Maven Central.
-        message = f"Not on Maven Central; found on {where}: {message}"
+        # Provenance first: this row was rescued from a declared repository.
+        # When only the version was rescued the artifact lives on Central,
+        # so "Not on Maven Central" would be false — say what was missing.
+        if central_had_artifact:
+            message = (f"Version {version} not on Maven Central; "
+                       f"found on {where}: {message}")
+        else:
+            message = f"Not on Maven Central; found on {where}: {message}"
 
     result = {
         "label": label,

@@ -855,8 +855,10 @@ print("OK malformed 'repositories' value is a no-network error row")
 # Live-repro shape (org.opensaml:opensaml:2.6.6): Maven Central HAS the
 # artifact (metadata's latest is 2.6.4) but the pinned 2.6.6 exists only on
 # the declared repository. The chain must fire on the unverified version,
-# rescue the row from the declared repository, and mark it ok with the
-# standard provenance prefix.
+# rescue the version from the declared repository, and mark it ok with the
+# version-provenance prefix — Central's authoritative latest is kept (the
+# artifact was never missing there), so the row compares staleness against
+# 2.6.4, not the declared repository's own latest.
 
 clear_caches()
 calls.clear()
@@ -904,9 +906,10 @@ assert result["repository"] == (
     "https://build.shibboleth.net/nexus/content/repositories/releases"), result
 assert result["source_label"] == "build.shibboleth.net", result
 assert result["message"].startswith(
-    "Not on Maven Central; found on build.shibboleth.net: "), result
+    "Version 2.6.6 not on Maven Central; found on build.shibboleth.net: "), result
 assert "In use: 2.6.6" in result["message"], result
-assert "latest: 3.0.0" in result["message"], result
+assert "latest: 2.6.4" in result["message"], result
+assert result["latest_patch"] == "2.6.4", result
 central_calls = [c for c in calls if c[0].startswith(maven._MAVEN_REPOSITORY)]
 assert len(central_calls) == 3, calls  # metadata GET + 2.6.4 HEAD + 2.6.6 HEAD
 print("OK central metadata present but version 404s -> chain rescues (ok row)")
@@ -1031,6 +1034,281 @@ assert not any(
     "c9.example" in u or "c10.example" in u for u in calls), calls
 assert any("c8.example" in u for u in calls), calls
 print("OK 10-URL chain is capped at the first 8 with a count warning")
+
+
+# --- Adversarial-review pins: chain triggers and provenance -------------------
+
+# G1: artifact AND in-use version both verified on Central -> the chain never
+# runs at all (zero fallback probes), even though the declared repository
+# would answer too. Protects the trigger against first-artifact regressions.
+
+clear_caches()
+calls.clear()
+
+
+def central_ok_fallback_unused_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    assert url.startswith(maven._MAVEN_REPOSITORY), url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>2.0.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = central_ok_fallback_unused_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [FALLBACK],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert len(calls) == 3, calls  # Central: metadata GET + 2.0.0 latest HEAD + 1.0.0 in-use HEAD
+assert "Not on Maven Central" not in result["message"], result
+assert "source_label" not in result, result
+print("OK in-use verified on Central -> zero fallback probes")
+
+# G4 (F3): the 8-repository cap warning fires only when the chain actually
+# runs — an entry fully verified on Central logs nothing despite 10 URLs.
+
+clear_caches()
+calls.clear()
+captured = []
+log_handler = _CaptureHandler()
+logging.getLogger().addHandler(log_handler)
+try:
+    maven.urllib.request.urlopen = central_ok_fallback_unused_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": TEN_REPOS,
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+    logging.getLogger().removeHandler(log_handler)
+
+assert result["status"] == "ok", result
+assert captured == [], captured
+assert all(c.startswith(maven._MAVEN_REPOSITORY) for c in calls), calls
+print("OK no cap warning when the chain never runs (in-use verified on Central)")
+
+# G2 (F1): a declared repository equal to the primary — the ordinary
+# <id>central</id> pom declaration, here with a trailing slash to prove the
+# normalized comparison — is skipped silently in the chain. Without this,
+# its cache hit short-circuits the chain into a self-contradictory
+# "Not on Maven Central; found on repo1.maven.org" row and the rescuing
+# repository behind it is never probed.
+
+clear_caches()
+calls.clear()
+
+
+def central_candidate_chain_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>9.0.0</release>"
+                                b"</versioning></metadata>")
+        if "/9.0.0/" in url:
+            return FakeResponse(headers={
+                "Last-Modified": "Mon, 01 Jun 2026 10:00:00 GMT"})
+        # In-use 1.0.0 not published on Central.
+        raise http_404(request)
+    assert "build.shibboleth.net" in url, url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>5.2.3</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = central_candidate_chain_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": ["https://repo1.maven.org/maven2/", SHIBBOLETH],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["message"].startswith(
+    "Version 1.0.0 not on Maven Central; found on build.shibboleth.net: "), result
+assert "repo1.maven.org" not in result["message"], result
+assert result["repository"] == (
+    "https://build.shibboleth.net/nexus/content/repositories/releases"), result
+assert result["source_label"] == "build.shibboleth.net", result
+assert any("build.shibboleth.net" in c[0] for c in calls), calls
+central_calls = [c for c in calls if c[0].startswith(maven._MAVEN_REPOSITORY)]
+assert len(central_calls) == 3, calls  # metadata + 9.0.0 latest HEAD + 1.0.0 HEAD 404
+print("OK Central-as-candidate is skipped silently; the chain reaches Shibboleth")
+
+# G3 (F2): under the version-missing trigger a candidate that HAS the
+# artifact but NOT the version no longer wins — the chain keeps probing
+# until one confirms the version; the row keeps Central's authoritative
+# latest (fresh metadata) while the version verification and provenance
+# come from the candidate that actually has it.
+
+clear_caches()
+calls.clear()
+REPO_A = "https://a.example/one"
+REPO_B = "https://b.example/two"
+
+
+def ab_chain_urlopen(request, timeout):
+    calls.append((request.full_url, request.get_method()))
+    url = request.full_url
+    if url.startswith(maven._MAVEN_REPOSITORY):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>9.0.0</release>"
+                                b"</versioning></metadata>")
+        if "/9.0.0/" in url:
+            return FakeResponse(headers={
+                "Last-Modified": "Mon, 01 Jun 2026 10:00:00 GMT"})
+        raise http_404(request)   # in-use 1.0.0 not published on Central
+    if url.startswith(REPO_A):
+        if url.endswith("maven-metadata.xml"):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>2.5.0</release>"
+                                b"</versioning></metadata>")
+        raise http_404(request)   # artifact listed, but no 1.0.0 POM
+    assert url.startswith(REPO_B), url
+    if url.endswith("maven-metadata.xml"):
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>3.0.0</release>"
+                            b"</versioning></metadata>")
+    return FakeResponse(headers={
+        "Last-Modified": "Tue, 25 Feb 2025 16:43:14 GMT"})
+
+
+try:
+    maven.urllib.request.urlopen = ab_chain_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [REPO_A, REPO_B],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "ok", result
+assert result["latest_patch"] == "9.0.0", result          # Central's latest kept
+assert result["latest_patch_date"] == "2026-06-01", result
+assert result["message"].startswith(
+    "Version 1.0.0 not on Maven Central; found on b.example: "), result
+assert "In use: 1.0.0" in result["message"], result
+assert "latest: 9.0.0" in result["message"], result
+assert "2.5.0" not in result["message"], result
+assert result["repository"] == REPO_B, result
+assert result["source_label"] == "b.example", result
+assert any("a.example" in c[0] for c in calls), calls      # A probed...
+assert any("b.example" in c[0] for c in calls), calls      # ...and B too
+print("OK version-missing chain requires a version hit; Central latest kept")
+
+# ...and when NO candidate has the version either, the existing chain
+# wording is byte-identical and "latest published" still names Central's
+# (a candidate that lists the artifact never hijacks the row).
+
+clear_caches()
+calls.clear()
+
+
+def ab_no_version_urlopen(request, timeout):
+    calls.append(request.full_url)
+    url = request.full_url
+    if url.endswith("maven-metadata.xml"):
+        if url.startswith(maven._MAVEN_REPOSITORY):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>9.0.0</release>"
+                                b"</versioning></metadata>")
+        if url.startswith(REPO_A):
+            return FakeResponse(b"<metadata><versioning>"
+                                b"<release>2.5.0</release>"
+                                b"</versioning></metadata>")
+        return FakeResponse(b"<metadata><versioning>"
+                            b"<release>3.0.0</release>"
+                            b"</versioning></metadata>")
+    if "/9.0.0/" in url:
+        return FakeResponse(headers={
+            "Last-Modified": "Mon, 01 Jun 2026 10:00:00 GMT"})
+    raise http_404(request)   # 1.0.0 (and every latest POM) missing
+
+
+try:
+    maven.urllib.request.urlopen = ab_no_version_urlopen
+    result = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [REPO_A, REPO_B],
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert result["status"] == "unknown", result
+assert result["message"] == (
+    "Version 1.0.0 could not be verified on Maven Central "
+    "or 2 declared repositories (private build, typo, or repository gap); "
+    "latest published is 9.0.0 (2026-06-01)"), result
+assert result["repository"] == maven._MAVEN_REPOSITORY, result
+assert "source_label" not in result, result
+assert any("a.example" in u for u in calls), calls
+assert any("b.example" in u for u in calls), calls
+print("OK version missing on Central and every candidate -> unchanged wording")
+
+# G6: an EMPTY 'repositories' list behaves exactly like no list — the
+# message is byte-identical to the no-list run of the same entry, with no
+# chain, no warning, and no source-label override.
+
+clear_caches()
+calls.clear()
+try:
+    maven.urllib.request.urlopen = central_meta_404_poms_urlopen
+    empty_list = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+        "repositories": [],
+    }, date(2026, 8, 28))
+    clear_caches()
+    no_list = maven._provider_maven_central({
+        "label": "Widget",
+        "group": "org.example",
+        "artifact": "widget",
+        "version": "1.0.0",
+    }, date(2026, 8, 28))
+finally:
+    maven.urllib.request.urlopen = real_urlopen
+
+assert empty_list["status"] == "unknown", empty_list
+assert empty_list["message"] == no_list["message"], (empty_list, no_list)
+assert empty_list["message"] == (
+    "Version 1.0.0 could not be verified on Maven Central "
+    "(private build, typo, or repository gap); "
+    "latest published is 2.0.0 (2025-02-25)"), empty_list
+assert "source_label" not in empty_list, empty_list
+print("OK empty 'repositories' list behaves exactly like no list")
 
 
 # --- Adversarial-review pins: chain results stay truthful ---------------------
