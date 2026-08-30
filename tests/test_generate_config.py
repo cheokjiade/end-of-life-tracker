@@ -317,6 +317,12 @@ def test_parse_gradle_records():
             'dependencies {\n'
             '  implementation("org.example:short:$version")\n'
             '  implementation("org.example:braced:${versions.long}")\n'
+            '  implementation("org.example:dotted:$versions.long")\n'
+            '  implementation("org.example:unicode:$\u03c0")\n'
+            "  implementation('org.example:single:$version')\n"
+            '  implementation("org.example:escaped:\\$version")\n'
+            '  implementation(group = "org.example", name = "named", '
+            'version = "$\u7248\u672c")\n'
             '}\n', encoding="utf-8")
         dynamic_records, dynamic_warnings = gc.parse_gradle_records(
             dynamic, "build.gradle.kts")
@@ -325,17 +331,27 @@ def test_parse_gradle_records():
             for r in dynamic_records] == [
         ("short", None, "$version"),
         ("braced", None, "${versions.long}"),
+        ("dotted", None, "$versions.long"),
+        ("unicode", None, "$\u03c0"),
+        ("single", "$version", None),
+        ("escaped", "$version", None),
+        ("named", None, "$\u7248\u672c"),
     ]
-    assert len(dynamic_warnings) == 2
+    assert len(dynamic_warnings) == 5
     assert all(w["category"] == "unresolved_version"
                for w in dynamic_warnings)
     dynamic_config = gc.generate_config(dynamic_scan, "dynamic")
     assert not [p for p in _products(dynamic_config)
-                if p.get("source") == "maven_central"]
+                if p.get("artifact") in {
+                    "short", "braced", "dotted", "unicode", "named"}
+                and p.get("source") == "maven_central"]
     assert [(item["name"], item["version_spec"])
             for item in dynamic_config["_inventory"]["unmapped"]] == [
         ("org.example:braced", "${versions.long}"),
+        ("org.example:dotted", "$versions.long"),
+        ("org.example:named", "$\u7248\u672c"),
         ("org.example:short", "$version"),
+        ("org.example:unicode", "$\u03c0"),
     ]
 
 

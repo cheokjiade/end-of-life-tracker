@@ -136,15 +136,34 @@ def parse_pom_records(path, rel_path):
 
 _GRADLE_PATTERN_QUOTED = re.compile(
     r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
-    r'["\']([^:"\'\s]+):([^:"\'\s]+):([^"\'\s]+)["\']'
+    r'(?P<quote>["\'])(?P<group>[^:"\'\s]+):'
+    r'(?P<artifact>[^:"\'\s]+):(?P<version>[^"\'\s]+)(?P=quote)'
 )
 _GRADLE_PATTERN_NAMED = re.compile(
     r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*'
     r'group\s*=\s*"([^"]+)"\s*,\s*name\s*=\s*"([^"]+)"\s*,\s*version\s*=\s*"([^"]+)"',
     re.DOTALL,
 )
-_GRADLE_DYNAMIC_VERSION_RE = re.compile(
-    r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_.]*)")
+
+
+def _has_gradle_interpolation(value):
+    """Detect unescaped Groovy/Kotlin $ templates, including Unicode names."""
+    for index, char in enumerate(value):
+        if char != "$":
+            continue
+        slashes = 0
+        before = index - 1
+        while before >= 0 and value[before] == "\\":
+            slashes += 1
+            before -= 1
+        if slashes % 2:
+            continue
+        tail = value[index + 1:]
+        if tail.startswith("{"):
+            return True
+        if tail and tail[0].isidentifier():
+            return True
+    return False
 
 
 def parse_gradle_records(path, rel_path):
@@ -158,10 +177,10 @@ def parse_gradle_records(path, rel_path):
     records = []
     warnings = []
 
-    def emit(group, artifact, version, line):
+    def emit(group, artifact, version, line, interpolates=True):
         # A Groovy/Kotlin string interpolation is retained as a warning and
         # a versionless record; it is never emitted as an exact product.
-        if _GRADLE_DYNAMIC_VERSION_RE.search(version):
+        if interpolates and _has_gradle_interpolation(version):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
                 group=group, artifact=artifact, version_spec=version,
@@ -171,6 +190,8 @@ def parse_gradle_records(path, rel_path):
                 f"unresolved expression in {group}:{artifact} version"
                 f" ({version}) at line {line}"))
         else:
+            if interpolates:
+                version = version.replace("\\$", "$")
             record = new_record(
                 "java", f"{group}:{artifact}", version=version,
                 group=group, artifact=artifact,
@@ -181,7 +202,8 @@ def parse_gradle_records(path, rel_path):
 
     for m in _GRADLE_PATTERN_QUOTED.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
-        emit(m.group(1), m.group(2), m.group(3), line)
+        emit(m.group("group"), m.group("artifact"), m.group("version"),
+             line, interpolates=m.group("quote") == '"')
     for m in _GRADLE_PATTERN_NAMED.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
         emit(m.group(1), m.group(2), m.group(3), line)
