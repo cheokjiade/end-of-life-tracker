@@ -115,12 +115,23 @@ def test_wrapper_documentation_matches_default_report_formats():
     assert "Markdown, CSV, and HTML" in readme
 
 
+def test_generator_smoke_commands_are_copy_pasteable():
+    bash = (HELPERS / "generate_config.sh").read_text(encoding="utf-8")
+    powershell = (HELPERS / "generate_config.ps1").read_text(encoding="utf-8")
+    assert "printf '  %q lambda_function.py %q\\n' \"$PYTHON\" \"$output\"" in bash
+    assert '$quotedPython = "\'" + $python.Replace("\'", "\'\'") + "\'"' in powershell
+    assert '$quotedOutput = "\'" + ([string]$output).Replace("\'", "\'\'") + "\'"' in powershell
+    assert 'Write-Host "  & $quotedPython lambda_function.py $quotedOutput"' in powershell
+    assert 'Write-Host "  python lambda_function.py $output"' not in powershell
+
+
 TESTS = [
     test_wrapper_files_exist,
     test_bash_wrappers_parse,
     test_powershell_wrappers_parse,
     test_generator_wizards_offer_update_and_explicit_replace,
     test_wrapper_documentation_matches_default_report_formats,
+    test_generator_smoke_commands_are_copy_pasteable,
 ]
 
 

@@ -122,5 +122,5 @@ echo "(plus .eolignore and --exclude patterns; node_modules, .venv, target, dist
 # 7) the exact command for the live tracker smoke run
 echo ""
 echo "Next: review the config, then run the live tracker:"
-echo "  $PYTHON lambda_function.py $output"
+printf '  %q lambda_function.py %q\n' "$PYTHON" "$output"
 echo "Or use ./run.sh (macOS/Linux/Git Bash) or .\\run.ps1 (PowerShell) to pick a config interactively."

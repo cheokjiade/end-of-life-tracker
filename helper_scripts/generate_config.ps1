@@ -128,8 +128,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 7) the exact command for the live tracker smoke run
+$quotedPython = "'" + $python.Replace("'", "''") + "'"
+$quotedOutput = "'" + ([string]$output).Replace("'", "''") + "'"
 Write-Host ""
 Write-Host "Next: review the config, then run the live tracker:"
-Write-Host "  python lambda_function.py $output"
+Write-Host "  & $quotedPython lambda_function.py $quotedOutput"
 Write-Host "Or use .\run.ps1 (Windows) or ./run.sh (macOS/Linux/Git Bash) to pick a config interactively."
 exit $LASTEXITCODE
