@@ -31,10 +31,21 @@ Examples:
 import argparse
 import json
 import os
+import shlex
 import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
+
+
+def _live_smoke_command(output, executable=None, platform=None):
+    """Return a copy-pasteable tracker command for the current shell family."""
+    executable = executable or sys.executable
+    platform = platform or os.name
+    if platform == "nt":
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        return f"& {quote(executable)} lambda_function.py {quote(output)}"
+    return shlex.join((str(executable), "lambda_function.py", str(output)))
 
 
 def _merge_identity(entry):
@@ -209,7 +220,7 @@ def main(argv=None):
         return 1
 
     print("\nNext: review the file, then run")
-    print(f"  python lambda_function.py {output}")
+    print(f"  {_live_smoke_command(output)}")
     return 0
 
 

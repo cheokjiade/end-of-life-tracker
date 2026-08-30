@@ -22,6 +22,7 @@ sys.path.insert(0, str(_HELPER_DIR))
 
 import eol_inventory as gc
 from generate_config import (
+    _live_smoke_command,
     _merge_existing_config,
     main as generate_config_main,
 )
@@ -66,6 +67,23 @@ def test_version_helpers():
     assert gc._clean_version(">=18 <21") == "18"
     assert gc._clean_version("1.3.0") == "1.3.0"
     assert gc._clean_version("") == ""
+
+
+def test_live_smoke_command_quotes_interpreter_and_output():
+    assert _live_smoke_command(
+        r"C:\configs\my project.json",
+        executable=r"C:\Program Files\Python\python.exe",
+        platform="nt",
+    ) == (
+        "& 'C:\\Program Files\\Python\\python.exe' lambda_function.py "
+        "'C:\\configs\\my project.json'")
+    assert _live_smoke_command(
+        "/tmp/my project.json",
+        executable="/opt/Python Builds/python3",
+        platform="posix",
+    ) == (
+        "'/opt/Python Builds/python3' lambda_function.py "
+        "'/tmp/my project.json'")
 
 
 def test_entry_builders():
@@ -989,6 +1007,7 @@ def test_terraform_uses_positive_runtime_allowlist():
 
 TESTS = [
     test_version_helpers,
+    test_live_smoke_command_quotes_interpreter_and_output,
     test_entry_builders,
     test_map_java_dep,
     test_map_npm_dep,
