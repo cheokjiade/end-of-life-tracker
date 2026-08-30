@@ -17,7 +17,6 @@ import json
 import re
 from pathlib import Path
 
-from ..mappings import _clean_version
 from ..models import (
     add_location,
     guarded_local_file,
@@ -28,6 +27,7 @@ from ..models import (
 
 _EXACT_VERSION_RE = re.compile(
     r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?$")
+_CONCRETE_NODE_VERSION_RE = re.compile(r"^v?\d+(?:\.\d+){0,2}$")
 
 _SHRINKWRAP_SIBLING = "npm-shrinkwrap.json"
 _LOCK_SIBLING = "package-lock.json"
@@ -135,31 +135,49 @@ def parse_package_json_records(path, rel_path, root=None):
     warnings = [lock_warning] if lock_warning else []
     records = []
 
-    engines = data.get("engines") or {}
-    if not isinstance(engines, dict):
+    engines = data.get("engines")
+    if engines is None:
+        engines = {}
+    elif not isinstance(engines, dict):
         warnings.append(new_warning(
             "parse_error", rel_path,
             "package.json engines value is not an object; skipped"))
         engines = {}
     node_engine = engines.get("node")
-    if node_engine and not isinstance(node_engine, str):
+    if node_engine is not None and not isinstance(node_engine, str):
         warnings.append(new_warning(
             "parse_error", rel_path,
             "package.json engines.node value is not a string; skipped"))
     elif node_engine:
-        record = new_record(
-            "node", "node", version=_clean_version(node_engine),
-            kind="runtime",
-        )
-        add_location(record, rel_path, "npm", locator="engines.node")
-        records.append(record)
+        spec = node_engine.strip()
+        if not spec:
+            warnings.append(new_warning(
+                "parse_error", rel_path,
+                "package.json engines.node value is empty; skipped"))
+        elif _CONCRETE_NODE_VERSION_RE.fullmatch(spec):
+            version = spec[1:] if spec[:1].lower() == "v" else spec
+            record = new_record(
+                "node", "node", version=version, kind="runtime")
+        else:
+            record = new_record(
+                "node", "node", version=None, version_spec=spec,
+                kind="runtime")
+            warnings.append(new_warning(
+                "unresolved_version", rel_path,
+                f"engines.node has no exact version ({spec}); "
+                "range preserved, not guessed"))
+        if spec:
+            add_location(record, rel_path, "npm", locator="engines.node")
+            records.append(record)
 
     for section, scope in (("dependencies", "runtime"),
                            ("optionalDependencies", "optional"),
                            ("peerDependencies", "peer"),
                            ("devDependencies", "dev")):
-        dependencies = data.get(section) or {}
-        if not isinstance(dependencies, dict):
+        dependencies = data.get(section)
+        if dependencies is None:
+            dependencies = {}
+        elif not isinstance(dependencies, dict):
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"package.json {section} value is not an object; skipped"))

@@ -149,11 +149,13 @@ def test_unresolved_specs_preserved_with_typed_warnings():
     records, warnings = _parse("unlocked", "package.json")
 
     node = _one(records, "node")
-    assert node["kind"] == "runtime" and node["version"] == "18"
+    assert node["kind"] == "runtime" and node["version"] is None
+    assert node["version_spec"] == ">=18 <21"
     assert node["found_in"] == [{
         "path": "unlocked/package.json", "manifest": "npm",
         "locator": "engines.node"}]
-    assert not _has_warning(warnings, "unresolved_version", "engines.node")
+    assert _has_warning(warnings, "unresolved_version", "engines.node")
+    assert _has_warning(warnings, "unresolved_version", "not guessed")
     assert not _has_warning(warnings, "parse_error", "")
 
     for name, spec in (("react", "^18.2.0"), ("anything", "*"),
@@ -240,8 +242,25 @@ def test_nvmrc_and_wrong_typed_package_fields():
 
         package = root / "package.json"
         package.write_text(json.dumps({
+            "engines": {"node": "v20.15.1"},
+        }), encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            package, "package.json", root=root)
+        assert warnings == []
+        assert [(r["name"], r["version"], r["kind"]) for r in records] == [
+            ("node", "20.15.1", "runtime")]
+
+        package.write_text(json.dumps({
             "engines": {"node": {"bad": True}},
             "dependencies": ["not", "an", "object"],
+        }), encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            package, "package.json", root=root)
+        assert records == []
+        assert len([w for w in warnings if w["category"] == "parse_error"]) >= 2
+
+        package.write_text(json.dumps({
+            "engines": False, "dependencies": 0,
         }), encoding="utf-8")
         records, warnings = node_parser.parse_package_json_records(
             package, "package.json", root=root)

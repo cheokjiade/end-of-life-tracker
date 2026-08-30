@@ -315,10 +315,10 @@ def test_parse_gradle_records():
 def test_parse_package_json_records():
     records, warnings = gc.parse_package_json_records(
         FIX / "node" / "package.json", "package.json")
-    assert warnings == []
     by_name = {r["name"]: r for r in records}
     node = by_name["node"]
-    assert node["kind"] == "runtime" and node["version"] == "18"
+    assert node["kind"] == "runtime" and node["version"] is None
+    assert node["version_spec"] == ">=18 <21"
     assert node["found_in"] == [{
         "path": "package.json", "manifest": "npm", "locator": "engines.node"}]
     react = by_name["react"]
@@ -328,6 +328,8 @@ def test_parse_package_json_records():
     assert ts["version"] == "5.4.5" and ts["scope"] == "dev"
     assert ts["found_in"][0]["locator"] == "devDependencies.typescript"
     assert "@company/tokens" in by_name
+    assert len(warnings) == 1
+    assert warnings[0]["category"] == "unresolved_version"
     missing_rec, missing_warn = gc.parse_package_json_records(
         FIX / "node" / "missing.json", "missing.json")
     assert missing_rec == []
@@ -360,7 +362,8 @@ def test_scan_folder_mixed():
         ("java", "dependency"), ("java", "dependency"), ("java", "dependency"),
         ("node", "runtime"), ("node", "dependency"), ("node", "dependency"),
     ]
-    assert scan["warnings"] == []
+    assert len(scan["warnings"]) == 1
+    assert scan["warnings"][0]["category"] == "unresolved_version"
 
 
 def test_scan_folder_skips_node_modules():
@@ -657,13 +660,10 @@ def test_generate_config_gradle():
 
 def test_generate_config_node():
     config = gc.generate_config(_scan("node"), "node-project")
-    assert _sections(config) == ["=== npm dependencies ==="]
+    assert _sections(config) == [
+        "=== npm dependencies ===", "=== Needs Manual Review ==="]
     prods = _products(config)
-    assert prods[0] == {
-        "product": "nodejs", "version": "18", "label": "Node.js 18",
-        "_comment": "From package.json (node@18)",
-        "_found_in": [{"path": "package.json", "manifest": "npm",
-                       "locator": "engines.node"}]}
+    assert not [p for p in prods if p.get("product") == "nodejs"]
     assert [p for p in prods if p.get("product") == "react"] == [{
         "product": "react", "version": "18", "label": "React 18",
         "_comment": "From package.json (react@18.2.0)",
@@ -703,10 +703,18 @@ def test_generate_config_node():
     assert all(p.get("package") != "react-dom" for p in prods)
     # every exact package is tracked now: nothing skipped or unmapped
     assert not config.get("_skipped_npm_packages")
-    assert config["_inventory"]["unmapped"] == []
+    assert config["_inventory"]["unmapped"] == [{
+        "ecosystem": "node", "name": "node",
+        "reason": "no exact version (>=18 <21)",
+        "version_spec": ">=18 <21",
+        "found_in": [{"path": "package.json", "manifest": "npm",
+                      "locator": "engines.node"}],
+        "scope": "runtime",
+        "direct": True,
+    }]
     assert config["_inventory"]["summary"] == {
-        "files": 1, "records": 7, "products": 6, "unmapped": 0,
-        "warnings": 0, "indirect": 0}
+        "files": 1, "records": 7, "products": 5, "unmapped": 1,
+        "warnings": 1, "indirect": 0}
 
 
 def test_generate_config_mixed():
@@ -716,6 +724,7 @@ def test_generate_config_mixed():
         "=== Java dependencies ===",
         "=== npm dependencies ===",
         "=== Inferred from Spring Boot release train ===",
+        "=== Needs Manual Review ===",
     ]
     prods = _products(config)
     # netty declared in both pom.xml and build.gradle: one product whose
@@ -730,8 +739,7 @@ def test_generate_config_mixed():
     guava = [p for p in prods if p.get("artifact") == "guava"]
     assert guava[0]["_comment"] == (
         "From build.gradle (com.google.guava:guava:33.2.1-jre)")
-    node_entry = [p for p in prods if p.get("product") == "nodejs"]
-    assert node_entry and node_entry[0]["version"] == "20"
+    assert not [p for p in prods if p.get("product") == "nodejs"]
     sec = [p for p in prods if p.get("product") == "spring-security"]
     assert sec and sec[0]["version"] == "6.3"
     # axios has no lifecycle mapping but is lock-resolved to an exact
@@ -748,9 +756,10 @@ def test_generate_config_mixed():
              "locator": "dependencies.axios"}]}]
     assert not config.get("_skipped_npm_packages")
     inv = config["_inventory"]
-    assert inv["unmapped"] == []
-    assert inv["summary"] == {"files": 3, "records": 10, "products": 10,
-                              "unmapped": 0, "warnings": 0, "indirect": 0}
+    assert [(item["name"], item["version_spec"])
+            for item in inv["unmapped"]] == [("node", "^20.0.0")]
+    assert inv["summary"] == {"files": 3, "records": 10, "products": 9,
+                              "unmapped": 1, "warnings": 1, "indirect": 0}
 
 
 def test_generate_config_no_inference_when_security_explicit():

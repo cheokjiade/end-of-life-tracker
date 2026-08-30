@@ -243,12 +243,13 @@ def generate_config(scan, project_name, include_transitive=False):
                 # versioned packages map to a lifecycle product or to
                 # npm_registry above. They also join the legacy skipped
                 # list for older report consumers.
-                add_unmapped(record, "no version declared")
-                skipped_npm.append({
-                    "name": record["name"],
-                    "version": record["version"],
-                    "source": _basename(record["found_in"][0]["path"]),
-                })
+                add_unmapped(record, _spec_reason(record))
+                if record["kind"] == "dependency":
+                    skipped_npm.append({
+                        "name": record["name"],
+                        "version": record["version"],
+                        "source": _basename(record["found_in"][0]["path"]),
+                    })
                 continue
             if not added_section:
                 products.append({"_section": "=== npm dependencies ==="})
