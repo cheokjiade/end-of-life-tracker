@@ -437,12 +437,25 @@ def test_dotnet_central_property_expressions_remain_unresolved():
         root = Path(tmpdir)
         props = root / "Directory.Packages.props"
         props.write_text(
-            '<Project><ItemGroup><PackageVersion Include="ExprPkg" '
-            'Version="$(SharedVersion)" /></ItemGroup></Project>',
+            '<Project><ItemGroup>'
+            '<PackageVersion Include="PropertyPkg" '
+            'Version="$(SharedVersion)" />'
+            '<PackageVersion Include="ItemPkg" '
+            'Version="@(SharedVersions)" />'
+            '<PackageVersion Include="MetadataPkg" '
+            'Version="%(Version.Identity)" />'
+            '</ItemGroup></Project>',
             encoding="utf-8")
         project = root / "App.csproj"
         project.write_text(
-            '<Project><ItemGroup><PackageReference Include="ExprPkg" />'
+            '<Project><ItemGroup>'
+            '<PackageReference Include="PropertyPkg" />'
+            '<PackageReference Include="ItemPkg" />'
+            '<PackageReference Include="MetadataPkg" />'
+            '<PackageReference Include="DirectItem" '
+            'Version="@(DirectVersions)" />'
+            '<PackageReference Include="DirectMetadata" '
+            'Version="%(Direct.Identity)" />'
             '</ItemGroup></Project>', encoding="utf-8")
 
         project_records, project_warnings = \
@@ -452,15 +465,29 @@ def test_dotnet_central_property_expressions_remain_unresolved():
             dotnet_parser.parse_directory_packages_props(
                 props, "Directory.Packages.props")
 
-    for records, warnings in (
-            (project_records, project_warnings),
-            (props_records, props_warnings)):
-        package = _one(records, "ExprPkg")
+    central_expressions = {
+        "PropertyPkg": "$(SharedVersion)",
+        "ItemPkg": "@(SharedVersions)",
+        "MetadataPkg": "%(Version.Identity)",
+    }
+    for name, expression in central_expressions.items():
+        for records, warnings in (
+                (project_records, project_warnings),
+                (props_records, props_warnings)):
+            package = _one(records, name)
+            assert package["version"] is None
+            assert package["version_spec"] == expression
+            assert _has_warning(warnings, "unresolved_version", expression)
+        assert len(_one(project_records, name)["found_in"]) == 2
+
+    for name, expression in (
+            ("DirectItem", "@(DirectVersions)"),
+            ("DirectMetadata", "%(Direct.Identity)")):
+        package = _one(project_records, name)
         assert package["version"] is None
-        assert package["version_spec"] == "$(SharedVersion)"
+        assert package["version_spec"] == expression
         assert _has_warning(
-            warnings, "unresolved_version", "$(SharedVersion)")
-    assert len(_one(project_records, "ExprPkg")["found_in"]) == 2
+            project_warnings, "unresolved_version", expression)
 
 
 def test_dotnet_malformed_sidecars_and_entities_warn():
@@ -549,6 +576,11 @@ def test_dotnet_global_json_malformed_and_empty():
             assert records == []
             assert _has_warning(
                 warnings, "parse_error", "sdk.version value")
+
+        empty.write_text('{"sdk": {"version": "   "}}', encoding="utf-8")
+        records, warnings = dotnet_parser.parse_global_json_records(
+            empty, "empty.json")
+        assert records == [] and warnings == []
 
 
 def test_dotnet_parsing_is_deterministic():

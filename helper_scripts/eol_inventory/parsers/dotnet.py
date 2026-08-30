@@ -15,7 +15,7 @@ MSBuild is case-insensitive, so all name/property/attribute lookups are
 case-insensitive and deterministic: file order wins, and the record's
 name keeps the casing of the file that declared it.
 
-Unresolved $(Property) expressions never become versions: the record is
+Unresolved MSBuild expressions never become versions: the record is
 emitted without a version (spec kept in version_spec) and a warning is
 raised — mirrors the Maven/Gradle parsers.
 
@@ -71,6 +71,12 @@ def _resolve_props(value, props):
         return value
     return _PROP_RE.sub(
         lambda m: props.get(m.group(1).strip().lower(), m.group(0)), value)
+
+
+def _has_msbuild_expression(value):
+    """Whether value still contains property, item, or metadata syntax."""
+    return bool(value) and any(
+        marker in value for marker in ("$(", "@(", "%("))
 
 
 def _sibling_rel(rel_path, filename):
@@ -274,7 +280,7 @@ def parse_csproj_records(path, rel_path, root=None):
 
         if tag in ("TargetFramework", "TargetFrameworks"):
             text = (elem.text or "").strip()
-            if "$(" in text:
+            if _has_msbuild_expression(text):
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
                     f"unresolved property expression in <{tag}> ({text})"))
@@ -304,8 +310,16 @@ def parse_csproj_records(path, rel_path, root=None):
 
         raw_version = attrs.get("version") or _child_version(elem)
         version = _resolve_props(raw_version, props) if raw_version else None
-        if version and "$(" in version:
-            version = None  # unresolved property — fall through
+        if _has_msbuild_expression(version):
+            record = new_record(
+                "dotnet", name, version=None, version_spec=version)
+            add_location(record, rel_path, "dotnet",
+                         locator=f"PackageReference:{name}")
+            records.append(record)
+            warnings.append(new_warning(
+                "unresolved_version", rel_path,
+                f"unresolved MSBuild expression for {name} ({version})"))
+            continue
 
         if version:
             record = new_record("dotnet", name, version=version)
@@ -318,7 +332,7 @@ def parse_csproj_records(path, rel_path, root=None):
         hit = central.get(name.lower())
         if hit:
             declared, version = hit
-            unresolved = "$(" in version
+            unresolved = _has_msbuild_expression(version)
             record = new_record(
                 "dotnet", name,
                 version=None if unresolved else version,
@@ -381,7 +395,7 @@ def parse_directory_packages_props(path, rel_path):
             continue
         seen.add(name.lower())
         version = attrs.get("version") or _child_version(elem)
-        if version and "$(" not in version:
+        if version and not _has_msbuild_expression(version):
             record = new_record("dotnet", name, version=version)
         else:
             record = new_record(
@@ -424,6 +438,7 @@ def parse_global_json_records(path, rel_path):
         return [], [new_warning(
             "parse_error", rel_path,
             "global.json sdk.version value is not a string")]
+    version = version.strip()
     if not version:
         return [], []
     record = new_record("dotnet", "dotnet-sdk", version=version,
