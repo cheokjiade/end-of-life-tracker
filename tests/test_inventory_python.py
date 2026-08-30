@@ -228,6 +228,20 @@ def test_requirements_root_include_hashes_and_depth_guard():
         assert _one(records, "urllib3")["found_in"][0]["line"] == 4
         assert warnings == []
 
+        (root / "requirements.txt").write_text(
+            "requests==2.32.4 \\\n", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert _one(records, "requests")["version"] == "2.32.4"
+        assert warnings == []
+
+        (root / "requirements.txt").write_text(
+            "requests==2.32.4 " + "\\", encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            root / "requirements.txt", "requirements.txt", root=root)
+        assert _one(records, "requests")["version"] is None
+        assert _has_warning(warnings, "unresolved_version", "requests")
+
         (root / "shared.txt").write_text(
             "shared==1.0.0\n", encoding="utf-8")
         (root / "left.txt").write_text(

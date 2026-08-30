@@ -291,8 +291,9 @@ def _logical_requirement_lines(text):
         parts = []
         start = None
     if parts:
-        # A final backslash without a newline is not a continuation.
-        yield start, " ".join(parts) + "\\"
+        # A trailing backslash followed by the file's final newline is still
+        # a continuation; join it to the empty logical remainder.
+        yield start, " ".join(parts)
 
 
 def _strip_comment(line):
