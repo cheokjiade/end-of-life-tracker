@@ -194,13 +194,20 @@ def generate_config(scan, project_name, include_transitive=False):
     # --- POM property-driven platform versions --------------------------------
     property_records = [r for r in records if r["kind"] == "property"]
     if property_records:
-        products.append({"_section": "=== Platforms (from POM properties) ==="})
+        added_section = False
         for record in property_records:
             mapper = _POM_PROPERTY_MAPPINGS.get(record["name"])
-            if mapper is None or record["version"] is None:
+            if mapper is None:
+                continue
+            if record["version"] is None:
+                add_unmapped(record, _spec_reason(record))
                 continue
             v = record["version"]
             entry = mapper(v)
+            if not added_section:
+                products.append({
+                    "_section": "=== Platforms (from POM properties) ==="})
+                added_section = True
             add(entry, record, comment=(
                 f"From {_basename(record['found_in'][0]['path'])} "
                 f"(<{record['name']}>{v}</{record['name']}>)"))

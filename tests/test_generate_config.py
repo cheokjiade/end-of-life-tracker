@@ -685,6 +685,31 @@ def test_generate_config_gradle():
     assert "single-quoted" in arts and "junit" not in arts
 
 
+def test_generate_config_keeps_unresolved_mapped_pom_properties_visible():
+    with tempfile.TemporaryDirectory() as td:
+        pom = Path(td) / "pom.xml"
+        pom.write_text(
+            '<project><properties><java.version>${jdk.version}</java.version>'
+            '</properties></project>', encoding="utf-8")
+        config = gc.generate_config(gc.scan_folder(td), "unresolved-pom")
+
+    assert not [p for p in _products(config)
+                if p.get("product") == "amazon-corretto"]
+    assert _sections(config) == ["=== Needs Manual Review ==="]
+    assert config["_inventory"]["unmapped"] == [{
+        "ecosystem": "java", "name": "java.version",
+        "reason": "no exact version (${jdk.version})",
+        "version_spec": "${jdk.version}",
+        "found_in": [{
+            "path": "pom.xml", "manifest": "maven",
+            "locator": "property:java.version"}],
+        "scope": "runtime", "direct": True,
+    }]
+    assert config["_inventory"]["summary"] == {
+        "files": 1, "records": 1, "products": 0, "unmapped": 1,
+        "warnings": 1, "indirect": 0}
+
+
 def test_generate_config_node():
     config = gc.generate_config(_scan("node"), "node-project")
     assert _sections(config) == [
@@ -1066,6 +1091,7 @@ TESTS = [
     test_scan_discovers_generic_gradle_nvmrc_and_isolates_bad_manifest,
     test_generate_config_maven_multi,
     test_generate_config_gradle,
+    test_generate_config_keeps_unresolved_mapped_pom_properties_visible,
     test_generate_config_node,
     test_generate_config_mixed,
     test_generate_config_no_inference_when_security_explicit,
