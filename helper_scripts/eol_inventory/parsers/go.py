@@ -45,7 +45,9 @@ def _strip_v(version):
 
 
 def _is_local_path(token):
-    """True for ./, ../, / and drive-letter rooted replacement targets."""
+    """True for dot, relative, absolute, and drive-rooted local targets."""
+    if token in (".", ".."):
+        return True
     if token.startswith("./") or token.startswith("../"):
         return True
     if token.startswith("/") or token.startswith("\\"):

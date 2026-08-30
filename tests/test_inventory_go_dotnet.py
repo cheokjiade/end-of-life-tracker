@@ -77,6 +77,8 @@ def test_go_strip_v():
 
 
 def test_go_is_local_path():
+    assert go_parser._is_local_path(".")
+    assert go_parser._is_local_path("..")
     assert go_parser._is_local_path("./dep")
     assert go_parser._is_local_path("../dep")
     assert go_parser._is_local_path("/abs/dep")
@@ -232,6 +234,19 @@ def test_go_local_replace_never_public_dependency():
     assert not _records_named(records, "github.com/local/dep")
     assert _has_warning(
         warnings, "go_local_replace", "./internal/local/dep")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        for target in (".", ".."):
+            path.write_text(
+                "module example.test/app\n"
+                "require example.test/local v1.0.0\n"
+                f"replace example.test/local => {target}\n",
+                encoding="utf-8")
+            records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+            assert not _records_named(records, target)
+            assert not _records_named(records, "example.test/local")
+            assert _has_warning(warnings, "go_local_replace", target)
 
 
 def test_go_malformed_lines_warn_and_parsing_continues():
