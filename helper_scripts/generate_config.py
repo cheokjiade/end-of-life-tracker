@@ -59,6 +59,17 @@ def _merge_identity(entry):
     return identity
 
 
+def _provenance_keys(entry):
+    """Stable declaration-site identities for scanner-generated entries."""
+    keys = set()
+    for location in entry.get("_found_in") or []:
+        if not isinstance(location, dict) or not location.get("path"):
+            continue
+        keys.add(tuple(location.get(key) for key in (
+            "path", "manifest", "line", "locator")))
+    return keys
+
+
 def _merge_existing_config(existing, generated):
     """Merge scan evidence into an existing config without deleting curation."""
     fresh = [p for p in generated.get("products", [])
@@ -66,6 +77,12 @@ def _merge_existing_config(existing, generated):
     fresh_by_identity = {}
     for index, product in enumerate(fresh):
         fresh_by_identity.setdefault(_merge_identity(product), []).append(index)
+    fresh_by_provenance = {}
+    for index, product in enumerate(fresh):
+        if product.get("_inventory_generated") != "unmapped":
+            continue
+        for key in _provenance_keys(product):
+            fresh_by_provenance.setdefault(key, set()).add(index)
     used = set()
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
@@ -79,18 +96,30 @@ def _merge_existing_config(existing, generated):
                       if index not in used]
         exact = [index for index in candidates
                  if fresh[index].get("version") == old.get("version")]
+        remapped = False
         if exact:
             selected = exact[0]
         elif len(candidates) == 1:
             selected = candidates[0]
         else:
-            products.append(old)
-            stats["retained_not_observed"] += 1
-            continue
+            provenance_candidates = set()
+            if old.get("_comment") and _provenance_keys(old):
+                for key in _provenance_keys(old):
+                    provenance_candidates.update(
+                        fresh_by_provenance.get(key, ()))
+                provenance_candidates.difference_update(used)
+            if len(provenance_candidates) == 1:
+                selected = next(iter(provenance_candidates))
+                remapped = True
+            else:
+                products.append(old)
+                stats["retained_not_observed"] += 1
+                continue
         new = fresh[selected]
         used.add(selected)
-        merged_entry = dict(old)
-        merged_entry.update(new)
+        merged_entry = dict(new) if remapped else dict(old)
+        if not remapped:
+            merged_entry.update(new)
         for key in ("policy_note", "note", "reference_url", "eol_date",
                     "latest", "_comment"):
             if key in old:

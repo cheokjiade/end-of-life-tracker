@@ -1043,6 +1043,46 @@ def test_update_merge_preserves_multiple_versions_and_default_source():
         "retained_not_observed": 0}
 
 
+def test_update_replaces_stale_scanner_mapping_by_provenance():
+    location = {
+        "path": "package.json", "manifest": "npm",
+        "locator": "engines.node"}
+    existing = {
+        "products": [{
+            "product": "nodejs", "version": "18", "label": "Node.js 18",
+            "policy_note": "Keep human context",
+            "_comment": "From package.json (node@18)",
+            "_found_in": [location],
+        }],
+        "_inventory": {"generator_version": "old"},
+    }
+    generated = {
+        "products": [{
+            "source": "manual", "label": "node", "version": ">=18 <21",
+            "note": "no exact version (>=18 <21)",
+            "_comment": "Untracked node inventory item",
+            "_found_in": [location],
+            "_inventory_generated": "unmapped",
+        }],
+        "_inventory": {"generator_version": "new"},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 1
+    node = products[0]
+    assert node["source"] == "manual"
+    assert node["version"] == ">=18 <21"
+    assert node["note"] == "no exact version (>=18 <21)"
+    assert node["policy_note"] == "Keep human context"
+    assert node["_comment"] == "From package.json (node@18)"
+    assert node["_found_in"] == [location]
+    assert "product" not in node
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
 def test_cli_update_rejects_non_object_json():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1105,6 +1145,7 @@ TESTS = [
     test_transitive_dependencies_are_opt_in,
     test_update_merge_preserves_curation_and_unobserved_entries,
     test_update_merge_preserves_multiple_versions_and_default_source,
+    test_update_replaces_stale_scanner_mapping_by_provenance,
     test_cli_update_rejects_non_object_json,
     test_terraform_uses_positive_runtime_allowlist,
 ]

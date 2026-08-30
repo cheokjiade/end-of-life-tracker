@@ -267,6 +267,15 @@ def test_nvmrc_and_wrong_typed_package_fields():
         assert records == []
         assert len([w for w in warnings if w["category"] == "parse_error"]) >= 2
 
+        package.write_text(json.dumps({
+            "engines": {"node": ""},
+        }), encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            package, "package.json", root=root)
+        assert records == []
+        assert _has_warning(
+            warnings, "parse_error", "engines.node value is empty")
+
 
 # ---------------------------------------------------------------------------
 

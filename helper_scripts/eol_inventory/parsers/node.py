@@ -144,11 +144,13 @@ def parse_package_json_records(path, rel_path, root=None):
             "package.json engines value is not an object; skipped"))
         engines = {}
     node_engine = engines.get("node")
-    if node_engine is not None and not isinstance(node_engine, str):
+    if node_engine is None:
+        pass
+    elif not isinstance(node_engine, str):
         warnings.append(new_warning(
             "parse_error", rel_path,
             "package.json engines.node value is not a string; skipped"))
-    elif node_engine:
+    else:
         spec = node_engine.strip()
         if not spec:
             warnings.append(new_warning(
