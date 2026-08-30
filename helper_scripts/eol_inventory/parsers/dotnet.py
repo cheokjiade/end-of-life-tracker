@@ -191,40 +191,55 @@ def _read_lock_versions(lock_abs, root, rel_path):
         return {}, new_warning(
             "parse_error", rel_path,
             "packages.lock.json top-level value is not an object")
-    dependencies = data.get("dependencies")
-    if dependencies is None:
+    if "dependencies" not in data:
         dependencies = {}
-    elif not isinstance(dependencies, dict):
+    else:
+        dependencies = data["dependencies"]
+    if not isinstance(dependencies, dict):
         return {}, new_warning(
             "parse_error", rel_path,
             "packages.lock.json dependencies value is not an object")
+    if any(not isinstance(tfm, str) for tfm in dependencies):
+        return {}, new_warning(
+            "parse_error", rel_path,
+            "packages.lock.json dependency group name is not a string")
     tfms = sorted(dependencies)
     lock = {}
     for wanted in ("Direct", "Transitive"):
         for tfm in tfms:
-            packages = dependencies.get(tfm)
-            if packages is None:
-                packages = {}
-            elif not isinstance(packages, dict):
+            packages = dependencies[tfm]
+            if not isinstance(packages, dict):
                 return {}, new_warning(
                     "parse_error", rel_path,
                     f"packages.lock.json dependency group {tfm!r} is not an object")
+            if any(not isinstance(pkg, str) for pkg in packages):
+                return {}, new_warning(
+                    "parse_error", rel_path,
+                    f"packages.lock.json dependency group {tfm!r} has a "
+                    "non-string package name")
             for pkg in sorted(packages):
                 key = pkg.lower()
                 if key in lock:
                     continue
-                info = packages.get(pkg)
-                if info is None:
-                    info = {}
-                elif not isinstance(info, dict):
+                info = packages[pkg]
+                if not isinstance(info, dict):
                     return {}, new_warning(
                         "parse_error", rel_path,
                         f"packages.lock.json package {pkg!r} is not an object")
-                if info.get("type") != wanted:
-                    continue
+                package_type = info.get("type")
+                if not isinstance(package_type, str) or not package_type:
+                    return {}, new_warning(
+                        "parse_error", rel_path,
+                        f"packages.lock.json package {pkg!r} type is not a string")
                 version = info.get("resolved")
-                if version:
-                    lock[key] = version
+                if not isinstance(version, str) or not version:
+                    return {}, new_warning(
+                        "parse_error", rel_path,
+                        f"packages.lock.json package {pkg!r} resolved version "
+                        "is not a non-empty string")
+                if package_type != wanted:
+                    continue
+                lock[key] = version
     return lock, None
 
 
@@ -382,7 +397,9 @@ def parse_global_json_records(path, rel_path):
         return [], [new_warning(
             "parse_error", rel_path,
             "global.json top-level value is not an object")]
-    sdk = data.get("sdk") or {}
+    sdk = data.get("sdk")
+    if sdk is None:
+        sdk = {}
     if not isinstance(sdk, dict):
         return [], [new_warning(
             "parse_error", rel_path,

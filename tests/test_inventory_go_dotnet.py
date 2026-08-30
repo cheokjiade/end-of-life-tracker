@@ -445,9 +445,16 @@ def test_dotnet_malformed_sidecars_and_entities_warn():
 
 def test_dotnet_falsey_malformed_lock_structures_warn():
     cases = (
+        ({"dependencies": None}, "dependencies value"),
         ({"dependencies": []}, "dependencies value"),
+        ({"dependencies": {"net8.0": None}}, "dependency group 'net8.0'"),
         ({"dependencies": {"net8.0": []}}, "dependency group 'net8.0'"),
+        ({"dependencies": {"net8.0": {"Pkg": None}}}, "package 'Pkg'"),
         ({"dependencies": {"net8.0": {"Pkg": []}}}, "package 'Pkg'"),
+        ({"dependencies": {"net8.0": {"Pkg": {
+            "type": [], "resolved": "1.0.0"}}}}, "type is not a string"),
+        ({"dependencies": {"net8.0": {"Pkg": {
+            "type": "Direct", "resolved": []}}}}, "resolved version"),
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -475,6 +482,18 @@ def test_dotnet_global_json_malformed_and_empty():
         records, warnings = dotnet_parser.parse_global_json_records(
             empty, "empty.json")
         assert records == [] and warnings == []
+
+        empty.write_text('{"sdk": null}', encoding="utf-8")
+        records, warnings = dotnet_parser.parse_global_json_records(
+            empty, "empty.json")
+        assert records == [] and warnings == []
+
+        for sdk in ([], "", 0, False):
+            empty.write_text(json.dumps({"sdk": sdk}), encoding="utf-8")
+            records, warnings = dotnet_parser.parse_global_json_records(
+                empty, "empty.json")
+            assert records == []
+            assert _has_warning(warnings, "parse_error", "sdk value")
 
 
 def test_dotnet_parsing_is_deterministic():
