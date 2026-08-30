@@ -508,10 +508,20 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         project = root / "App.csproj"
         project.write_text(
             '<Project>'
+            '<PropertyGroup><ChooseVersion>2.0.0</ChooseVersion>'
+            '</PropertyGroup>'
             '<PropertyGroup Condition="\'$(Configuration)\' == \'Debug\'">'
             '<PkgVersion>1.0.0</PkgVersion></PropertyGroup>'
             '<PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">'
             '<PkgVersion>2.0.0</PkgVersion></PropertyGroup>'
+            '<Choose>'
+            '<When Condition="\'$(Configuration)\' == \'Debug\'">'
+            '<PropertyGroup><ChooseVersion>1.0.0</ChooseVersion>'
+            '</PropertyGroup></When>'
+            '<Otherwise><PropertyGroup>'
+            '<ChooseVersion>3.0.0</ChooseVersion>'
+            '</PropertyGroup></Otherwise>'
+            '</Choose>'
             '<ItemGroup>'
             '<PackageReference Include="DirectRange" Version="[1.0,2.0)" />'
             '<PackageReference Include="DirectLocked" Version="2.*" />'
@@ -519,6 +529,8 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<PackageReference Include="CentralLocked" />'
             '<PackageReference Include="ConditionalPkg" '
             'Version="$(PkgVersion)" />'
+            '<PackageReference Include="ChooseConditionalPkg" '
+            'Version="$(ChooseVersion)" />'
             '<PackageReference Include="ExactPkg" Version="1.2.3" />'
             '</ItemGroup></Project>', encoding="utf-8")
         (root / "global.json").write_text(
@@ -533,7 +545,8 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     for name, spec in (
             ("DirectRange", "[1.0,2.0)"),
             ("CentralRange", "[3.0,4.0)"),
-            ("ConditionalPkg", "$(PkgVersion)")):
+            ("ConditionalPkg", "$(PkgVersion)"),
+            ("ChooseConditionalPkg", "$(ChooseVersion)")):
         package = _one(records, name)
         assert package["version"] is None
         assert package["version_spec"] == spec
@@ -560,8 +573,10 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     tracked_names = {
         p["package"] for p in config["products"]
         if p.get("source") == "nuget_registry"}
-    assert {"DirectRange", "CentralRange", "ConditionalPkg"}.isdisjoint(
-        tracked_names)
+    assert {
+        "DirectRange", "CentralRange", "ConditionalPkg",
+        "ChooseConditionalPkg",
+    }.isdisjoint(tracked_names)
     assert {"DirectLocked", "CentralLocked", "ExactPkg"} <= tracked_names
     assert not [p for p in config["products"] if p.get("product") == "dotnet"]
 

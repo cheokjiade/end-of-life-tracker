@@ -114,17 +114,25 @@ def _load_xml(path, rel_path, what):
 def _collect_properties(root):
     """Unambiguous properties safe to resolve without evaluating MSBuild."""
     declarations = {}
-    for elem in root.iter():
-        if _local(elem.tag) != "PropertyGroup":
-            continue
-        group_conditional = bool(_attrs_ci(elem).get("condition"))
+
+    def visit(elem, conditional_context=False):
+        tag = _local(elem.tag).lower()
+        conditional = (
+            conditional_context
+            or bool(_attrs_ci(elem).get("condition"))
+            or tag in ("when", "otherwise", "target"))
+        if tag == "propertygroup":
+            for child in elem:
+                name = _local(child.tag).lower()
+                if name:
+                    child_conditional = conditional or bool(
+                        _attrs_ci(child).get("condition"))
+                    declarations.setdefault(name, []).append((
+                        (child.text or "").strip(), child_conditional))
         for child in elem:
-            name = _local(child.tag).lower()
-            if name:
-                conditional = group_conditional or bool(
-                    _attrs_ci(child).get("condition"))
-                declarations.setdefault(name, []).append((
-                    (child.text or "").strip(), conditional))
+            visit(child, conditional)
+
+    visit(root)
     props = {}
     for name, values in declarations.items():
         if not any(conditional for _, conditional in values):
