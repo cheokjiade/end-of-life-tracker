@@ -318,12 +318,21 @@ def parse_csproj_records(path, rel_path, root=None):
         hit = central.get(name.lower())
         if hit:
             declared, version = hit
-            record = new_record("dotnet", name, version=version)
+            unresolved = "$(" in version
+            record = new_record(
+                "dotnet", name,
+                version=None if unresolved else version,
+                version_spec=version if unresolved else None)
             add_location(record, rel_path, "dotnet",
                          locator=f"PackageReference:{name}")
             add_location(record, central_rel, "dotnet",
                          locator=f"PackageVersion:{declared}")
             records.append(record)
+            if unresolved:
+                warnings.append(new_warning(
+                    "unresolved_version", central_rel,
+                    f"unresolved property expression in PackageVersion "
+                    f"{declared} ({version})"))
             continue
 
         version = lock.get(name.lower())
@@ -372,13 +381,17 @@ def parse_directory_packages_props(path, rel_path):
             continue
         seen.add(name.lower())
         version = attrs.get("version") or _child_version(elem)
-        if version:
+        if version and "$(" not in version:
             record = new_record("dotnet", name, version=version)
         else:
-            record = new_record("dotnet", name, version=None)
+            record = new_record(
+                "dotnet", name, version=None,
+                version_spec=version if version else None)
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
-                f"PackageVersion {name} has no Version"))
+                f"PackageVersion {name} "
+                + (f"has unresolved expression ({version})"
+                   if version else "has no Version")))
         add_location(record, rel_path, "dotnet",
                      locator=f"PackageVersion:{name}")
         records.append(record)
@@ -404,13 +417,15 @@ def parse_global_json_records(path, rel_path):
         return [], [new_warning(
             "parse_error", rel_path,
             "global.json sdk value is not an object")]
-    version = sdk.get("version")
-    if not version:
+    if "version" not in sdk or sdk["version"] is None:
         return [], []
+    version = sdk["version"]
     if not isinstance(version, str):
         return [], [new_warning(
             "parse_error", rel_path,
             "global.json sdk.version value is not a string")]
+    if not version:
+        return [], []
     record = new_record("dotnet", "dotnet-sdk", version=version,
                         kind="runtime")
     add_location(record, rel_path, "dotnet", locator="sdk.version")

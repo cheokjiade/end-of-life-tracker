@@ -432,6 +432,37 @@ def test_dotnet_finds_central_versions_at_scan_root():
     assert warnings == []
 
 
+def test_dotnet_central_property_expressions_remain_unresolved():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        props = root / "Directory.Packages.props"
+        props.write_text(
+            '<Project><ItemGroup><PackageVersion Include="ExprPkg" '
+            'Version="$(SharedVersion)" /></ItemGroup></Project>',
+            encoding="utf-8")
+        project = root / "App.csproj"
+        project.write_text(
+            '<Project><ItemGroup><PackageReference Include="ExprPkg" />'
+            '</ItemGroup></Project>', encoding="utf-8")
+
+        project_records, project_warnings = \
+            dotnet_parser.parse_csproj_records(
+                project, "App.csproj", root=root)
+        props_records, props_warnings = \
+            dotnet_parser.parse_directory_packages_props(
+                props, "Directory.Packages.props")
+
+    for records, warnings in (
+            (project_records, project_warnings),
+            (props_records, props_warnings)):
+        package = _one(records, "ExprPkg")
+        assert package["version"] is None
+        assert package["version_spec"] == "$(SharedVersion)"
+        assert _has_warning(
+            warnings, "unresolved_version", "$(SharedVersion)")
+    assert len(_one(project_records, "ExprPkg")["found_in"]) == 2
+
+
 def test_dotnet_malformed_sidecars_and_entities_warn():
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -510,6 +541,15 @@ def test_dotnet_global_json_malformed_and_empty():
             assert records == []
             assert _has_warning(warnings, "parse_error", "sdk value")
 
+        for version in (False, 0, [], {}):
+            empty.write_text(json.dumps({"sdk": {"version": version}}),
+                             encoding="utf-8")
+            records, warnings = dotnet_parser.parse_global_json_records(
+                empty, "empty.json")
+            assert records == []
+            assert _has_warning(
+                warnings, "parse_error", "sdk.version value")
+
 
 def test_dotnet_parsing_is_deterministic():
     first = _parse_csproj("dotnet", "project", "MyApp.csproj")
@@ -543,6 +583,7 @@ TESTS = [
     test_dotnet_global_json_sdk,
     test_dotnet_project_without_siblings_warns,
     test_dotnet_finds_central_versions_at_scan_root,
+    test_dotnet_central_property_expressions_remain_unresolved,
     test_dotnet_malformed_sidecars_and_entities_warn,
     test_dotnet_falsey_malformed_lock_structures_warn,
     test_dotnet_global_json_malformed_and_empty,
