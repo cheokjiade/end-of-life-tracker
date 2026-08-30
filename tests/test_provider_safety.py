@@ -73,13 +73,20 @@ def test_dispatch_isolates_provider_failures():
         ({
             "label": "Broken", "product": "x", "version": "1",
             "status": "invented", "message": "bad", "days_remaining": None,
+            "eol_date": None, "latest_patch": None,
             "source": "test_invalid_result",
         }, "unsupported status"),
         ({
             "label": "Broken", "product": "x", "version": "1",
             "status": "ok", "message": "bad", "days_remaining": "soon",
+            "eol_date": None, "latest_patch": None,
             "source": "test_invalid_result",
         }, "days_remaining"),
+        ({
+            "label": "Broken", "product": "x", "version": "1",
+            "status": "ok", "message": "bad", "days_remaining": None,
+            "eol_date": None, "latest_patch": None, "source": "wrong_source",
+        }, "does not match dispatched source"),
     )
     source = "test_invalid_result"
     try:

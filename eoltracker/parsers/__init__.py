@@ -20,7 +20,7 @@ from ..core import _error_result, logger
 PROVIDERS, SOURCE_LABELS, _URL_FNS = {}, {}, {}
 _RESULT_KEYS = frozenset((
     "label", "product", "version", "status", "message",
-    "days_remaining", "source",
+    "eol_date", "days_remaining", "latest_patch", "source",
 ))
 _RESULT_STATUSES = frozenset((
     "eol", "approaching", "ok", "error", "unknown", "untracked",
@@ -40,7 +40,7 @@ def source_url_for(result):
     return fn(result) if fn else None
 
 
-def _validate_provider_result(result):
+def _validate_provider_result(result, expected_source=None):
     """Reject provider output that cannot satisfy the report contract."""
     if not isinstance(result, dict):
         raise TypeError(
@@ -51,6 +51,10 @@ def _validate_provider_result(result):
     for key in ("label", "message", "source"):
         if not isinstance(result[key], str) or not result[key]:
             raise TypeError(f"provider result {key} must be a non-empty string")
+    if expected_source is not None and result["source"] != expected_source:
+        raise ValueError(
+            f"provider result source {result['source']!r} does not match "
+            f"dispatched source {expected_source!r}")
     if result["status"] not in _RESULT_STATUSES:
         raise ValueError(f"provider result has unsupported status {result['status']!r}")
     days = result["days_remaining"]
@@ -108,7 +112,7 @@ def check_product(entry, today, index=None):
                     f"unexpected {type(exc).__name__} while checking source "
                     f"'{source}'")
             try:
-                _validate_provider_result(result)
+                _validate_provider_result(result, expected_source=source)
             except (TypeError, ValueError) as exc:
                 # A broken provider contract must not leak into the report
                 # loop or formatters; normalize it like any other failure.

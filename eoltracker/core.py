@@ -98,7 +98,9 @@ def _error_result(entry, message):
             "version": entry.get("version"),
             "status": "error",
             "message": message,
+            "eol_date": None,
             "days_remaining": None,
+            "latest_patch": None,
             "source": source,
         }
     return {
@@ -107,7 +109,9 @@ def _error_result(entry, message):
         "version": None,
         "status": "error",
         "message": message,
+        "eol_date": None,
         "days_remaining": None,
+        "latest_patch": None,
         "source": "unknown",
     }
 
