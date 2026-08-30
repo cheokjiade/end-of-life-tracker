@@ -37,7 +37,21 @@ for _finder, _name, _ispkg in pkgutil.iter_modules(__path__):
 
 def source_url_for(result):
     fn = _URL_FNS.get(result.get("source"))
-    return fn(result) if fn else None
+    if fn is None:
+        return None
+    try:
+        url = fn(result)
+    except Exception:
+        logger.exception(
+            "Provider URL builder %s failed for %s",
+            result.get("source"), result.get("label"))
+        return None
+    if url is not None and not isinstance(url, str):
+        logger.error(
+            "Provider URL builder %s returned %s, expected string or null",
+            result.get("source"), type(url).__name__)
+        return None
+    return url
 
 
 def _validate_provider_result(result, expected_source=None):

@@ -8,8 +8,9 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker.core import decompress_gzip_bytes, read_response_bytes
-from eoltracker.parsers import PROVIDERS, check_product
+from eoltracker.parsers import PROVIDERS, _URL_FNS, check_product
 from eoltracker.parsers import endoflife_date, npm_registry
+from eoltracker.report import format_report_html
 
 TODAY = date(2026, 8, 29)
 
@@ -147,11 +148,34 @@ def test_endoflife_urls_escape_config_values():
     assert endoflife_date.url_for({"product": "../bad?x"}) is None
 
 
+def test_provider_url_failures_do_not_break_html_reports():
+    manual = check_product({
+        "source": "manual", "label": "Manual", "version": "1",
+        "reference_url": [],
+    }, TODAY)
+    html, _ = format_report_html([manual], [30, 60, 90], TODAY)
+    assert "Manual" in html
+
+    source = "test_bad_url"
+    _URL_FNS[source] = lambda _result: 1 / 0
+    result = {
+        "label": "Broken URL", "product": "x", "version": "1",
+        "status": "ok", "message": "still reportable", "eol_date": None,
+        "days_remaining": None, "latest_patch": None, "source": source,
+    }
+    try:
+        html, _ = format_report_html([result], [30, 60, 90], TODAY)
+    finally:
+        _URL_FNS.pop(source, None)
+    assert "Broken URL" in html and "still reportable" in html
+
+
 TESTS = [
     test_bounded_response_and_gzip_helpers,
     test_dispatch_isolates_provider_failures,
     test_malformed_provider_documents_return_error_rows,
     test_endoflife_urls_escape_config_values,
+    test_provider_url_failures_do_not_break_html_reports,
 ]
 
 
