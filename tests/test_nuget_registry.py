@@ -23,7 +23,7 @@ from eoltracker.report import format_report_text
 TODAY = date(2026, 8, 28)
 
 SERVICE_INDEX_URL = "https://api.nuget.org/v3/index.json"
-REG_BASE = "https://api.nuget.example/registrations"
+REG_BASE = "https://api.nuget.org/v3/registrations-test"
 CATALOG = "https://api.nuget.example/catalog"
 
 
@@ -336,11 +336,11 @@ def t_malformed_registration_is_error():
         ("registration index has no items list", {"items": 3}, {}),
         ("neither inline items nor an @id", {"items": [{"items": None}]}, {}),
         ("did not return an object",
-         {"items": [{"@id": "https://page.url", "items": None}]},
-         {"https://page.url": "not-a-dict"}),
+         {"items": [{"@id": f"{REG_BASE}/page.json", "items": None}]},
+         {f"{REG_BASE}/page.json": "not-a-dict"}),
         ("registration page has no items list",
-         {"items": [{"@id": "https://page.url", "items": None}]},
-         {"https://page.url": {"items": 5}}),
+         {"items": [{"@id": f"{REG_BASE}/page.json", "items": None}]},
+         {f"{REG_BASE}/page.json": {"items": 5}}),
         ("contains no catalog entries",
          {"items": [{"items": [{"leaf": "nope"}]}]}, {}),
         ("contains no catalog entries", {"items": []}, {}),
@@ -409,11 +409,54 @@ def t_collect_leaves_mixed_pages():
 
     reg = reg_index(
         page(leaf("1.0.0", "2020-01-01T00:00:00Z", pkg="M"), page_id="p1"),
-        {"@id": "https://page2", "count": 1, "items": None},
+        {"@id": f"{REG_BASE}/page2", "count": 1, "items": None},
     )
-    leaves = nuget._collect_leaves(reg, fetch_page)
-    assert calls == ["https://page2"]
+    leaves = nuget._collect_leaves(reg, fetch_page, REG_BASE)
+    assert calls == [f"{REG_BASE}/page2"]
     assert [l["version"] for l in leaves] == ["1.0.0", "3.0.0"]
+
+
+@test
+def t_pagination_guards():
+    calls = []
+    for page_url, fragment in (
+            ("http://api.nuget.org/v3/registrations-test/page", "HTTPS"),
+            ("https://example.invalid/page", "origin"),
+            ("https://api.nuget.org/v3/other/page", "base"),
+            ("https://api.nuget.org/v3/registrations-test/%2e%2e/private", "parent")):
+        try:
+            nuget._collect_leaves(
+                {"items": [{"@id": page_url, "items": None}]},
+                lambda url: calls.append(url) or {"items": []}, REG_BASE)
+        except ValueError as exc:
+            assert fragment in str(exc), (page_url, exc)
+        else:
+            assert False, f"unsafe page URL accepted: {page_url}"
+    assert calls == []
+
+    try:
+        nuget._collect_leaves(
+            {"items": [{"items": []}] * (nuget._NUGET_MAX_PAGES + 1)},
+            lambda _url: {}, REG_BASE)
+    except ValueError as exc:
+        assert "page limit" in str(exc)
+    else:
+        assert False, "oversize registration page list was accepted"
+
+    real_limit = nuget._NUGET_MAX_LEAVES
+    try:
+        nuget._NUGET_MAX_LEAVES = 1
+        inline = reg_index(page(
+            leaf("1.0.0", "2020-01-01T00:00:00Z", pkg="M"),
+            leaf("2.0.0", "2021-01-01T00:00:00Z", pkg="M")))
+        try:
+            nuget._collect_leaves(inline, lambda _url: {}, REG_BASE)
+        except ValueError as exc:
+            assert "leaf limit" in str(exc)
+        else:
+            assert False, "oversize registration leaf list was accepted"
+    finally:
+        nuget._NUGET_MAX_LEAVES = real_limit
 
 
 # ---------------------------------------------------------------------------

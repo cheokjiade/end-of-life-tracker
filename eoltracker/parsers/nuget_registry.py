@@ -34,6 +34,8 @@ _NUGET_STALE_MONTHS = 24
 _NUGET_UNKNOWN_DATE = date(1900, 1, 1)
 _NUGET_CACHE = {}
 _NUGET_BODY_BYTES = MAX_HTTP_BODY_BYTES
+_NUGET_MAX_PAGES = 256
+_NUGET_MAX_LEAVES = 100_000
 
 # Registration resource types, best first (3.6.0+ supports SemVer 2.0.0).
 _REG_TYPE_RANK = {
@@ -90,7 +92,7 @@ def _fetch_package(package):
     if ck in _NUGET_CACHE:
         return _NUGET_CACHE[ck]
     index = _fetch_service_index()
-    base = _pick_registration_base(index)
+    base = _validate_registration_base(_pick_registration_base(index))
     url = f"{base.rstrip('/')}/{urllib.parse.quote(key, safe='')}/index.json"
     try:
         reg = _http_get_json(url)
@@ -99,7 +101,7 @@ def _fetch_package(package):
             _NUGET_CACHE[ck] = None
             return None
         raise
-    leaves = _collect_leaves(reg, _http_get_json)
+    leaves = _collect_leaves(reg, _http_get_json, base)
     if not leaves:
         raise ValueError(
             "registration index contains no catalog entries; source may have changed")
@@ -142,7 +144,54 @@ def _pick_registration_base(index_doc):
     return best_url
 
 
-def _collect_leaves(reg_doc, fetch_page):
+def _url_origin(parsed):
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError(f"invalid registration URL port: {exc}") from exc
+    return (parsed.hostname.lower() if parsed.hostname else None, port)
+
+
+def _registration_path(url):
+    path = urllib.parse.unquote(urllib.parse.urlsplit(url).path)
+    if any(part == ".." for part in path.split("/")):
+        raise ValueError("registration URL contains a parent path segment")
+    return path.rstrip("/")
+
+
+def _validate_registration_base(base):
+    """Return a safe registration base anchored to the fixed NuGet origin."""
+    candidate = urllib.parse.urlsplit(base)
+    service = urllib.parse.urlsplit(_NUGET_SERVICE_INDEX)
+    if candidate.scheme.lower() != "https" or candidate.username \
+            or candidate.password or candidate.query or candidate.fragment:
+        raise ValueError("registration base must be a plain HTTPS URL")
+    if _url_origin(candidate) != _url_origin(service):
+        raise ValueError("registration base must use the NuGet service origin")
+    if not _registration_path(base):
+        raise ValueError("registration base has no path")
+    return base
+
+
+def _validate_page_url(page_url, base):
+    """Reject paged-registration URLs outside the selected HTTPS base."""
+    if not isinstance(page_url, str) or not page_url:
+        raise ValueError("registration page has an invalid @id")
+    page = urllib.parse.urlsplit(page_url)
+    root = urllib.parse.urlsplit(base)
+    if page.scheme.lower() != "https" or page.username or page.password \
+            or page.fragment:
+        raise ValueError("registration page @id must be an HTTPS URL")
+    if _url_origin(page) != _url_origin(root):
+        raise ValueError("registration page @id escapes the registration origin")
+    page_path = _registration_path(page_url)
+    root_path = _registration_path(base)
+    if page_path != root_path and not page_path.startswith(root_path + "/"):
+        raise ValueError("registration page @id escapes the registration base")
+    return page_url
+
+
+def _collect_leaves(reg_doc, fetch_page, expected_base):
     """Pure-ish: walk a registration index and return its catalogEntry dicts.
 
     Pages carrying inline items are read directly; pages whose ``items`` is
@@ -155,6 +204,9 @@ def _collect_leaves(reg_doc, fetch_page):
     pages = reg_doc.get("items")
     if not isinstance(pages, list):
         raise ValueError("registration index has no items list")
+    if len(pages) > _NUGET_MAX_PAGES:
+        raise ValueError(
+            f"registration index exceeds {_NUGET_MAX_PAGES} page limit")
     leaves = []
     for page in pages:
         if not isinstance(page, dict):
@@ -164,6 +216,7 @@ def _collect_leaves(reg_doc, fetch_page):
             page_url = page.get("@id")
             if not page_url:
                 raise ValueError("registration page has neither inline items nor an @id")
+            page_url = _validate_page_url(page_url, expected_base)
             fetched = fetch_page(page_url)
             if not isinstance(fetched, dict):
                 raise ValueError(f"registration page {page_url} did not return an object")
@@ -172,6 +225,9 @@ def _collect_leaves(reg_doc, fetch_page):
             raise ValueError("registration page has no items list")
         for leaf in items:
             if isinstance(leaf, dict) and isinstance(leaf.get("catalogEntry"), dict):
+                if len(leaves) >= _NUGET_MAX_LEAVES:
+                    raise ValueError(
+                        f"registration index exceeds {_NUGET_MAX_LEAVES} leaf limit")
                 leaves.append(leaf["catalogEntry"])
     return leaves
 
