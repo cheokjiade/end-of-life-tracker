@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..models import (
     MAX_FILE_BYTES,
+    MAX_FILES,
     MAX_PARSE_DEPTH,
     add_location,
     guarded_local_file,
@@ -219,6 +220,11 @@ def _parse_requirements_file(path, rel_path, root_abs, active, visited, depth):
             f"requirements include cycle at {rel_path}")]
     if abs_path in visited:
         return [], []
+    if len(visited) >= MAX_FILES:
+        return [], [new_warning(
+            "include_limit", rel_path,
+            f"requirements include limit of {MAX_FILES} files reached; "
+            "remaining includes skipped")]
     visited.add(abs_path)
     next_active = active | {abs_path}
 

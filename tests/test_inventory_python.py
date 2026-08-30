@@ -216,7 +216,6 @@ def test_requirements_root_include_hashes_and_depth_guard():
             root / "requirements.txt", "requirements.txt", root=root)
         assert _one(records, "requests")["version"] == "2.32.4"
         assert warnings == []
-
         (root / "requirements.txt").write_text(
             "requests==2.32.4 \\\n"
             "    --hash=sha256:abc\n"
@@ -258,6 +257,27 @@ def test_requirements_root_include_hashes_and_depth_guard():
             root / "requirements.txt", "requirements.txt", root=root)
         assert _one(records, "requests")["version"] == "2.32.4"
         assert warnings == []
+
+
+def test_requirements_include_fanout_limit():
+    real_limit = python_parser.MAX_FILES
+    try:
+        python_parser.MAX_FILES = 3
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "requirements.txt").write_text(
+                "-r first.txt\n-r second.txt\n-r third.txt\n",
+                encoding="utf-8")
+            for name in ("first", "second", "third"):
+                (root / f"{name}.txt").write_text(
+                    f"{name}==1.0.0\n", encoding="utf-8")
+            records, warnings = python_parser.parse_requirements_records(
+                root / "requirements.txt", "requirements.txt", root=root)
+        assert sorted(record["name"] for record in records) == [
+            "first", "second"]
+        assert _has_warning(warnings, "include_limit", "limit of 3 files")
+    finally:
+        python_parser.MAX_FILES = real_limit
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +577,7 @@ TESTS = [
     test_requirements_include_escape_and_cycle,
     test_requirements_options_are_not_dependencies,
     test_requirements_root_include_hashes_and_depth_guard,
+    test_requirements_include_fanout_limit,
     test_pyproject_pep621_runtime_and_dependencies,
     test_pyproject_pep621_optional_and_warnings,
     test_pyproject_poetry_python_constraint_and_versions,
