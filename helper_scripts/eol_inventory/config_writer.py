@@ -32,7 +32,6 @@ import os
 from datetime import date
 
 from .mappings import (
-    _NPM_MAPPINGS,
     _POM_PROPERTY_MAPPINGS,
     _dotnet_runtime_cycle,
     _eol_entry,
@@ -53,14 +52,6 @@ from .models import (
     sort_locations,
     sort_warnings,
 )
-
-# npm names whose lifecycle handler deliberately returns None (tracked
-# via another package, e.g. react-dom via react): skipped silently, not
-# unmapped and not sent to npm_registry.
-_NPM_SILENT_SKIPS = frozenset(
-    name for name, handler in _NPM_MAPPINGS.items() if handler("0") is None
-)
-
 
 def _entry_key(entry):
     """Stable de-dup key across entry shapes."""
@@ -242,14 +233,12 @@ def generate_config(scan, project_name, include_transitive=False):
             entry = None
             if record["version"]:
                 entry = _map_npm_dep(record["name"], record["version"])
-                if entry is None and record["name"] not in _NPM_SILENT_SKIPS:
+                if entry is None:
                     # Remaining exact direct packages get release-recency
                     # tracking from the npm registry.
                     entry = _npm_registry_entry(record["name"],
                                                 record["version"])
             if entry is None:
-                if record["name"] in _NPM_SILENT_SKIPS:
-                    continue
                 # Only versionless non-exact records remain unmapped:
                 # versioned packages map to a lifecycle product or to
                 # npm_registry above. They also join the legacy skipped

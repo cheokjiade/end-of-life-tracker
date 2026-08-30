@@ -135,7 +135,8 @@ def test_map_java_dep():
 def test_map_npm_dep():
     assert gc._map_npm_dep("react", "^18.2.0") == {
         "product": "react", "version": "18", "label": "React 18"}
-    assert gc._map_npm_dep("react-dom", "^18.2.0") is None
+    assert gc._map_npm_dep("react-dom", "^18.2.0") == {
+        "product": "react", "version": "18", "label": "React 18"}
     assert gc._map_npm_dep("vue", "^3.4.0") == {
         "product": "vue", "version": "3", "label": "Vue 3"}
     assert gc._map_npm_dep("@angular/core", "^17.3.0") == {
@@ -651,8 +652,12 @@ def test_generate_config_node():
         "_found_in": [
             {"path": "package-lock.json", "manifest": "npm",
              "locator": "lock:react"},
+            {"path": "package-lock.json", "manifest": "npm",
+             "locator": "lock:react-dom"},
             {"path": "package.json", "manifest": "npm",
-             "locator": "dependencies.react"}]}]
+             "locator": "dependencies.react"},
+            {"path": "package.json", "manifest": "npm",
+             "locator": "dependencies.react-dom"}]}]
     ts = [p for p in prods if p.get("product") == "typescript"]
     assert ts and ts[0]["version"] == "5.4"
     # remaining exact direct packages become npm_registry release-recency
@@ -676,7 +681,7 @@ def test_generate_config_node():
                        "locator": "dependencies.left-pad"}]}]
     tokens = [p for p in prods if p.get("package") == "@company/tokens"]
     assert tokens and tokens[0]["version"] == "1.0.0"
-    # react-dom is deliberately not reported (tracked via 'react')
+    # react-dom shares React's lifecycle row, with its provenance retained.
     assert all(p.get("package") != "react-dom" for p in prods)
     # every exact package is tracked now: nothing skipped or unmapped
     assert not config.get("_skipped_npm_packages")

@@ -174,15 +174,18 @@ _POM_PROPERTY_MAPPINGS = {
 # ---------------------------------------------------------------------------
 # npm package name -> tracker entry mappings
 #
-# Returns None to skip / un-mapped (those go into _skipped_npm_packages).
-# Only packages with endoflife.date coverage are mapped — there's no npm
-# staleness provider yet.
+# Returns None when no lifecycle mapping exists; exact versions then fall
+# back to the npm registry provider in config_writer.
 # ---------------------------------------------------------------------------
 
 _NPM_MAPPINGS = {
     "react":                       lambda v: _eol_entry("react", _major(v),
                                                         f"React {_major(v)}"),
-    "react-dom":                   lambda v: None,           # tracked via 'react'
+    # react-dom follows React's release lifecycle. Mapping both to the same
+    # key lets config de-duplication retain one tracker row while merging the
+    # provenance of every discovered package.
+    "react-dom":                   lambda v: _eol_entry("react", _major(v),
+                                                        f"React {_major(v)}"),
     "vue":                         lambda v: _eol_entry("vue", _major(v),
                                                         f"Vue {_major(v)}"),
     "@angular/core":               lambda v: _eol_entry("angular", _major(v),
