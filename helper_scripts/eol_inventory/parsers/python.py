@@ -191,11 +191,14 @@ def _emit_requirement(parsed, scope, manifest, rel_path, locator_prefix="",
 # requirements*.txt
 # ---------------------------------------------------------------------------
 
-def parse_requirements_records(path, rel_path, root=None):
+def parse_requirements_records(path, rel_path, root=None, include_state=None):
     """Parse a requirements file (following includes); (records, warnings)."""
     root_abs = Path(root).resolve() if root is not None else _root_of(path, rel_path)
+    if include_state is None:
+        include_state = {"visited": set()}
+    visited = include_state.setdefault("visited", set())
     return _parse_requirements_file(
-        path, rel_path, root_abs, active=set(), visited=set(), depth=0)
+        path, rel_path, root_abs, active=set(), visited=visited, depth=0)
 
 
 def _root_of(path, rel_path):

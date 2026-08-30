@@ -47,26 +47,41 @@ _REMOTE_INCLUDE_KINDS = frozenset({
 _IGNORED_INCLUDE_KINDS = frozenset({"file", "ref", "inputs"})
 
 
-def parse_gitlab_ci_records(path, rel_path, root=None):
+def parse_gitlab_ci_records(path, rel_path, root=None, include_state=None):
     """Parse one GitLab CI YAML file; return (records, warnings).
 
     root is the scan root; local include targets are resolved against
     it and followed only when they stay inside it. Without a root,
     includes are skipped with a warning.
     """
+    if include_state is None:
+        include_state = {"files": 0, "visited": set()}
+    visited = include_state.setdefault("visited", set())
+    resolved = Path(path).resolve()
+    if resolved in visited:
+        return [], []
+    if include_state["files"] >= MAX_FILES:
+        return [], [new_warning(
+            "ci_include_limit", rel_path,
+            f"GitLab CI file limit of {MAX_FILES} files reached; skipped")]
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return [], [new_warning(
             "unreadable_file", rel_path,
             f"could not read GitLab CI file: {exc}")]
-    return _parse_ci_text(text, rel_path, root)
+    visited.add(resolved)
+    include_state["files"] += 1
+    return _parse_ci_text(
+        text, rel_path, root, active=frozenset({resolved}),
+        include_state=include_state)
 
 
-def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset(),
+def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
                    include_state=None):
     if include_state is None:
-        include_state = {"files": 0}
+        include_state = {"files": 0, "visited": set()}
+    visited = include_state.setdefault("visited", set())
     records = []
     warnings = []
     top_vars = {}
@@ -117,9 +132,11 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset(),
                  f"line {line}: local include {resolved.name!r} escapes "
                  f"the scan root; not followed")
             return
-        if resolved in visited:
+        if resolved in active:
             warn("ci_include_depth",
                  f"line {line}: circular local include {inc_rel!r}")
+            return
+        if resolved in visited:
             return
         if depth + 1 > _MAX_INCLUDE_DEPTH:
             warn("ci_include_depth",
@@ -147,8 +164,9 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset(),
                  f"read: {exc}")
             return
         include_state["files"] += 1
+        visited.add(resolved)
         inc_records, inc_warnings = _parse_ci_text(
-            inc_text, inc_rel, root, depth + 1, visited | {resolved},
+            inc_text, inc_rel, root, depth + 1, active | {resolved},
             include_state)
         records.extend(inc_records)
         warnings.extend(inc_warnings)

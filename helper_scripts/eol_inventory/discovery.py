@@ -58,7 +58,7 @@ def _is_gitlab_ci_file(rel_path):
         and name.endswith((".yml", ".yaml"))
 
 
-def _parse_python_manifest(path, rel_path, root):
+def _parse_python_manifest(path, rel_path, root, scan_state=None):
     """Dispatch one Python manifest file to its parser by basename."""
     name = rel_path.rsplit("/", 1)[-1].lower()
     if name == "pyproject.toml":
@@ -71,7 +71,10 @@ def _parse_python_manifest(path, rel_path, root):
         return parse_python_version_records(path, rel_path)
     if name == "runtime.txt":
         return parse_runtime_txt_records(path, rel_path)
-    return parse_requirements_records(path, rel_path, root=root)
+    state = None if scan_state is None else scan_state.setdefault(
+        "requirements", {"visited": set()})
+    return parse_requirements_records(
+        path, rel_path, root=root, include_state=state)
 
 
 def _parse_node_manifest(path, rel_path, root):
@@ -90,6 +93,13 @@ def _parse_dotnet_manifest(path, rel_path, root):
     return parse_csproj_records(path, rel_path, root=root)
 
 
+def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
+    state = None if scan_state is None else scan_state.setdefault(
+        "gitlab", {"files": 0, "visited": set()})
+    return parse_gitlab_ci_records(
+        path, rel_path, root=root, include_state=state)
+
+
 # Manifest table in ecosystem precedence order. This preserves the
 # historical scan order (and therefore first-seen provenance) while
 # staying deterministic. Lock files (package-lock.json,
@@ -97,21 +107,23 @@ def _parse_dotnet_manifest(path, rel_path, root):
 # parsers and are deliberately NOT discovered; Directory.Packages.props
 # has its own parser and is. The `wants_root` flag marks parsers that
 # receive the scan root (the GitLab CI parser needs it to keep local
-# includes inside the scan root).
+# includes inside the scan root); `wants_state` carries scanner-wide
+# include de-duplication and budgets.
 _MANIFEST_PATTERNS = (
-    ("maven", ("pom*.xml",), parse_pom_records, False),
-    ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records, False),
-    ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True),
+    ("maven", ("pom*.xml",), parse_pom_records, False, False),
+    ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records,
+     False, False),
+    ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True, False),
     ("python", ("requirements*.txt", "pyproject.toml", "Pipfile", "Pipfile.lock",
                 ".python-version", "runtime.txt"),
-     _parse_python_manifest, True),
-    ("go", ("go.mod",), parse_go_mod_records, False),
+     _parse_python_manifest, True, True),
+    ("go", ("go.mod",), parse_go_mod_records, False, False),
     ("dotnet", ("*.csproj", "*.fsproj", "*.vbproj",
                 "Directory.Packages.props", "global.json"),
-     _parse_dotnet_manifest, True),
+     _parse_dotnet_manifest, True, False),
     ("docker", ("Dockerfile", "Dockerfile.*", "*.Dockerfile"),
-     parse_dockerfile_records, False),
-    ("gitlab", None, parse_gitlab_ci_records, True),
+     parse_dockerfile_records, False, False),
+    ("gitlab", None, _parse_gitlab_manifest, True, True),
 )
 
 
@@ -152,7 +164,7 @@ def scan_folder(folder, exclude=None):
 
     records = []
     files = []
-    by_ecosystem = {eco: [] for eco, _, _, _ in _MANIFEST_PATTERNS}
+    by_ecosystem = {eco: [] for eco, _, _, _, _ in _MANIFEST_PATTERNS}
 
     for dirpath, dirnames, filenames in os.walk(root, topdown=True,
                                                 followlinks=False):
@@ -168,7 +180,7 @@ def scan_folder(folder, exclude=None):
             rel = f"{rel_dir}/{filename}" if rel_dir else filename
             if is_excluded(rel, patterns):
                 continue
-            for eco, patterns_group, _, _ in _MANIFEST_PATTERNS:
+            for eco, patterns_group, _, _, _ in _MANIFEST_PATTERNS:
                 if _matches(rel, patterns_group, eco):
                     by_ecosystem[eco].append(rel)
                     break
@@ -177,16 +189,18 @@ def scan_folder(folder, exclude=None):
     # relative path — deterministic and identical to the historical scan
     # order, so first-seen provenance is stable.
     candidates = []
-    for eco, _, parser, wants_root in _MANIFEST_PATTERNS:
+    for eco, _, parser, wants_root, wants_state in _MANIFEST_PATTERNS:
         for rel in sorted(by_ecosystem[eco]):
-            candidates.append((rel, root / rel, parser, wants_root))
+            candidates.append(
+                (rel, root / rel, parser, wants_root, wants_state))
 
     if len(candidates) > MAX_FILES:
         raise SystemExit(
             f"Refusing to scan {len(candidates)} manifest files "
             f"(limit {MAX_FILES}). Add excludes or scan a narrower folder.")
 
-    for rel, abs_path, parser, wants_root in candidates:
+    scan_state = {}
+    for rel, abs_path, parser, wants_root, wants_state in candidates:
         try:
             size = abs_path.stat().st_size
         except OSError as exc:
@@ -206,7 +220,10 @@ def scan_folder(folder, exclude=None):
             continue
 
         try:
-            if wants_root:
+            if wants_state:
+                file_records, file_warnings = parser(
+                    abs_path, rel, root, scan_state)
+            elif wants_root:
                 file_records, file_warnings = parser(abs_path, rel, root)
             else:
                 file_records, file_warnings = parser(abs_path, rel)

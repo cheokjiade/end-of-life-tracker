@@ -27,6 +27,8 @@ from generate_config import (
     main as generate_config_main,
 )
 import eol_inventory.discovery as discovery_module
+import eol_inventory.parsers.gitlab_ci as gitlab_parser
+import eol_inventory.parsers.python as python_parser
 from eol_inventory.models import add_location, new_record
 
 FIX = ROOT / "tests" / "fixtures" / "generate_config"
@@ -545,6 +547,65 @@ def test_scan_discovers_generic_gradle_nvmrc_and_isolates_bad_manifest():
                for r in scan["records"])
     assert any(w["path"] == "package.json" and w["category"] == "parse_error"
                for w in scan["warnings"])
+
+
+def test_scan_folder_deduplicates_shared_include_graphs():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "shared.txt").write_text(
+            "requests==2.32.4\n", encoding="utf-8")
+        for suffix in ("a", "b"):
+            (root / f"requirements-{suffix}.txt").write_text(
+                "-r shared.txt\n", encoding="utf-8")
+        (root / ".gitlab").mkdir()
+        (root / ".gitlab" / "shared.yml").write_text(
+            "image: python:3.12\n", encoding="utf-8")
+        (root / ".gitlab-ci.yml").write_text(
+            "include:\n  - .gitlab/shared.yml\n", encoding="utf-8")
+        scan = gc.scan_folder(td)
+
+    assert len([r for r in scan["records"]
+                if r["ecosystem"] == "python"
+                and r["name"] == "requests"]) == 1
+    assert len([r for r in scan["records"]
+                if r["ecosystem"] == "container"
+                and r["name"] == "python"]) == 1
+    assert scan["warnings"] == []
+
+
+def test_scan_folder_enforces_scanner_wide_include_budgets():
+    real_python_limit = python_parser.MAX_FILES
+    real_gitlab_limit = gitlab_parser.MAX_FILES
+    try:
+        python_parser.MAX_FILES = 2
+        gitlab_parser.MAX_FILES = 2
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "requirements-a.txt").write_text(
+                "-r python-a.txt\n", encoding="utf-8")
+            (root / "python-a.txt").write_text(
+                "alpha==1.0.0\n", encoding="utf-8")
+            (root / "requirements-b.txt").write_text(
+                "beta==1.0.0\n", encoding="utf-8")
+            (root / ".gitlab").mkdir()
+            (root / ".gitlab" / "a.yml").write_text(
+                "image: python:3.12\n", encoding="utf-8")
+            (root / ".gitlab" / "b.yml").write_text(
+                "image: nginx:1.27\n", encoding="utf-8")
+            (root / ".gitlab-ci.yml").write_text(
+                "include:\n  - .gitlab/a.yml\n  - .gitlab/b.yml\n",
+                encoding="utf-8")
+            scan = gc.scan_folder(td)
+    finally:
+        python_parser.MAX_FILES = real_python_limit
+        gitlab_parser.MAX_FILES = real_gitlab_limit
+
+    assert [r["name"] for r in scan["records"]
+            if r["ecosystem"] == "python"] == ["alpha"]
+    assert [r["name"] for r in scan["records"]
+            if r["ecosystem"] == "container"] == ["python"]
+    assert any(w["category"] == "include_limit" for w in scan["warnings"])
+    assert any(w["category"] == "ci_include_limit" for w in scan["warnings"])
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1206,8 @@ TESTS = [
     test_scan_folder_refuses_huge_file_count,
     test_scan_folder_not_a_directory,
     test_scan_discovers_generic_gradle_nvmrc_and_isolates_bad_manifest,
+    test_scan_folder_deduplicates_shared_include_graphs,
+    test_scan_folder_enforces_scanner_wide_include_budgets,
     test_generate_config_maven_multi,
     test_generate_config_gradle,
     test_generate_config_keeps_unresolved_mapped_pom_properties_visible,
