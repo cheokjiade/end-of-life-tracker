@@ -27,6 +27,7 @@ if str(_HELPER_DIR) not in sys.path:
 
 import eol_inventory.parsers.dotnet as dotnet_parser
 import eol_inventory.parsers.go as go_parser
+from eol_inventory import generate_config, scan_folder
 
 
 def _parse_go(*parts):
@@ -490,6 +491,81 @@ def test_dotnet_central_property_expressions_remain_unresolved():
             project_warnings, "unresolved_version", expression)
 
 
+def test_dotnet_ranges_locks_and_conditional_properties():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup>'
+            '<PackageVersion Include="CentralRange" Version="[3.0,4.0)" />'
+            '<PackageVersion Include="CentralLocked" Version="1.*" />'
+            '</ItemGroup></Project>', encoding="utf-8")
+        (root / "packages.lock.json").write_text(json.dumps({
+            "dependencies": {"net8.0": {
+                "DirectLocked": {"type": "Direct", "resolved": "2.4.0"},
+                "CentralLocked": {"type": "Direct", "resolved": "1.9.0"},
+            }},
+        }), encoding="utf-8")
+        project = root / "App.csproj"
+        project.write_text(
+            '<Project>'
+            '<PropertyGroup Condition="\'$(Configuration)\' == \'Debug\'">'
+            '<PkgVersion>1.0.0</PkgVersion></PropertyGroup>'
+            '<PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">'
+            '<PkgVersion>2.0.0</PkgVersion></PropertyGroup>'
+            '<ItemGroup>'
+            '<PackageReference Include="DirectRange" Version="[1.0,2.0)" />'
+            '<PackageReference Include="DirectLocked" Version="2.*" />'
+            '<PackageReference Include="CentralRange" />'
+            '<PackageReference Include="CentralLocked" />'
+            '<PackageReference Include="ConditionalPkg" '
+            'Version="$(PkgVersion)" />'
+            '<PackageReference Include="ExactPkg" Version="1.2.3" />'
+            '</ItemGroup></Project>', encoding="utf-8")
+        (root / "global.json").write_text(
+            '{"sdk": {"version": "8.*"}}', encoding="utf-8")
+
+        records, warnings = dotnet_parser.parse_csproj_records(
+            project, "App.csproj", root=root)
+        sdk_records, sdk_warnings = dotnet_parser.parse_global_json_records(
+            root / "global.json", "global.json")
+        config = generate_config(scan_folder(root), "ambiguous-dotnet")
+
+    for name, spec in (
+            ("DirectRange", "[1.0,2.0)"),
+            ("CentralRange", "[3.0,4.0)"),
+            ("ConditionalPkg", "$(PkgVersion)")):
+        package = _one(records, name)
+        assert package["version"] is None
+        assert package["version_spec"] == spec
+        assert _has_warning(warnings, "unresolved_version", name)
+
+    direct_locked = _one(records, "DirectLocked")
+    assert direct_locked["version"] == "2.4.0"
+    assert direct_locked["version_spec"] == "2.*"
+    assert direct_locked["found_in"][-1]["locator"] == "lock:DirectLocked"
+    central_locked = _one(records, "CentralLocked")
+    assert central_locked["version"] == "1.9.0"
+    assert central_locked["version_spec"] == "1.*"
+    assert [loc["locator"] for loc in central_locked["found_in"]] == [
+        "PackageReference:CentralLocked",
+        "PackageVersion:CentralLocked",
+        "lock:CentralLocked",
+    ]
+    assert _one(records, "ExactPkg")["version"] == "1.2.3"
+
+    sdk = _one(sdk_records, "dotnet-sdk")
+    assert sdk["version"] is None and sdk["version_spec"] == "8.*"
+    assert _has_warning(sdk_warnings, "unresolved_version", "not exact")
+
+    tracked_names = {
+        p["package"] for p in config["products"]
+        if p.get("source") == "nuget_registry"}
+    assert {"DirectRange", "CentralRange", "ConditionalPkg"}.isdisjoint(
+        tracked_names)
+    assert {"DirectLocked", "CentralLocked", "ExactPkg"} <= tracked_names
+    assert not [p for p in config["products"] if p.get("product") == "dotnet"]
+
+
 def test_dotnet_malformed_sidecars_and_entities_warn():
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -528,6 +604,8 @@ def test_dotnet_falsey_malformed_lock_structures_warn():
             "type": [], "resolved": "1.0.0"}}}}, "type is not a string"),
         ({"dependencies": {"net8.0": {"Pkg": {
             "type": "Direct", "resolved": []}}}}, "resolved version"),
+        ({"dependencies": {"net8.0": {"Pkg": {
+            "type": "Direct", "resolved": "1.*"}}}}, "is not exact"),
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -616,6 +694,7 @@ TESTS = [
     test_dotnet_project_without_siblings_warns,
     test_dotnet_finds_central_versions_at_scan_root,
     test_dotnet_central_property_expressions_remain_unresolved,
+    test_dotnet_ranges_locks_and_conditional_properties,
     test_dotnet_malformed_sidecars_and_entities_warn,
     test_dotnet_falsey_malformed_lock_structures_warn,
     test_dotnet_global_json_malformed_and_empty,
