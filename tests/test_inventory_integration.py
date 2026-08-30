@@ -59,13 +59,13 @@ def test_scan_mixed_fixture_discovers_all_ecosystems():
     for r in scan["records"]:
         by_eco.setdefault(r["ecosystem"], []).append(r)
     assert sorted((eco, len(recs)) for eco, recs in by_eco.items()) == [
-        ("container", 6), ("dotnet", 6), ("go", 4), ("node", 2),
+        ("container", 5), ("dotnet", 6), ("go", 4), ("node", 2),
         ("python", 6),
     ]
-    # gitlab include-following and direct discovery both parse deploy.yml;
-    # the duplicate redis records merge later, so both exist here
+    # GitLab include-following and direct discovery share one visited-file
+    # set, so deploy.yml contributes exactly one record.
     redis = [r for r in by_eco["container"] if r["name"] == "redis"]
-    assert len(redis) == 2
+    assert len(redis) == 1
     assert all(r["found_in"][0]["path"] == ".gitlab/ci/deploy.yml"
                for r in redis)
     categories = sorted({w["category"] for w in scan["warnings"]})
@@ -181,7 +181,7 @@ def test_config_unmapped_items_and_summary():
          "message": "numpy has no exact version (~=1.26.0); not guessed"},
     ]
     assert config["_inventory"]["summary"] == {
-        "files": 13, "records": 24, "products": 14, "unmapped": 4,
+        "files": 13, "records": 23, "products": 14, "unmapped": 4,
         "warnings": 2, "indirect": 1}
     assert config["_inventory"]["include_transitive"] is False
     assert not config.get("_skipped_npm_packages")
