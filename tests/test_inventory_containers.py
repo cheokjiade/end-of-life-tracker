@@ -389,6 +389,27 @@ def test_gitlab_zero_indent_lists_and_oversize_include():
         assert _has_warning(warnings, "oversize_input", "byte limit")
 
 
+def test_gitlab_scalar_list_includes_are_followed_locally_only():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "included.yml").write_text(
+            "image: python:3.12\n", encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "include:\n"
+            "  - included.yml\n"
+            "  - https://example.com/remote.yml\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+
+    assert [(r["name"], r["version"]) for r in records] == [
+        ("python", "3.12")]
+    assert _loc(records[0])["path"] == "included.yml"
+    assert _has_warning(
+        warnings, "ci_remote_include", "https://example.com/remote.yml")
+
+
 def test_gitlab_include_glob_and_circular_and_depth():
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -519,6 +540,7 @@ TESTS = [
     test_gitlab_anchors_and_tabs,
     test_gitlab_include_guards,
     test_gitlab_zero_indent_lists_and_oversize_include,
+    test_gitlab_scalar_list_includes_are_followed_locally_only,
     test_gitlab_include_glob_and_circular_and_depth,
     test_gitlab_globbed_include_cannot_follow_escaping_symlink,
     test_image_cycle_helpers,

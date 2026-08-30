@@ -282,9 +282,13 @@ def _parse_ci_text(text, rel_path, root, depth=0, visited=frozenset(),
                     pending_item_name = False
                 continue
             if collecting == "include" and indent >= collect_indent:
-                if ":" in body:
+                if _INCLUDE_URL_RE.match(body):
+                    follow_local_include(body, lineno)
+                elif ":" in body:
                     kind, _, target = body.partition(":")
                     handle_include(kind, target, lineno)
+                else:
+                    follow_local_include(body, lineno)
                 continue
             # List items elsewhere (script, stages, rules, ...) ignored.
             continue
