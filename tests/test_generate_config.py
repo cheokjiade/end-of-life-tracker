@@ -311,6 +311,33 @@ def test_parse_gradle_records():
     assert missing_rec == []
     assert missing_warn[0]["category"] == "unreadable_file"
 
+    with tempfile.TemporaryDirectory() as td:
+        dynamic = Path(td) / "build.gradle.kts"
+        dynamic.write_text(
+            'dependencies {\n'
+            '  implementation("org.example:short:$version")\n'
+            '  implementation("org.example:braced:${versions.long}")\n'
+            '}\n', encoding="utf-8")
+        dynamic_records, dynamic_warnings = gc.parse_gradle_records(
+            dynamic, "build.gradle.kts")
+        dynamic_scan = gc.scan_folder(td)
+    assert [(r["artifact"], r["version"], r["version_spec"])
+            for r in dynamic_records] == [
+        ("short", None, "$version"),
+        ("braced", None, "${versions.long}"),
+    ]
+    assert len(dynamic_warnings) == 2
+    assert all(w["category"] == "unresolved_version"
+               for w in dynamic_warnings)
+    dynamic_config = gc.generate_config(dynamic_scan, "dynamic")
+    assert not [p for p in _products(dynamic_config)
+                if p.get("source") == "maven_central"]
+    assert [(item["name"], item["version_spec"])
+            for item in dynamic_config["_inventory"]["unmapped"]] == [
+        ("org.example:braced", "${versions.long}"),
+        ("org.example:short", "$version"),
+    ]
+
 
 def test_parse_package_json_records():
     records, warnings = gc.parse_package_json_records(

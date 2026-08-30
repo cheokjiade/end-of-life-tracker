@@ -143,6 +143,8 @@ _GRADLE_PATTERN_NAMED = re.compile(
     r'group\s*=\s*"([^"]+)"\s*,\s*name\s*=\s*"([^"]+)"\s*,\s*version\s*=\s*"([^"]+)"',
     re.DOTALL,
 )
+_GRADLE_DYNAMIC_VERSION_RE = re.compile(
+    r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_.]*)")
 
 
 def parse_gradle_records(path, rel_path):
@@ -157,9 +159,9 @@ def parse_gradle_records(path, rel_path):
     warnings = []
 
     def emit(group, artifact, version, line):
-        # A ${...} expression is retained as a warning + a record without
-        # a version; it is never emitted as a product.
-        if "${" in version:
+        # A Groovy/Kotlin string interpolation is retained as a warning and
+        # a versionless record; it is never emitted as an exact product.
+        if _GRADLE_DYNAMIC_VERSION_RE.search(version):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
                 group=group, artifact=artifact, version_spec=version,
