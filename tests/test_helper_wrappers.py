@@ -1,11 +1,11 @@
-"""Syntax and existence checks for the helper wrapper scripts.
+"""Syntax and execution checks for the helper wrapper scripts.
 
 Verifies the four cross-platform launchers under helper_scripts/ exist and
 parse cleanly: `bash -n` for the Bash wrappers and the PowerShell parser API
 for the PowerShell wrappers. Skips (rather than fails) when no usable bash or
-PowerShell host is installed. Standalone assertion script: no pytest, no
-network; shells are invoked only for syntax checks. Non-interactive wrapper
-integration coverage is a later plan commit.
+PowerShell host is installed. The non-interactive paths generate a config and
+all three report formats in a temporary directory. Standalone assertion
+script: no pytest, no network.
 
 Run from the repository root:  python tests/test_helper_wrappers.py
 """
@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ HELPERS = ROOT / "helper_scripts"
 
 BASH_WRAPPERS = ("generate_config.sh", "generate_inventory_report.sh")
 PS_WRAPPERS = ("generate_config.ps1", "generate_inventory_report.ps1")
+FIXTURE = ROOT / "tests" / "fixtures" / "inventory_mixed"
 
 
 def _find_bash():
@@ -42,6 +44,21 @@ def _find_bash():
 def _find_powershell():
     """Locate a PowerShell host: pwsh (7+) first, then Windows PowerShell."""
     return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _wrapper_env():
+    """Make the interpreter running this test discoverable by wrappers."""
+    env = os.environ.copy()
+    env["PATH"] = (
+        str(Path(sys.executable).resolve().parent)
+        + os.pathsep + env.get("PATH", ""))
+    return env
+
+
+def _assert_outputs(config, markdown, csv, html):
+    for path in (config, markdown, csv, html):
+        assert path.is_file(), f"wrapper did not create {path}"
+        assert path.stat().st_size > 0, f"wrapper created empty file {path}"
 
 
 def test_wrapper_files_exist():
@@ -93,6 +110,67 @@ def test_powershell_wrappers_parse():
             f"{proc.stdout.strip()}\n{proc.stderr.strip()}")
 
 
+def test_bash_wrappers_execute_noninteractive():
+    bash = _find_bash()
+    if bash is None:
+        print("skip  Bash wrapper smoke: bash not available")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        config = tmp / "eol_config.wrapper-bash.json"
+        markdown = tmp / "inventory.md"
+        csv = tmp / "inventory.csv"
+        html = tmp / "inventory.html"
+        generate = subprocess.run(
+            [bash, str(HELPERS / "generate_config.sh"), str(FIXTURE),
+             "--name", "wrapper-bash", "--output", str(config), "--replace"],
+            capture_output=True, text=True, env=_wrapper_env())
+        assert generate.returncode == 0, (
+            f"Bash generator smoke failed:\n{generate.stdout}\n{generate.stderr}")
+        report = subprocess.run(
+            [bash, str(HELPERS / "generate_inventory_report.sh"), str(config),
+             "--output", str(markdown), "--csv", str(csv), "--html", str(html),
+             "--force"], capture_output=True, text=True, env=_wrapper_env())
+        assert report.returncode == 0, (
+            f"Bash report smoke failed:\n{report.stdout}\n{report.stderr}")
+        _assert_outputs(config, markdown, csv, html)
+
+
+def test_powershell_wrappers_execute_noninteractive():
+    exe = _find_powershell()
+    if exe is None:
+        print("skip  PowerShell wrapper smoke: host not available")
+        return
+    prefix = [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+              "Bypass", "-File"]
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        config = tmp / "eol_config.wrapper-powershell.json"
+        markdown = tmp / "inventory.md"
+        csv = tmp / "inventory.csv"
+        html = tmp / "inventory.html"
+        generate = subprocess.run(
+            prefix + [str(HELPERS / "generate_config.ps1"), str(FIXTURE),
+                      "--name", "wrapper-powershell", "--output", str(config),
+                      "--replace"], capture_output=True, text=True,
+            env=_wrapper_env())
+        assert generate.returncode == 0, (
+            f"PowerShell generator smoke failed:\n{generate.stdout}\n{generate.stderr}")
+        report = subprocess.run(
+            prefix + [str(HELPERS / "generate_inventory_report.ps1"), str(config),
+                      "--output", str(markdown), "--csv", str(csv), "--html",
+                      str(html), "--force"], capture_output=True, text=True,
+            env=_wrapper_env())
+        assert report.returncode == 0, (
+            f"PowerShell report smoke failed:\n{report.stdout}\n{report.stderr}")
+        _assert_outputs(config, markdown, csv, html)
+
+
+def test_bash_wrappers_are_checked_out_with_lf():
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.sh text eol=lf" in attributes.splitlines()
+
+
 def test_generator_wizards_offer_update_and_explicit_replace():
     bash = (HELPERS / "generate_config.sh").read_text(encoding="utf-8")
     powershell = (HELPERS / "generate_config.ps1").read_text(encoding="utf-8")
@@ -129,6 +207,9 @@ TESTS = [
     test_wrapper_files_exist,
     test_bash_wrappers_parse,
     test_powershell_wrappers_parse,
+    test_bash_wrappers_execute_noninteractive,
+    test_powershell_wrappers_execute_noninteractive,
+    test_bash_wrappers_are_checked_out_with_lf,
     test_generator_wizards_offer_update_and_explicit_replace,
     test_wrapper_documentation_matches_default_report_formats,
     test_generator_smoke_commands_are_copy_pasteable,
