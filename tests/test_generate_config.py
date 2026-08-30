@@ -1054,6 +1054,9 @@ def test_transitive_dependencies_are_opt_in():
 def test_update_merge_preserves_curation_and_unobserved_entries():
     existing = {
         "notify_when": "problems_only",
+        "_skipped_npm_packages": [
+            {"name": "stale-package", "version": None,
+             "source": "package.json"}],
         "products": [
             {"_section": "=== Curated ==="},
             {"source": "pypi_registry", "package": "requests",
@@ -1066,6 +1069,9 @@ def test_update_merge_preserves_curation_and_unobserved_entries():
     }
     generated = {
         "notify_when": "always",
+        "_skipped_npm_packages": [
+            {"name": "current-package", "version": None,
+             "source": "package.json"}],
         "products": [
             {"_section": "=== Python dependencies ==="},
             {"source": "pypi_registry", "package": "requests",
@@ -1085,6 +1091,9 @@ def test_update_merge_preserves_curation_and_unobserved_entries():
     assert any(p.get("label") == "Internal appliance" for p in merged["products"])
     assert any(p.get("_section") == "=== Newly Discovered ==="
                for p in merged["products"])
+    assert merged["_skipped_npm_packages"] == [{
+        "name": "current-package", "version": None,
+        "source": "package.json"}]
     assert merged["_inventory"]["update_summary"] == {
         "added": 1, "changed": 1, "unchanged": 0,
         "retained_not_observed": 1}

@@ -149,7 +149,7 @@ def _merge_existing_config(existing, generated):
 
     merged = dict(generated)
     for key, value in existing.items():
-        if key not in ("products", "_inventory"):
+        if key not in ("products", "_inventory", "_skipped_npm_packages"):
             merged[key] = value
     merged["products"] = products
     merged["_inventory"]["update_summary"] = stats
