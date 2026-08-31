@@ -79,8 +79,6 @@ def _merge_existing_config(existing, generated):
         fresh_by_identity.setdefault(_merge_identity(product), []).append(index)
     fresh_by_provenance = {}
     for index, product in enumerate(fresh):
-        if product.get("_inventory_generated") != "unmapped":
-            continue
         for key in _provenance_keys(product):
             fresh_by_provenance.setdefault(key, set()).add(index)
     used = set()
@@ -108,6 +106,11 @@ def _merge_existing_config(existing, generated):
                     provenance_candidates.update(
                         fresh_by_provenance.get(key, ()))
                 provenance_candidates.difference_update(used)
+                provenance_candidates = {
+                    index for index in provenance_candidates
+                    if (old.get("_inventory_generated") == "unmapped"
+                        or fresh[index].get("_inventory_generated") ==
+                        "unmapped")}
             if len(provenance_candidates) == 1:
                 selected = next(iter(provenance_candidates))
                 remapped = True
@@ -120,8 +123,11 @@ def _merge_existing_config(existing, generated):
         merged_entry = dict(new) if remapped else dict(old)
         if not remapped:
             merged_entry.update(new)
-        for key in ("policy_note", "note", "reference_url", "eol_date",
-                    "latest", "_comment"):
+        curated_keys = [
+            "policy_note", "reference_url", "eol_date", "latest"]
+        if old.get("_inventory_generated") != "unmapped":
+            curated_keys.extend(("note", "_comment"))
+        for key in curated_keys:
             if key in old:
                 merged_entry[key] = old[key]
         products.append(merged_entry)
