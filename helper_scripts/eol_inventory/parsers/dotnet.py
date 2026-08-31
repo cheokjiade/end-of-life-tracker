@@ -146,6 +146,53 @@ def _collect_properties(root):
     return props
 
 
+def _collect_central_versions(root):
+    """Conservatively select PackageVersion declarations.
+
+    MSBuild conditions cannot be evaluated without the build context.  A
+    conditional declaration is therefore exact only when an unconditional
+    declaration exists and every declaration has the same non-empty value.
+    The returned tuple is (display name, exact value, unresolved spec).
+    """
+    declarations = {}
+
+    def visit(elem, conditional_context=False):
+        tag = _local(elem.tag).lower()
+        conditional = (
+            conditional_context
+            or bool(_attrs_ci(elem).get("condition"))
+            or tag in ("when", "otherwise", "target"))
+        if tag == "packageversion":
+            attrs = _attrs_ci(elem)
+            name = attrs.get("include") or attrs.get("update")
+            if name:
+                version = attrs.get("version") or _child_version(elem)
+                declarations.setdefault(name.lower(), []).append(
+                    (name, version, conditional))
+        for child in elem:
+            visit(child, conditional)
+
+    visit(root)
+    selected = {}
+    for key, values in declarations.items():
+        display = values[0][0]
+        versions = [version for _, version, _ in values if version]
+        has_conditional = any(conditional for _, _, conditional in values)
+        unconditional = [
+            version for _, version, conditional in values
+            if not conditional and version]
+        distinct = list(dict.fromkeys(versions))
+        if not has_conditional:
+            selected[key] = (display, versions[0] if versions else None, None)
+        elif unconditional and len(distinct) == 1:
+            selected[key] = (display, unconditional[-1], None)
+        else:
+            details = " | ".join(distinct) if distinct else "no version"
+            selected[key] = (
+                display, None, f"conditional PackageVersion: {details}")
+    return selected
+
+
 def _tfm_version(tfm):
     """'net8.0-windows' -> '8.0'; 'net48' -> '4.8'; None when empty."""
     base = tfm.split("-", 1)[0]
@@ -170,9 +217,11 @@ def _tfm_version(tfm):
 # ---------------------------------------------------------------------------
 
 def _read_central_versions(props_abs, root, rel_path):
-    """{lower-name: (declared-name, version)} from Directory.Packages.props.
+    """Central versions from Directory.Packages.props.
 
-    First declaration wins when casing differs (deterministic file order).
+    Values are ``(declared-name, exact-version, unresolved-spec)``.  First
+    unconditional declaration wins when casing differs; conditional ambiguity
+    remains visible instead of being guessed.
     """
     guarded, warning = guarded_local_file(props_abs, root, rel_path)
     if guarded is None:
@@ -181,19 +230,7 @@ def _read_central_versions(props_abs, root, rel_path):
         guarded, rel_path, "Directory.Packages.props")
     if document is None:
         return {}, parse_warning
-    central = {}
-    for elem in document.iter():
-        if _local(elem.tag) != "PackageVersion":
-            continue
-        attrs = _attrs_ci(elem)
-        name = attrs.get("include") or attrs.get("update")
-        if not name:
-            continue
-        version = attrs.get("version") or _child_version(elem)
-        key = name.lower()
-        if version and key not in central:
-            central[key] = (name, version)
-    return central, None
+    return _collect_central_versions(document), None
 
 
 def _requested_lower_bound(spec):
@@ -382,14 +419,16 @@ def parse_csproj_records(path, rel_path, root=None):
         # No explicit version: central package versions, then lock file.
         hit = central.get(name.lower())
         if hit:
-            declared, version = hit
-            unresolved = (not _is_exact_nuget_version(version)
+            declared, version, conditional_spec = hit
+            version_spec = conditional_spec or version
+            unresolved = (conditional_spec is not None
+                          or not _is_exact_nuget_version(version)
                           or _has_msbuild_expression(version))
             locked = lock.get(name.lower()) if unresolved else None
             record = new_record(
                 "dotnet", name,
                 version=locked if unresolved else version,
-                version_spec=version if unresolved else None)
+                version_spec=version_spec if unresolved else None)
             add_location(record, rel_path, "dotnet",
                          locator=f"PackageReference:{name}")
             add_location(record, central_rel, "dotnet",
@@ -402,7 +441,7 @@ def parse_csproj_records(path, rel_path, root=None):
                 warnings.append(new_warning(
                     "unresolved_version", central_rel,
                     f"PackageVersion {declared} has no exact version "
-                    f"({version}) and no lock resolution"))
+                    f"({version_spec}) and no lock resolution"))
             continue
 
         version = lock.get(name.lower())
@@ -440,29 +479,22 @@ def parse_directory_packages_props(path, rel_path):
 
     records = []
     warnings = []
-    seen = set()
-    for elem in root.iter():
-        if _local(elem.tag) != "PackageVersion":
-            continue
-        attrs = _attrs_ci(elem)
-        name = attrs.get("include") or attrs.get("update")
-        if not name or name.lower() in seen:
-            # MSBuild is case-insensitive: the first declaration wins.
-            continue
-        seen.add(name.lower())
-        version = attrs.get("version") or _child_version(elem)
-        if (version and _is_exact_nuget_version(version)
+    for name, version, conditional_spec in _collect_central_versions(
+            root).values():
+        if (conditional_spec is None and version
+                and _is_exact_nuget_version(version)
                 and not _has_msbuild_expression(version)):
             record = new_record("dotnet", name, version=version)
         else:
+            version_spec = conditional_spec or version
             record = new_record(
                 "dotnet", name, version=None,
-                version_spec=version if version else None)
+                version_spec=version_spec if version_spec else None)
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
                 f"PackageVersion {name} "
-                + (f"has unresolved expression ({version})"
-                   if version else "has no Version")))
+                + (f"has no exact version ({version_spec})"
+                   if version_spec else "has no Version")))
         add_location(record, rel_path, "dotnet",
                      locator=f"PackageVersion:{name}")
         records.append(record)

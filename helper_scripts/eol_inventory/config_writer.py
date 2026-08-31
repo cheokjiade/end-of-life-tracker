@@ -56,10 +56,13 @@ from .models import (
 def _entry_key(entry):
     """Stable de-dup key across entry shapes."""
     src = entry.get("source", "endoflife_date")
+    package = entry.get("package")
+    if src == "nuget_registry" and isinstance(package, str):
+        package = package.lower()
     return (
         src,
         entry.get("product"),
-        entry.get("package"),
+        package,
         entry.get("module"),
         entry.get("group"), entry.get("artifact"),
         entry.get("sdk"),   entry.get("major"),
@@ -174,7 +177,10 @@ def generate_config(scan, project_name, include_transitive=False):
     def add_unmapped(record, reason):
         """Record one unmapped item; identical items merge provenance."""
         item = _unmapped_item(record, reason)
-        key = (item["ecosystem"], item["name"], item.get("version"),
+        name = item["name"]
+        if item["ecosystem"] == "dotnet":
+            name = name.lower()
+        key = (item["ecosystem"], name, item.get("version"),
                item.get("version_spec"), item["reason"])
         existing = unmapped_by_key.get(key)
         if existing is None:

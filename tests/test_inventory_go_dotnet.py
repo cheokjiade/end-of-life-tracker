@@ -498,7 +498,13 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<Project><ItemGroup>'
             '<PackageVersion Include="CentralRange" Version="[3.0,4.0)" />'
             '<PackageVersion Include="CentralLocked" Version="1.*" />'
-            '</ItemGroup></Project>', encoding="utf-8")
+            '</ItemGroup><Choose>'
+            '<When Condition="\'$(TargetFramework)\' == \'net8.0\'">'
+            '<ItemGroup><PackageVersion Include="ConditionalCentral" '
+            'Version="5.0.0" /></ItemGroup></When>'
+            '<Otherwise><ItemGroup><PackageVersion '
+            'Include="ConditionalCentral" Version="6.0.0" />'
+            '</ItemGroup></Otherwise></Choose></Project>', encoding="utf-8")
         (root / "packages.lock.json").write_text(json.dumps({
             "dependencies": {"net8.0": {
                 "DirectLocked": {"type": "Direct", "resolved": "2.4.0"},
@@ -527,6 +533,7 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<PackageReference Include="DirectLocked" Version="2.*" />'
             '<PackageReference Include="CentralRange" />'
             '<PackageReference Include="CentralLocked" />'
+            '<PackageReference Include="ConditionalCentral" />'
             '<PackageReference Include="ConditionalPkg" '
             'Version="$(PkgVersion)" />'
             '<PackageReference Include="ChooseConditionalPkg" '
@@ -552,6 +559,12 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         assert package["version_spec"] == spec
         assert _has_warning(warnings, "unresolved_version", name)
 
+    conditional_central = _one(records, "ConditionalCentral")
+    assert conditional_central["version"] is None
+    assert conditional_central["version_spec"] == (
+        "conditional PackageVersion: 5.0.0 | 6.0.0")
+    assert _has_warning(warnings, "unresolved_version", "ConditionalCentral")
+
     direct_locked = _one(records, "DirectLocked")
     assert direct_locked["version"] == "2.4.0"
     assert direct_locked["version_spec"] == "2.*"
@@ -575,10 +588,31 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         if p.get("source") == "nuget_registry"}
     assert {
         "DirectRange", "CentralRange", "ConditionalPkg",
-        "ChooseConditionalPkg",
+        "ChooseConditionalPkg", "ConditionalCentral",
     }.isdisjoint(tracked_names)
     assert {"DirectLocked", "CentralLocked", "ExactPkg"} <= tracked_names
     assert not [p for p in config["products"] if p.get("product") == "dotnet"]
+
+
+def test_dotnet_package_identity_is_case_insensitive():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup><PackageVersion Include="centralpkg" '
+            'Version="1.5.0" /></ItemGroup></Project>', encoding="utf-8")
+        (root / "App.csproj").write_text(
+            '<Project><ItemGroup><PackageReference Include="CentralPkg" />'
+            '</ItemGroup></Project>', encoding="utf-8")
+        config = generate_config(scan_folder(root), "case-insensitive")
+
+    packages = [
+        product for product in config["products"]
+        if product.get("source") == "nuget_registry"
+        and product.get("package", "").lower() == "centralpkg"]
+    assert len(packages) == 1
+    assert packages[0]["package"] == "CentralPkg"
+    assert {location["path"] for location in packages[0]["_found_in"]} == {
+        "App.csproj", "Directory.Packages.props"}
 
 
 def test_dotnet_malformed_sidecars_and_entities_warn():
@@ -710,6 +744,7 @@ TESTS = [
     test_dotnet_finds_central_versions_at_scan_root,
     test_dotnet_central_property_expressions_remain_unresolved,
     test_dotnet_ranges_locks_and_conditional_properties,
+    test_dotnet_package_identity_is_case_insensitive,
     test_dotnet_malformed_sidecars_and_entities_warn,
     test_dotnet_falsey_malformed_lock_structures_warn,
     test_dotnet_global_json_malformed_and_empty,
