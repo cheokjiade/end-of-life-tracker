@@ -669,7 +669,11 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     assert direct_child_locked["version_spec"] == "3.*"
     assert direct_child_locked["found_in"][-1]["locator"] == (
         "lock:DirectChildLocked")
-    assert _one(records, "AttributeWins")["version"] == "1.0.0"
+    mixed_version = _one(records, "AttributeWins")
+    assert mixed_version["version"] is None
+    assert mixed_version["version_spec"] == (
+        "conditional PackageReference Version: 1.0.0 | 2.0.0")
+    assert _has_warning(warnings, "unresolved_version", "AttributeWins")
     empty_child = _one(records, "EmptyConditionalChild")
     assert empty_child["version"] is None
     assert empty_child["version_spec"] is None
@@ -721,10 +725,10 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         "ChooseConditionalPkg", "ConditionalCentral",
         "DisagreeingCentral", "ChildConditional", "EmptyConditional",
         "TargetConditional", "DirectChildConditional",
-        "EmptyConditionalChild",
+        "EmptyConditionalChild", "AttributeWins",
     }.isdisjoint(tracked_names)
     assert {"DirectLocked", "CentralLocked", "ExactPkg",
-            "AgreeingCentral", "DirectChildLocked", "AttributeWins",
+            "AgreeingCentral", "DirectChildLocked",
             "ExpressionLocked"} <= tracked_names
     assert not [p for p in config["products"] if p.get("product") == "dotnet"]
 

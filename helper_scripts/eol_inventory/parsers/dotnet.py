@@ -395,19 +395,30 @@ def parse_csproj_records(path, rel_path, root=None):
             continue
 
         attribute_version = attrs.get("version")
-        raw_version = attribute_version or _child_version(elem)
+        child_version = _child_version(elem)
+        raw_version = attribute_version or child_version
         version = _resolve_props(raw_version, props) if raw_version else None
-        if not attribute_version and _child_version_is_conditional(elem):
+        if _child_version_is_conditional(elem):
+            version_spec = version
+            if attribute_version:
+                candidates = [
+                    _resolve_props(attribute_version, props),
+                    (_resolve_props(child_version, props)
+                     if child_version else "no version"),
+                ]
+                details = " | ".join(dict.fromkeys(candidates))
+                version_spec = (
+                    f"conditional PackageReference Version: {details}")
             locked = lock.get(name.lower())
             record = new_record(
-                "dotnet", name, version=locked, version_spec=version)
+                "dotnet", name, version=locked, version_spec=version_spec)
             add_location(record, rel_path, "dotnet",
                          locator=f"PackageReference:{name}")
             if locked:
                 add_location(record, lock_rel, "dotnet",
                              locator=f"lock:{name}")
             else:
-                detail = (f" ({version})" if version
+                detail = (f" ({version_spec})" if version_spec
                           else " is empty")
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
