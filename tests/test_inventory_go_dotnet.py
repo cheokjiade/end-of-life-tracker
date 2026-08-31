@@ -264,6 +264,18 @@ def test_go_malformed_lines_warn_and_parsing_continues():
     assert any("line 8" in w["message"] for w in parse_errors)
 
 
+def test_go_require_rejects_extra_tokens():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        path.write_text(
+            "module example.test/app\n"
+            "require example.test/pkg v1.2.3 unexpected\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+    assert not _records_named(records, "example.test/pkg")
+    assert _has_warning(warnings, "parse_error", "malformed require")
+
+
 def test_go_invalid_version_tokens_remain_untracked():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "go.mod"
@@ -882,6 +894,7 @@ TESTS = [
     test_go_unused_same_module_version_replace_is_warning_only,
     test_go_local_replace_never_public_dependency,
     test_go_malformed_lines_warn_and_parsing_continues,
+    test_go_require_rejects_extra_tokens,
     test_go_invalid_version_tokens_remain_untracked,
     test_go_parsing_is_deterministic,
     test_dotnet_tfm_version,

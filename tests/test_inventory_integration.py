@@ -48,7 +48,7 @@ def test_scan_mixed_fixture_discovers_all_ecosystems():
     assert scan["root_name"] == "inventory_mixed"
     assert scan["files"] == [
         ".gitlab-ci.yml", ".gitlab/ci/deploy.yml", ".python-version",
-        "Directory.Packages.props", "Dockerfile", "Dockerfile.edge",
+        "Dockerfile", "Dockerfile.edge",
         "apps/web/package.json", "global.json", "go.mod",
         "legacy/Legacy.csproj", "mono.csproj", "pyproject.toml",
         "requirements.txt",
@@ -59,7 +59,7 @@ def test_scan_mixed_fixture_discovers_all_ecosystems():
     for r in scan["records"]:
         by_eco.setdefault(r["ecosystem"], []).append(r)
     assert sorted((eco, len(recs)) for eco, recs in by_eco.items()) == [
-        ("container", 5), ("dotnet", 6), ("go", 4), ("node", 2),
+        ("container", 5), ("dotnet", 5), ("go", 4), ("node", 2),
         ("python", 6),
     ]
     # GitLab include-following and direct discovery share one visited-file
@@ -108,7 +108,7 @@ def test_config_sections_and_products():
     assert nj == [{
         "source": "nuget_registry", "package": "Newtonsoft.Json",
         "version": "13.0.3", "label": "Newtonsoft.Json 13.0.3",
-        "_comment": "From Directory.Packages.props (Newtonsoft.Json 13.0.3)",
+        "_comment": "From mono.csproj (Newtonsoft.Json 13.0.3)",
         "_found_in": [
             {"path": "Directory.Packages.props", "manifest": "dotnet",
              "locator": "PackageVersion:Newtonsoft.Json"},
@@ -181,7 +181,7 @@ def test_config_unmapped_items_and_summary():
          "message": "numpy has no exact version (~=1.26.0); not guessed"},
     ]
     assert config["_inventory"]["summary"] == {
-        "files": 13, "records": 23, "products": 14, "unmapped": 4,
+        "files": 12, "records": 22, "products": 14, "unmapped": 4,
         "warnings": 2, "indirect": 1}
     assert config["_inventory"]["include_transitive"] is False
     assert not config.get("_skipped_npm_packages")

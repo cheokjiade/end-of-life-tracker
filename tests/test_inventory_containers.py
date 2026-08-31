@@ -349,6 +349,44 @@ def test_gitlab_unresolved_and_remote_include_warnings():
     assert "project" in remotes[0]["message"]
 
 
+def test_gitlab_scalar_remote_include_is_warn_only():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "example.com").mkdir()
+        (root / "example.com" / "remote.yml").write_text(
+            "image: python:3.12\n", encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "include: https://example.com/remote.yml\nimage: node:22\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+    assert not _records_named(records, "python")
+    assert _one(records, "node")["version"] == "22"
+    assert _has_warning(warnings, "ci_remote_include", "https://")
+
+
+def test_gitlab_include_variables_merge_before_root_precedence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "first.yml").write_text(
+            "first-job:\n  image: $IMG\n", encoding="utf-8")
+        (root / "second.yml").write_text(
+            "variables:\n  IMG: node:20\nsecond-job:\n  image: $IMG\n",
+            encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "include:\n  - local: first.yml\n  - local: second.yml\n"
+            "variables:\n  IMG: node:22\nroot-job:\n  image: $IMG\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+    nodes = _records_named(records, "node")
+    assert len(nodes) == 3
+    assert {r["version"] for r in nodes} == {"22"}
+    assert not _has_warning(warnings, "unresolved_variable", "IMG")
+
+
 def test_gitlab_record_shape():
     records, _ = _parse_ci("gitlab", ".gitlab-ci.yml")
     for record in records:
@@ -598,6 +636,8 @@ TESTS = [
     test_gitlab_services_forms,
     test_gitlab_local_include_followed,
     test_gitlab_unresolved_and_remote_include_warnings,
+    test_gitlab_scalar_remote_include_is_warn_only,
+    test_gitlab_include_variables_merge_before_root_precedence,
     test_gitlab_record_shape,
     test_gitlab_parsing_is_deterministic,
     test_gitlab_anchors_and_tabs,

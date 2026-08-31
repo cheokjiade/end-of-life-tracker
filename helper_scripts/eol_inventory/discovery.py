@@ -30,11 +30,7 @@ from .parsers import (
     parse_pom_records,
 )
 from .parsers.node import parse_nvmrc_records
-from .parsers.dotnet import (
-    parse_csproj_records,
-    parse_directory_packages_props,
-    parse_global_json_records,
-)
+from .parsers.dotnet import parse_csproj_records, parse_global_json_records
 from .parsers.python import (
     parse_pipfile_records,
     parse_pipfile_lock_records,
@@ -88,8 +84,6 @@ def _parse_dotnet_manifest(path, rel_path, root):
     name = rel_path.rsplit("/", 1)[-1].lower()
     if name == "global.json":
         return parse_global_json_records(path, rel_path)
-    if name == "directory.packages.props":
-        return parse_directory_packages_props(path, rel_path)
     return parse_csproj_records(path, rel_path, root=root)
 
 
@@ -104,8 +98,9 @@ def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
 # historical scan order (and therefore first-seen provenance) while
 # staying deterministic. Lock files (package-lock.json,
 # npm-shrinkwrap.json, packages.lock.json) are sibling-resolved by their
-# parsers and are deliberately NOT discovered; Directory.Packages.props
-# has its own parser and is. The `wants_root` flag marks parsers that
+# parsers and are deliberately NOT discovered. Directory.Packages.props is
+# likewise sidecar evidence used only for referenced packages. The
+# `wants_root` flag marks parsers that
 # receive the scan root (the GitLab CI parser needs it to keep local
 # includes inside the scan root); `wants_state` carries scanner-wide
 # include de-duplication and budgets.
@@ -118,8 +113,7 @@ _MANIFEST_PATTERNS = (
                 ".python-version", "runtime.txt"),
      _parse_python_manifest, True, True),
     ("go", ("go.mod",), parse_go_mod_records, False, False),
-    ("dotnet", ("*.csproj", "*.fsproj", "*.vbproj",
-                "Directory.Packages.props", "global.json"),
+    ("dotnet", ("*.csproj", "*.fsproj", "*.vbproj", "global.json"),
      _parse_dotnet_manifest, True, False),
     ("docker", ("Dockerfile", "Dockerfile.*", "*.Dockerfile"),
      parse_dockerfile_records, False, False),
@@ -140,6 +134,12 @@ def _is_within(root, candidate):
         return True
     except (ValueError, OSError):
         return False
+
+
+def _is_directory_link(candidate):
+    """True for directory symlinks and Windows junctions/reparse links."""
+    return candidate.is_symlink() or (
+        hasattr(candidate, "is_junction") and candidate.is_junction())
 
 
 def scan_folder(folder, exclude=None):
@@ -170,12 +170,21 @@ def scan_folder(folder, exclude=None):
                                                 followlinks=False):
         dirpath = Path(dirpath)
         rel_dir = dirpath.relative_to(root).as_posix() if dirpath != root else ""
-        # Prune excluded and symlinked directories in place (deterministic).
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if d not in DEFAULT_EXCLUDED_DIRS
-            and not is_excluded(f"{rel_dir}/{d}" if rel_dir else d, patterns)
-        )
+        # Prune excluded and linked directories in place (deterministic).
+        kept_dirs = []
+        for dirname in sorted(dirnames):
+            rel = f"{rel_dir}/{dirname}" if rel_dir else dirname
+            if (dirname in DEFAULT_EXCLUDED_DIRS
+                    or is_excluded(rel, patterns)):
+                continue
+            candidate = dirpath / dirname
+            if _is_directory_link(candidate) or not _is_within(root, candidate):
+                warnings.append(new_warning(
+                    "escaped_symlink", rel,
+                    "directory link is not followed by the scanner"))
+                continue
+            kept_dirs.append(dirname)
+        dirnames[:] = kept_dirs
         for filename in sorted(filenames):
             rel = f"{rel_dir}/{filename}" if rel_dir else filename
             if is_excluded(rel, patterns):
@@ -212,8 +221,8 @@ def scan_folder(folder, exclude=None):
                 "oversize_input", rel,
                 f"file exceeds {MAX_FILE_BYTES} byte limit ({size} bytes); skipped"))
             continue
-        # A symlinked file pointing outside the scan root is never emitted.
-        if abs_path.is_symlink() and not _is_within(root, abs_path):
+        # A path resolving outside the scan root is never emitted.
+        if not _is_within(root, abs_path):
             warnings.append(new_warning(
                 "escaped_symlink", rel,
                 "symlink target lies outside the scan root; skipped"))

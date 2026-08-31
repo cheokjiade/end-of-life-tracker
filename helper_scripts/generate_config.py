@@ -231,6 +231,8 @@ def main(argv=None):
                 existing = json.load(existing_file)
             if not isinstance(existing, dict):
                 raise ValueError("top-level JSON value is not an object")
+            if not isinstance(existing.get("products"), list):
+                raise ValueError("products value is not an array")
             config = _merge_existing_config(existing, config)
         except (OSError, ValueError) as exc:
             print(f"Could not update existing config: {exc}", file=sys.stderr)

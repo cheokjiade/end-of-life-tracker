@@ -285,6 +285,27 @@ def test_parse_pom_records_unresolved():
     assert all(w["path"] == "samples/pom_unresolved.xml" for w in warnings)
 
 
+def test_pom_coordinate_properties_resolve_or_remain_untracked():
+    with tempfile.TemporaryDirectory() as td:
+        pom = Path(td) / "pom.xml"
+        pom.write_text(
+            "<project><properties><dep.group>org.example</dep.group>"
+            "<dep.artifact>resolved</dep.artifact></properties><dependencies>"
+            "<dependency><groupId>${dep.group}</groupId>"
+            "<artifactId>${dep.artifact}</artifactId><version>1.2.3</version>"
+            "</dependency><dependency><groupId>${missing.group}</groupId>"
+            "<artifactId>unresolved</artifactId><version>2.0.0</version>"
+            "</dependency></dependencies></project>", encoding="utf-8")
+        records, warnings = gc.parse_pom_records(pom, "pom.xml")
+
+    resolved = next(r for r in records if r["artifact"] == "resolved")
+    assert resolved["group"] == "org.example" and resolved["version"] == "1.2.3"
+    unresolved = next(r for r in records if r["artifact"] == "unresolved")
+    assert unresolved["version"] is None
+    assert unresolved["version_spec"] == "2.0.0"
+    assert any(w["category"] == "unresolved_identifier" for w in warnings)
+
+
 def test_parse_gradle_records():
     records, warnings = gc.parse_gradle_records(
         FIX / "gradle" / "build.gradle", "gradle/build.gradle")
@@ -536,8 +557,21 @@ def test_scan_folder_skips_escaping_symlinks():
         assert [r["artifact"] for r in scan["records"]] == ["keep"]
         escaped = [w for w in scan["warnings"]
                    if w["category"] == "escaped_symlink"]
-        assert len(escaped) == 1
-        assert escaped[0]["path"] == "pom_link.xml"
+        assert {warning["path"] for warning in escaped} == {
+            "dirlink", "pom_link.xml"}
+
+
+def test_windows_junctions_are_classified_as_directory_links():
+    class JunctionPath:
+        @staticmethod
+        def is_symlink():
+            return False
+
+        @staticmethod
+        def is_junction():
+            return True
+
+    assert discovery_module._is_directory_link(JunctionPath())
 
 
 def test_scan_folder_oversize_warning():
@@ -1294,6 +1328,32 @@ def test_cli_update_rejects_non_object_json():
         assert json.loads(output.read_text(encoding="utf-8")) == []
 
 
+def test_cli_update_rejects_non_list_products():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text("{}", encoding="utf-8")
+        output = root / "out.json"
+        original = {"products": None, "owner": "curated"}
+        output.write_text(json.dumps(original), encoding="utf-8")
+        assert generate_config_main([
+            str(root), "--name", "demo", "--output", str(output),
+            "--update"]) == 2
+        assert json.loads(output.read_text(encoding="utf-8")) == original
+
+
+def test_scan_ignores_standalone_central_package_declarations():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup><PackageVersion Include="NeverReferenced" '
+            'Version="1.2.3" /></ItemGroup></Project>', encoding="utf-8")
+        scan = gc.scan_folder(str(root))
+        config = gc.generate_config(scan, "demo")
+    assert scan["records"] == []
+    assert not any(p.get("package") == "NeverReferenced"
+                   for p in config["products"] if isinstance(p, dict))
+
+
 def test_terraform_uses_positive_runtime_allowlist():
     terraform = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
     assert "source_dir" not in terraform
@@ -1316,6 +1376,7 @@ TESTS = [
     test_parse_pom_records_plain_and_broken,
     test_pom_rejects_dtd_and_entities,
     test_parse_pom_records_unresolved,
+    test_pom_coordinate_properties_resolve_or_remain_untracked,
     test_parse_gradle_records,
     test_parse_package_json_records,
     test_scan_folder_maven_multi,
@@ -1324,6 +1385,7 @@ TESTS = [
     test_scan_folder_default_exclusions,
     test_scan_folder_eolignore_and_exclude,
     test_scan_folder_skips_escaping_symlinks,
+    test_windows_junctions_are_classified_as_directory_links,
     test_scan_folder_oversize_warning,
     test_scan_folder_refuses_huge_file_count,
     test_scan_folder_not_a_directory,
@@ -1349,6 +1411,8 @@ TESTS = [
     test_update_replaces_stale_scanner_mapping_by_provenance,
     test_update_replaces_generated_manual_row_when_now_tracked,
     test_cli_update_rejects_non_object_json,
+    test_cli_update_rejects_non_list_products,
+    test_scan_ignores_standalone_central_package_declarations,
     test_terraform_uses_positive_runtime_allowlist,
 ]
 

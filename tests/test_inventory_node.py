@@ -53,6 +53,40 @@ def _locators(record):
     return [loc.get("locator") for loc in record["found_in"]]
 
 
+def test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        package = root / "package.json"
+        package.write_text(json.dumps({
+            "dependencies": {
+                "git-pkg": "git+https://user:secret@example.invalid/x.git?token=hidden",
+                "typed-pkg": {"opaque": "SENTINEL"},
+            },
+        }), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/git-pkg": {
+                    "version": "git+https://example.invalid/x.git"},
+            },
+        }), encoding="utf-8")
+
+        records, warnings = node_parser.parse_package_json_records(
+            package, "package.json", root=root)
+
+    git = _one(records, "git-pkg")
+    assert git["version"] is None
+    assert "secret" not in git["version_spec"]
+    assert "hidden" not in git["version_spec"]
+    typed = _one(records, "typed-pkg")
+    assert typed["version"] is None
+    assert typed["version_spec"] == "non-string dependency value"
+    serialized = json.dumps({"records": records, "warnings": warnings})
+    assert "SENTINEL" not in serialized
+    assert "secret" not in serialized and "hidden" not in serialized
+    assert _has_warning(warnings, "parse_error", "typed-pkg")
+
+
 # ---------------------------------------------------------------------------
 # Lock resolution (locked fixture: package-lock.json v3)
 # ---------------------------------------------------------------------------
@@ -292,6 +326,7 @@ TESTS = [
     test_parsing_is_deterministic,
     test_optional_and_peer_dependencies_are_direct_inventory,
     test_nvmrc_and_wrong_typed_package_fields,
+    test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets,
 ]
 
 

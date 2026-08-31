@@ -348,6 +348,15 @@ def test_markdown_escapes_newlines_html_and_warning_markup():
     assert "\n- [click]" not in md
 
 
+def test_markdown_neutralizes_remote_images_and_inline_markup():
+    config = _new_model_config()
+    config["products"][1]["label"] = "![probe](https://example.invalid/pixel) *x*"
+    md = render_markdown(build_inventory_view(config, project_name="demo"))
+    assert "![probe](https://example.invalid/pixel)" not in md
+    assert "*x*" not in md
+    assert "\\!\\[probe\\](https://example.invalid/pixel) \\*x\\*" in md
+
+
 def test_markdown_legacy_config():
     md = render_markdown(build_inventory_view(_legacy_config()))
     assert md.startswith("# Dependency inventory\n")
@@ -535,6 +544,7 @@ TESTS = [
     test_markdown_container_separation,
     test_markdown_pipe_escaping,
     test_markdown_escapes_newlines_html_and_warning_markup,
+    test_markdown_neutralizes_remote_images_and_inline_markup,
     test_markdown_legacy_config,
     test_markdown_deterministic,
     test_csv_output,

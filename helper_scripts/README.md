@@ -86,6 +86,10 @@ Five language ecosystems, plus container images:
 | .NET | `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Packages.props`, `packages.lock.json`, `global.json` |
 | Container images | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` (`FROM` instructions), `.gitlab-ci.yml` / `.gitlab-ci.yaml` and local YAML under `.gitlab/` |
 
+For .NET, `Directory.Packages.props` and `packages.lock.json` are sidecar
+evidence: they resolve versions only for packages referenced by a project
+file. A central declaration alone is not reported as a direct dependency.
+
 Language runtimes are detected too (`.python-version`, `engines.node`,
 `.nvmrc`, Go's `go`/`toolchain` directives, .NET `TargetFramework` and
 `global.json` SDK settings) and tracked on endoflife.date.

@@ -85,7 +85,16 @@ def parse_pom_records(path, rel_path):
     def emit(group, artifact, version, kind, locator):
         # Expressions, ranges, dynamics, and malformed tokens are retained as
         # warnings plus versionless records; they never become provider rows.
-        if "${" in version or not _is_exact_java_version(version):
+        if "${" in group or "${" in artifact:
+            record = new_record(
+                "java", f"{group}:{artifact}", version=None,
+                kind=kind, group=group, artifact=artifact,
+                version_spec=version,
+            )
+            warnings.append(new_warning(
+                "unresolved_identifier", rel_path,
+                f"unresolved Maven coordinate {group}:{artifact}; not guessed"))
+        elif "${" in version or not _is_exact_java_version(version):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
                 kind=kind, group=group, artifact=artifact,
@@ -107,7 +116,7 @@ def parse_pom_records(path, rel_path):
     if parent is not None:
         pg, pa, pv = t(parent, "groupId"), t(parent, "artifactId"), t(parent, "version")
         if pg and pa and pv:
-            emit(pg, pa, resolve(pv), "parent", "parent")
+            emit(resolve(pg), resolve(pa), resolve(pv), "parent", "parent")
 
     # Walk all <dependencies> blocks (both top-level and inside <dependencyManagement>)
     for deps_node in root.iter(f"{ns}dependencies"):
@@ -117,7 +126,9 @@ def parse_pom_records(path, rel_path):
             if scope in ("test", "provided", "system"):
                 continue
             if g and a and v:
-                emit(g, a, resolve(v), "dependency", f"dependency:{g}:{a}")
+                group, artifact = resolve(g), resolve(a)
+                emit(group, artifact, resolve(v), "dependency",
+                     f"dependency:{group}:{artifact}")
 
     # Platform properties pinned via <properties> — only names with a
     # mapping become records; everything else stays invisible, as before.

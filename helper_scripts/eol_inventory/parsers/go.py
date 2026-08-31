@@ -115,7 +115,7 @@ def parse_go_mod_records(path, rel_path):
 
     def handle_require(code, line, indirect):
         tokens = code.split()
-        if len(tokens) < 2:
+        if len(tokens) != 2:
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed require: {code!r}"))

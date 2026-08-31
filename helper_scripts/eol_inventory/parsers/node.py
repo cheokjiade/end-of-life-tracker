@@ -66,12 +66,25 @@ def _read_lock(directory, rel_path, root):
 
 
 def _lock_version(info):
-    """The "version" of one lock entry when it is a non-empty str."""
+    """The exact registry version of one lock entry, or None."""
     if isinstance(info, dict):
         version = info.get("version")
-        if isinstance(version, str) and version:
-            return version
+        if isinstance(version, str) and _EXACT_VERSION_RE.fullmatch(version):
+            return version[1:] if version[:1].lower() == "v" else version
     return None
+
+
+def _safe_spec(value):
+    """Dependency spec safe to retain in generated inventory metadata."""
+    spec = value.strip()
+    if "://" not in spec:
+        return spec
+    spec = re.sub(
+        r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@",
+        r"\1<redacted>@", spec)
+    if "?" in spec:
+        spec = spec.partition("?")[0] + "?<redacted>"
+    return spec
 
 
 def _lock_lookup(data, name):
@@ -185,7 +198,19 @@ def parse_package_json_records(path, rel_path, root=None):
                 f"package.json {section} value is not an object; skipped"))
             continue
         for name, value in dependencies.items():
-            spec = str(value).strip()
+            if not isinstance(value, str):
+                spec = "non-string dependency value"
+                record = new_record(
+                    "node", name, version=None, version_spec=spec, scope=scope)
+                add_location(
+                    record, rel_path, "npm", locator=f"{section}.{name}")
+                records.append(record)
+                warnings.append(new_warning(
+                    "parse_error", rel_path,
+                    f"package.json {section}.{name} value is not a string; "
+                    "contents not retained"))
+                continue
+            spec = _safe_spec(value)
             exact = _EXACT_VERSION_RE.fullmatch(spec)
             locked = None if exact else _lock_lookup(lock, name)
             if exact:

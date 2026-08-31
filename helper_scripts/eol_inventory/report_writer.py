@@ -303,7 +303,8 @@ def _md_text(value):
     if value is None:
         return ""
     text = html.escape(str(value), quote=True)
-    return text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return re.sub(r"([\\`*\[\]!])", r"\\\1", text)
 
 
 def _sorted_rows(rows):

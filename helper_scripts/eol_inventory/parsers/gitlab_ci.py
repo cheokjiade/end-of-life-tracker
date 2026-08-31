@@ -120,18 +120,21 @@ def parse_gitlab_ci_records(path, rel_path, root=None, include_state=None):
     include_state["files"] += 1
     return _parse_ci_text(
         text, rel_path, root, active=frozenset({resolved}),
-        include_state=include_state)
+        include_state=include_state,
+        merge_state={"variables": {}, "emissions": []})
 
 
 def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
-                   include_state=None, inherited_vars=None):
+                   include_state=None, merge_state=None):
     if include_state is None:
         include_state = {"files": 0, "visited": set()}
+    if merge_state is None:
+        merge_state = {"variables": {}, "emissions": []}
     visited = include_state.setdefault("visited", set())
     records = []
     warnings = []
-    top_vars = dict(inherited_vars or {})
-    top_vars.update(_collect_top_level_variables(text))
+    local_top_vars = _collect_top_level_variables(text)
+    top_vars = dict(local_top_vars)
     job_vars = {}
     pending_emissions = []   # (raw value, line, locator, job variable dict)
     current_top = None
@@ -213,7 +216,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
         visited.add(resolved)
         inc_records, inc_warnings = _parse_ci_text(
             inc_text, inc_rel, root, depth + 1, active | {resolved},
-            include_state, inherited_vars=dict(top_vars))
+            include_state, merge_state=merge_state)
         records.extend(inc_records)
         warnings.extend(inc_warnings)
 
@@ -277,6 +280,9 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
     def handle_include_value(value, line):
         value = value.strip()
         if not value:
+            return
+        if _INCLUDE_URL_RE.match(value.strip("\"'")):
+            follow_local_include(value, line)
             return
         if value[0] in "{[":
             warn("ci_yaml_unsupported",
@@ -479,9 +485,20 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             continue
         # script:, stage:, rules:, artifacts:, and other keys ignored.
 
+    # GitLab merges included configurations in order, then lets the including
+    # file override them. Defer all image resolution until the root file has
+    # supplied the final global/default variable map.
+    merge_state["variables"].update(local_top_vars)
     for value, line, locator, image_job_vars in pending_emissions:
-        values = dict(top_vars)
+        merge_state["emissions"].append(
+            (value, rel_path, line, locator, dict(image_job_vars)))
+    if depth:
+        return records, warnings
+
+    for value, source_path, line, locator, image_job_vars in merge_state[
+            "emissions"]:
+        values = dict(merge_state["variables"])
         values.update(image_job_vars)
-        emit_image_record(value, rel_path, "gitlab_ci", line, locator,
+        emit_image_record(value, source_path, "gitlab_ci", line, locator,
                           records, warnings, values=values)
     return records, warnings
