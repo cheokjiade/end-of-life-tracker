@@ -1366,6 +1366,13 @@ def test_cli_update_rejects_non_list_products():
             "--update"]) == 2
         assert json.loads(output.read_text(encoding="utf-8")) == invalid_members
 
+        unhashable_member = {"products": [{"product": ["bad"]}]}
+        output.write_text(json.dumps(unhashable_member), encoding="utf-8")
+        assert generate_config_main([
+            str(root), "--name", "demo", "--output", str(output),
+            "--update"]) == 2
+        assert json.loads(output.read_text(encoding="utf-8")) == unhashable_member
+
 
 def test_scan_ignores_standalone_central_package_declarations():
     with tempfile.TemporaryDirectory() as td:

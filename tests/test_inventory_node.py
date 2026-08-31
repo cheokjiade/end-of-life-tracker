@@ -58,11 +58,17 @@ def test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets():
         root = Path(tmpdir)
         package = root / "package.json"
         package.write_text(json.dumps({
+            "engines": {
+                "node": "https://engine-user:engine-secret@corp.invalid/e"},
             "dependencies": {
                 "git-pkg": "git+https://user:secret@example.invalid/x.git?token=hidden",
                 "scp-pkg": "user:pass@github.com/user/repo.git",
                 "space-pkg": "https://us er:pw@host/x",
                 "fragment-pkg": "git+https://host/x#token=fragment-secret",
+                "nested-pkg": "https://host/path://nested:nested-secret@evil.invalid/x",
+                "alias-pkg": "npm:@scope/real@^1.2.3",
+                "alias-url-pkg": "npm:real@https://alias:alias-secret@evil.invalid/x",
+                "workspace-url-pkg": "workspace:https://ws:ws-secret@evil.invalid/x",
                 "typed-pkg": {"opaque": "SENTINEL"},
             },
         }), encoding="utf-8")
@@ -79,17 +85,34 @@ def test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets():
 
     git = _one(records, "git-pkg")
     assert git["version"] is None
-    assert "secret" not in git["version_spec"]
-    assert "hidden" not in git["version_spec"]
+    assert git["version_spec"] == "git+<redacted>"
+    assert _one(records, "nested-pkg")["version_spec"] == "url:<redacted>"
+    assert _one(records, "alias-pkg")["version_spec"] == \
+        "npm:@scope/real@^1.2.3"
+    assert _one(records, "alias-url-pkg")["version_spec"] == "url:<redacted>"
+    assert _one(records, "workspace-url-pkg")["version_spec"] == \
+        "url:<redacted>"
+    assert _one(records, "node")["version_spec"] == "url:<redacted>"
     typed = _one(records, "typed-pkg")
     assert typed["version"] is None
     assert typed["version_spec"] == "non-string dependency value"
     serialized = json.dumps({"records": records, "warnings": warnings})
     assert "SENTINEL" not in serialized
     for secret in ("secret", "hidden", "user:pass", "us er:pw",
-                   "fragment-secret"):
+                   "fragment-secret", "nested-secret", "engine-secret",
+                   "alias-secret", "ws-secret"):
         assert secret not in serialized
     assert _has_warning(warnings, "parse_error", "typed-pkg")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nvmrc = Path(tmpdir) / ".nvmrc"
+        nvmrc.write_text(
+            "https://nvm-user:nvm-secret@corp.invalid/node\n", encoding="utf-8")
+        records, warnings = node_parser.parse_nvmrc_records(nvmrc, ".nvmrc")
+    assert records == []
+    serialized = json.dumps(warnings)
+    assert "nvm-secret" not in serialized
+    assert "url:<redacted>" in serialized
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +237,7 @@ def test_unresolved_specs_preserved_with_typed_warnings():
 
     git = _one(records, "git-dep")
     assert git["version"] is None
-    assert git["version_spec"] == "git+https://github.com/x/y.git"
+    assert git["version_spec"] == "git+<redacted>"
     assert _has_warning(warnings, "url_dependency", "git-dep")
 
     local = _one(records, "local-dep")

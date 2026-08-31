@@ -237,7 +237,7 @@ def main(argv=None):
             if any(not isinstance(item, dict) for item in existing_products):
                 raise ValueError("products entries must be objects")
             config = _merge_existing_config(existing, config)
-        except (OSError, ValueError) as exc:
+        except (OSError, TypeError, ValueError) as exc:
             print(f"Could not update existing config: {exc}", file=sys.stderr)
             return 2
     inventory = config["_inventory"]

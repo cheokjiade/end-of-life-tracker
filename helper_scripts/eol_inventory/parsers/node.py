@@ -77,17 +77,21 @@ def _lock_version(info):
 def _safe_spec(value):
     """Dependency spec safe to retain in generated inventory metadata."""
     spec = value.strip()
+    if spec.startswith("workspace:") and not any(
+            marker in spec for marker in ("://", "@", "?", "#")):
+        return spec
+    if re.fullmatch(
+            r"npm:(?:@[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+|"
+            r"[A-Za-z0-9._~-]+)(?:@[A-Za-z0-9.*+^~<>=| -]+)?", spec):
+        return spec
+    if spec.startswith("git+"):
+        return "git+<redacted>"
     if "://" in spec:
-        scheme, rest = spec.split("://", 1)
-        authority, slash, tail = rest.partition("/")
-        if "@" in authority:
-            authority = "<redacted>@" + authority.rsplit("@", 1)[1]
-        spec = scheme + "://" + authority + (slash + tail if slash else "")
-    elif "@" in spec:
-        spec = "<redacted>@" + spec.rsplit("@", 1)[1]
-    suffix = re.search(r"[?#]", spec)
-    if suffix:
-        spec = spec[:suffix.start()] + suffix.group() + "<redacted>"
+        return "url:<redacted>"
+    if "@" in spec:
+        return "vcs:<redacted>"
+    if "?" in spec or "#" in spec:
+        return "spec:<redacted>"
     return spec
 
 
@@ -119,7 +123,7 @@ def _spec_warning(name, spec, rel_path):
         return new_warning(
             "workspace_dependency", rel_path,
             f"workspace reference {name}: {spec} has no lock evidence")
-    if "://" in spec or spec.startswith("git+"):
+    if spec.startswith(("git+", "url:", "vcs:")):
         return new_warning(
             "url_dependency", rel_path,
             f"url reference {name}: {spec} has no lock evidence")
@@ -168,7 +172,7 @@ def parse_package_json_records(path, rel_path, root=None):
             "parse_error", rel_path,
             "package.json engines.node value is not a string; skipped"))
     else:
-        spec = node_engine.strip()
+        spec = _safe_spec(node_engine)
         if not spec:
             warnings.append(new_warning(
                 "parse_error", rel_path,
@@ -184,7 +188,7 @@ def parse_package_json_records(path, rel_path, root=None):
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
                 f"engines.node has no exact version ({spec}); "
-                "range preserved, not guessed"))
+                "specification recorded, not guessed"))
         if spec:
             add_location(record, rel_path, "npm", locator="engines.node")
             records.append(record)
@@ -242,13 +246,14 @@ def parse_nvmrc_records(path, rel_path):
         return [], [new_warning(
             "unreadable_file", rel_path, f"could not read .nvmrc: {exc}")]
     value = next((line.strip() for line in lines if line.strip()), "")
-    version = value[1:] if value[:1].lower() == "v" else value
+    safe_value = _safe_spec(value)
+    version = safe_value[1:] if safe_value[:1].lower() == "v" else safe_value
     if not re.fullmatch(r"\d+(?:\.\d+){0,2}", version):
         if not value:
             return [], []
         return [], [new_warning(
             "unresolved_version", rel_path,
-            f".nvmrc value {value!r} is not a concrete Node version")]
+            f".nvmrc value {safe_value!r} is not a concrete Node version")]
     record = new_record("node", "node", version=version, kind="runtime")
     add_location(record, rel_path, "npm", locator=".nvmrc")
     return [record], []

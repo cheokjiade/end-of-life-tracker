@@ -303,8 +303,11 @@ def _md_text(value):
     if value is None:
         return ""
     text = html.escape(str(value), quote=True)
-    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
-    text = re.sub(r"(?i)\b((?:https?|ftp))://", r"\1&#58;//", text)
+    for separator in ("\r", "\n", "\t", "\u2028", "\u2029"):
+        text = text.replace(separator, " ")
+    text = re.sub(r"(?i)((?:https?|ftp))://", r"\1&#58;//", text)
+    text = re.sub(r"(?i)www\.", "www&#46;", text)
+    text = text.replace("@", "&#64;")
     return re.sub(r"([\\`*_~\[\]!])", r"\\\1", text)
 
 

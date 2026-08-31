@@ -352,14 +352,20 @@ def test_markdown_neutralizes_remote_images_and_inline_markup():
     config = _new_model_config()
     config["products"][1]["label"] = (
         "![probe](https://example.invalid/pixel) *x* _y_ ~~z~~ "
-        "https://bare.invalid")
+        "https://bare.invalid www.bare.invalid contact@bare.invalid "
+        "line\u2028paragraph\u2029end")
     md = render_markdown(build_inventory_view(config, project_name="demo"))
     assert "![probe](https://example.invalid/pixel)" not in md
     assert "*x*" not in md
     assert "_y_" not in md and "~~z~~" not in md
     assert "https://bare.invalid" not in md
+    assert "www.bare.invalid" not in md
+    assert "contact@bare.invalid" not in md
+    assert "\u2028" not in md and "\u2029" not in md
     assert ("\\!\\[probe\\](https&#58;//example.invalid/pixel) \\*x\\* "
-            "\\_y\\_ \\~\\~z\\~\\~ https&#58;//bare.invalid") in md
+            "\\_y\\_ \\~\\~z\\~\\~ https&#58;//bare.invalid "
+            "www&#46;bare.invalid contact&#64;bare.invalid "
+            "line paragraph end") in md
 
 
 def test_markdown_legacy_config():
