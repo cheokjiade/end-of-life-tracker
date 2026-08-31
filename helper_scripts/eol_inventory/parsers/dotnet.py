@@ -167,8 +167,12 @@ def _collect_central_versions(root):
             name = attrs.get("include") or attrs.get("update")
             if name:
                 version = attrs.get("version") or _child_version(elem)
+                child_conditional = any(
+                    _local(child.tag).lower() == "version"
+                    and bool(_attrs_ci(child).get("condition"))
+                    for child in elem)
                 declarations.setdefault(name.lower(), []).append(
-                    (name, version, conditional))
+                    (name, version, conditional or child_conditional))
         for child in elem:
             visit(child, conditional)
 
@@ -182,12 +186,17 @@ def _collect_central_versions(root):
             version for _, version, conditional in values
             if not conditional and version]
         distinct = list(dict.fromkeys(versions))
+        all_nonempty = all(bool(version) for _, version, _ in values)
         if not has_conditional:
             selected[key] = (display, versions[0] if versions else None, None)
-        elif unconditional and len(distinct) == 1:
+        elif unconditional and all_nonempty and len(distinct) == 1:
             selected[key] = (display, unconditional[-1], None)
         else:
-            details = " | ".join(distinct) if distinct else "no version"
+            details_values = list(distinct)
+            if not all_nonempty:
+                details_values.append("no version")
+            details = " | ".join(details_values) if details_values else (
+                "no version")
             selected[key] = (
                 display, None, f"conditional PackageVersion: {details}")
     return selected

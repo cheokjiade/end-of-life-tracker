@@ -504,7 +504,23 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             'Version="5.0.0" /></ItemGroup></When>'
             '<Otherwise><ItemGroup><PackageVersion '
             'Include="ConditionalCentral" Version="6.0.0" />'
-            '</ItemGroup></Otherwise></Choose></Project>', encoding="utf-8")
+            '</ItemGroup></Otherwise></Choose>'
+            '<ItemGroup>'
+            '<PackageVersion Include="AgreeingCentral" Version="7.0.0" />'
+            '<PackageVersion Include="AgreeingCentral" Version="7.0.0" '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
+            '<PackageVersion Include="DisagreeingCentral" Version="7.0.0" />'
+            '<PackageVersion Include="DisagreeingCentral" Version="8.0.0" '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
+            '<PackageVersion Include="ChildConditional"><Version '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'">9.0.0'
+            '</Version></PackageVersion>'
+            '<PackageVersion Include="EmptyConditional" Version="1.0.0" />'
+            '<PackageVersion Include="EmptyConditional" '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
+            '</ItemGroup><Target Name="CentralVersions"><ItemGroup>'
+            '<PackageVersion Include="TargetConditional" Version="2.0.0" />'
+            '</ItemGroup></Target></Project>', encoding="utf-8")
         (root / "packages.lock.json").write_text(json.dumps({
             "dependencies": {"net8.0": {
                 "DirectLocked": {"type": "Direct", "resolved": "2.4.0"},
@@ -534,6 +550,11 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<PackageReference Include="CentralRange" />'
             '<PackageReference Include="CentralLocked" />'
             '<PackageReference Include="ConditionalCentral" />'
+            '<PackageReference Include="AgreeingCentral" />'
+            '<PackageReference Include="DisagreeingCentral" />'
+            '<PackageReference Include="ChildConditional" />'
+            '<PackageReference Include="EmptyConditional" />'
+            '<PackageReference Include="TargetConditional" />'
             '<PackageReference Include="ConditionalPkg" '
             'Version="$(PkgVersion)" />'
             '<PackageReference Include="ChooseConditionalPkg" '
@@ -565,6 +586,21 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         "conditional PackageVersion: 5.0.0 | 6.0.0")
     assert _has_warning(warnings, "unresolved_version", "ConditionalCentral")
 
+    assert _one(records, "AgreeingCentral")["version"] == "7.0.0"
+    for name, spec in (
+            ("DisagreeingCentral",
+             "conditional PackageVersion: 7.0.0 | 8.0.0"),
+            ("ChildConditional",
+             "conditional PackageVersion: 9.0.0"),
+            ("EmptyConditional",
+             "conditional PackageVersion: 1.0.0 | no version"),
+            ("TargetConditional",
+             "conditional PackageVersion: 2.0.0")):
+        package = _one(records, name)
+        assert package["version"] is None
+        assert package["version_spec"] == spec
+        assert _has_warning(warnings, "unresolved_version", name)
+
     direct_locked = _one(records, "DirectLocked")
     assert direct_locked["version"] == "2.4.0"
     assert direct_locked["version_spec"] == "2.*"
@@ -589,8 +625,11 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     assert {
         "DirectRange", "CentralRange", "ConditionalPkg",
         "ChooseConditionalPkg", "ConditionalCentral",
+        "DisagreeingCentral", "ChildConditional", "EmptyConditional",
+        "TargetConditional",
     }.isdisjoint(tracked_names)
-    assert {"DirectLocked", "CentralLocked", "ExactPkg"} <= tracked_names
+    assert {"DirectLocked", "CentralLocked", "ExactPkg",
+            "AgreeingCentral"} <= tracked_names
     assert not [p for p in config["products"] if p.get("product") == "dotnet"]
 
 
