@@ -573,6 +573,25 @@ def test_windows_junctions_are_classified_as_directory_links():
 
     assert discovery_module._is_directory_link(JunctionPath())
 
+    reparse_flag = getattr(
+        discovery_module.stat, "FILE_ATTRIBUTE_REPARSE_POINT", None)
+    if reparse_flag is None:
+        return
+
+    class ReparseStat:
+        st_file_attributes = reparse_flag
+
+    class LegacyJunctionPath:
+        @staticmethod
+        def is_symlink():
+            return False
+
+        @staticmethod
+        def lstat():
+            return ReparseStat()
+
+    assert discovery_module._is_directory_link(LegacyJunctionPath())
+
 
 def test_scan_folder_oversize_warning():
     with tempfile.TemporaryDirectory() as td:
@@ -1339,6 +1358,13 @@ def test_cli_update_rejects_non_list_products():
             str(root), "--name", "demo", "--output", str(output),
             "--update"]) == 2
         assert json.loads(output.read_text(encoding="utf-8")) == original
+
+        invalid_members = {"products": [None, "bad"]}
+        output.write_text(json.dumps(invalid_members), encoding="utf-8")
+        assert generate_config_main([
+            str(root), "--name", "demo", "--output", str(output),
+            "--update"]) == 2
+        assert json.loads(output.read_text(encoding="utf-8")) == invalid_members
 
 
 def test_scan_ignores_standalone_central_package_declarations():

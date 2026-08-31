@@ -77,13 +77,17 @@ def _lock_version(info):
 def _safe_spec(value):
     """Dependency spec safe to retain in generated inventory metadata."""
     spec = value.strip()
-    if "://" not in spec:
-        return spec
-    spec = re.sub(
-        r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@",
-        r"\1<redacted>@", spec)
-    if "?" in spec:
-        spec = spec.partition("?")[0] + "?<redacted>"
+    if "://" in spec:
+        scheme, rest = spec.split("://", 1)
+        authority, slash, tail = rest.partition("/")
+        if "@" in authority:
+            authority = "<redacted>@" + authority.rsplit("@", 1)[1]
+        spec = scheme + "://" + authority + (slash + tail if slash else "")
+    elif "@" in spec:
+        spec = "<redacted>@" + spec.rsplit("@", 1)[1]
+    suffix = re.search(r"[?#]", spec)
+    if suffix:
+        spec = spec[:suffix.start()] + suffix.group() + "<redacted>"
     return spec
 
 

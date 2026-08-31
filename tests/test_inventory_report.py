@@ -272,11 +272,11 @@ def test_markdown_new_model():
     assert "- Files scanned: 2" in md
     assert "- Warnings: 1" in md
     assert "## Tracked products" in md
-    assert "### java / maven_central" in md
+    assert "### java / maven\\_central" in md
     assert "pom.xml:18; service/pom.xml:9" in md
-    assert ("| commons-lang3 3.14.0 | 3.14.0 | maven_central "
+    assert ("| commons-lang3 3.14.0 | 3.14.0 | maven\\_central "
             "| not recorded |  |  |") in md
-    assert ("| Spring Security 6.3 | 6.3 | endoflife_date "
+    assert ("| Spring Security 6.3 | 6.3 | endoflife\\_date "
             "| not recorded |  | yes |") in md
     assert md.count("| yes |") == 1
     unmapped = _section(md, "Unmapped and unresolved dependencies")
@@ -286,7 +286,7 @@ def test_markdown_new_model():
             "internal coordinate prefix resolves on no public registry "
             "| service/pom.xml:9 |") in unmapped
     warnings = _section(md, "Warnings")
-    assert ("- [unresolved_version] service/pom.xml: line 12: version "
+    assert ("- [unresolved\\_version] service/pom.xml: line 12: version "
             "${lib.version} is not resolvable") in warnings
     summary = _section(md, "Summary")
     assert "| java | 2 |" in summary
@@ -317,7 +317,7 @@ def test_markdown_container_separation():
     assert "## Container images" in md
     images = _section(md, "Container images")
     assert "### Tracked images" in images
-    assert ("| Python 3.12 | 3.12 | endoflife_date | Dockerfile:1 |  |"
+    assert ("| Python 3.12 | 3.12 | endoflife\\_date | Dockerfile:1 |  |"
             in images)
     assert "### Unmapped images" in images
     assert ("| registry.example/app | 1.0 | no lifecycle mapping for this "
@@ -350,11 +350,16 @@ def test_markdown_escapes_newlines_html_and_warning_markup():
 
 def test_markdown_neutralizes_remote_images_and_inline_markup():
     config = _new_model_config()
-    config["products"][1]["label"] = "![probe](https://example.invalid/pixel) *x*"
+    config["products"][1]["label"] = (
+        "![probe](https://example.invalid/pixel) *x* _y_ ~~z~~ "
+        "https://bare.invalid")
     md = render_markdown(build_inventory_view(config, project_name="demo"))
     assert "![probe](https://example.invalid/pixel)" not in md
     assert "*x*" not in md
-    assert "\\!\\[probe\\](https://example.invalid/pixel) \\*x\\*" in md
+    assert "_y_" not in md and "~~z~~" not in md
+    assert "https://bare.invalid" not in md
+    assert ("\\!\\[probe\\](https&#58;//example.invalid/pixel) \\*x\\* "
+            "\\_y\\_ \\~\\~z\\~\\~ https&#58;//bare.invalid") in md
 
 
 def test_markdown_legacy_config():
@@ -363,8 +368,8 @@ def test_markdown_legacy_config():
     assert "- Generator version: unknown" in md
     assert "- Files scanned: not recorded" in md
     assert "- Warnings: 0" in md
-    assert "### other / endoflife_date" in md
-    assert "| React 18 | 18 | endoflife_date | not recorded |  |  |" in md
+    assert "### other / endoflife\\_date" in md
+    assert "| React 18 | 18 | endoflife\\_date | not recorded |  |  |" in md
     unmapped = _section(md, "Unmapped and unresolved dependencies")
     assert ("| node | axios | 1.6.8 | legacy: skipped npm package (no "
             "mapping at generation time) | package.json |") in unmapped

@@ -60,6 +60,9 @@ def test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets():
         package.write_text(json.dumps({
             "dependencies": {
                 "git-pkg": "git+https://user:secret@example.invalid/x.git?token=hidden",
+                "scp-pkg": "user:pass@github.com/user/repo.git",
+                "space-pkg": "https://us er:pw@host/x",
+                "fragment-pkg": "git+https://host/x#token=fragment-secret",
                 "typed-pkg": {"opaque": "SENTINEL"},
             },
         }), encoding="utf-8")
@@ -83,7 +86,9 @@ def test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets():
     assert typed["version_spec"] == "non-string dependency value"
     serialized = json.dumps({"records": records, "warnings": warnings})
     assert "SENTINEL" not in serialized
-    assert "secret" not in serialized and "hidden" not in serialized
+    for secret in ("secret", "hidden", "user:pass", "us er:pw",
+                   "fragment-secret"):
+        assert secret not in serialized
     assert _has_warning(warnings, "parse_error", "typed-pkg")
 
 

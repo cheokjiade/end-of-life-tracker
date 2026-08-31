@@ -304,7 +304,8 @@ def _md_text(value):
         return ""
     text = html.escape(str(value), quote=True)
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
-    return re.sub(r"([\\`*\[\]!])", r"\\\1", text)
+    text = re.sub(r"(?i)\b((?:https?|ftp))://", r"\1&#58;//", text)
+    return re.sub(r"([\\`*_~\[\]!])", r"\\\1", text)
 
 
 def _sorted_rows(rows):
@@ -346,7 +347,7 @@ def render_markdown(view):
         lines.append("None.")
         lines.append("")
     for ecosystem, provider in sorted(groups):
-        lines.append(f"### {ecosystem} / {provider}")
+        lines.append(f"### {_md_text(ecosystem)} / {_md_text(provider)}")
         lines.append("")
         lines.append("| Product | Version | Source | Found in | Details | Inferred |")
         lines.append("| --- | --- | --- | --- | --- | --- |")

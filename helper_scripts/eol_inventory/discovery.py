@@ -11,6 +11,7 @@ prevent accidental huge scans.
 """
 
 import os
+import stat
 from pathlib import Path, PurePosixPath
 
 from .models import (
@@ -138,8 +139,14 @@ def _is_within(root, candidate):
 
 def _is_directory_link(candidate):
     """True for directory symlinks and Windows junctions/reparse links."""
-    return candidate.is_symlink() or (
-        hasattr(candidate, "is_junction") and candidate.is_junction())
+    if candidate.is_symlink() or (
+            hasattr(candidate, "is_junction") and candidate.is_junction()):
+        return True
+    try:
+        attributes = getattr(candidate.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
 def scan_folder(folder, exclude=None):
