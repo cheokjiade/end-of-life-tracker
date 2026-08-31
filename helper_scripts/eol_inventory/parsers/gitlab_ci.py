@@ -48,9 +48,11 @@ _IGNORED_INCLUDE_KINDS = frozenset({"file", "ref", "inputs"})
 
 
 def _collect_top_level_variables(text):
-    """Collect simple top-level variables before image/include traversal."""
+    """Collect simple top-level/default variables before include traversal."""
     variables = {}
+    current_top = None
     collecting = False
+    collect_indent = None
     variable_indent = None
     for raw in text.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
@@ -63,10 +65,18 @@ def _collect_top_level_variables(text):
         key = key.strip()
         value = value.strip()
         if indent == 0:
+            current_top = key
             collecting = key == "variables" and not value
+            collect_indent = 0 if collecting else None
             variable_indent = None
             continue
-        if not collecting:
+        if current_top == "default" and key == "variables":
+            collecting = not value
+            collect_indent = indent if collecting else None
+            variable_indent = None
+            continue
+        if not collecting or indent <= collect_indent:
+            collecting = False
             continue
         if variable_indent is None:
             variable_indent = indent

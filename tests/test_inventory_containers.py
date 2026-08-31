@@ -256,7 +256,8 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "included-job:\n"
             "  image: $LATE_IMAGE\n"
             "  services:\n"
-            "    - $SHARED_SERVICE\n",
+            "    - $SHARED_SERVICE\n"
+            "    - $DEFAULT_SERVICE\n",
             encoding="utf-8")
         ci = root / ".gitlab-ci.yml"
         ci.write_text(
@@ -269,7 +270,10 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "    JOB_IMAGE: node:22\n"
             "variables:\n"
             "  LATE_IMAGE: python:3.12\n"
-            "  SHARED_SERVICE: redis:7.2\n",
+            "  SHARED_SERVICE: redis:7.2\n"
+            "default:\n"
+            "  variables:\n"
+            "    DEFAULT_SERVICE: alpine:3.20\n",
             encoding="utf-8")
         records, warnings = gitlab_parser.parse_gitlab_ci_records(
             ci, ".gitlab-ci.yml", root=root)
@@ -280,6 +284,7 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
         ".gitlab-ci.yml", ".gitlab/included.yml"}
     assert _one(records, "node")["version"] == "22"
     assert _one(records, "redis")["version"] == "7.2"
+    assert _one(records, "alpine")["version"] == "3.20"
     assert not [warning for warning in warnings
                 if warning["category"] == "unresolved_variable"]
 
