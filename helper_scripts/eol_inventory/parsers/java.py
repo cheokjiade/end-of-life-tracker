@@ -23,6 +23,7 @@ from ..models import add_location, load_safe_xml, new_record, new_warning
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
 _JAVA_EXACT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
+_JAVA_BAD_SEPARATOR_RE = re.compile(r"[._+-](?:[._+-]|$)")
 
 
 def _is_exact_java_version(value):
@@ -33,8 +34,7 @@ def _is_exact_java_version(value):
         and _JAVA_EXACT_VERSION_RE.fullmatch(value)
         and lowered not in ("latest", "release")
         and not lowered.startswith("latest.")
-        and not value.endswith("+")
-        and ".." not in value)
+        and not _JAVA_BAD_SEPARATOR_RE.search(value))
 
 
 def _t(elem, name, ns=_POM_NS):

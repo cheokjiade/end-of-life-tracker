@@ -330,6 +330,9 @@ def test_parse_gradle_records():
             '  implementation("org.example:latest:latest.integration")\n'
             "  implementation('org.example:latest-single:latest.release')\n"
             '  implementation("org.example:malformed:1..0")\n'
+            '  implementation("org.example:trailing-dot:1.")\n'
+            '  implementation("org.example:trailing-dash:1.0-")\n'
+            '  implementation("org.example:adjacent-separators:1+-2")\n'
             '  implementation("org.example:build:1.0.0+build.1")\n'
             '  implementation(group = "org.example", name = "latest-named", '
             'version = "latest.milestone")\n'
@@ -350,11 +353,14 @@ def test_parse_gradle_records():
         ("latest", None, "latest.integration"),
         ("latest-single", None, "latest.release"),
         ("malformed", None, "1..0"),
+        ("trailing-dot", None, "1."),
+        ("trailing-dash", None, "1.0-"),
+        ("adjacent-separators", None, "1+-2"),
         ("build", "1.0.0+build.1", None),
         ("named", None, "$\u7248\u672c"),
         ("latest-named", None, "latest.milestone"),
     ]
-    assert len(dynamic_warnings) == 13
+    assert len(dynamic_warnings) == 16
     assert all(w["category"] == "unresolved_version"
                for w in dynamic_warnings)
     dynamic_config = gc.generate_config(dynamic_scan, "dynamic")
@@ -362,13 +368,15 @@ def test_parse_gradle_records():
                 if p.get("artifact") in {
                     "short", "braced", "dotted", "unicode", "single",
                     "escaped", "named", "range", "floating", "latest",
-                    "latest-single", "latest-named", "malformed"}
+                    "latest-single", "latest-named", "malformed",
+                    "trailing-dot", "trailing-dash", "adjacent-separators"}
                 and p.get("source") == "maven_central"]
     assert len([p for p in _products(dynamic_config)
                 if p.get("artifact") == "build"
                 and p.get("version") == "1.0.0+build.1"]) == 1
     assert [(item["name"], item["version_spec"])
             for item in dynamic_config["_inventory"]["unmapped"]] == [
+        ("org.example:adjacent-separators", "1+-2"),
         ("org.example:braced", "${versions.long}"),
         ("org.example:dotted", "$versions.long"),
         ("org.example:escaped", "\\$version"),
@@ -381,6 +389,8 @@ def test_parse_gradle_records():
         ("org.example:range", "[1.0,2.0)"),
         ("org.example:short", "$version"),
         ("org.example:single", "$version"),
+        ("org.example:trailing-dash", "1.0-"),
+        ("org.example:trailing-dot", "1."),
         ("org.example:unicode", "$\u03c0"),
     ]
 
