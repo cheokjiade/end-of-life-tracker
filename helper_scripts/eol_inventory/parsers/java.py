@@ -22,15 +22,19 @@ from ..mappings import _POM_PROPERTY_MAPPINGS
 from ..models import add_location, load_safe_xml, new_record, new_warning
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
-_JAVA_EXACT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+_JAVA_EXACT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 
 
 def _is_exact_java_version(value):
     """Whether a Maven/Gradle token is a concrete registry version."""
+    lowered = value.lower() if value else ""
     return bool(
         value
         and _JAVA_EXACT_VERSION_RE.fullmatch(value)
-        and value.upper() not in ("LATEST", "RELEASE"))
+        and lowered not in ("latest", "release")
+        and not lowered.startswith("latest.")
+        and not value.endswith("+")
+        and ".." not in value)
 
 
 def _t(elem, name, ns=_POM_NS):
@@ -79,8 +83,8 @@ def parse_pom_records(path, rel_path):
     warnings = []
 
     def emit(group, artifact, version, kind, locator):
-        # ${...} that survived resolution is retained as a warning + a
-        # record without a version; it is never emitted as a product.
+        # Expressions, ranges, dynamics, and malformed tokens are retained as
+        # warnings plus versionless records; they never become provider rows.
         if "${" in version or not _is_exact_java_version(version):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,

@@ -327,6 +327,12 @@ def test_parse_gradle_records():
             'version = "$\u7248\u672c")\n'
             '  implementation("org.example:range:[1.0,2.0)")\n'
             '  implementation("org.example:floating:1.+")\n'
+            '  implementation("org.example:latest:latest.integration")\n'
+            "  implementation('org.example:latest-single:latest.release')\n"
+            '  implementation("org.example:malformed:1..0")\n'
+            '  implementation("org.example:build:1.0.0+build.1")\n'
+            '  implementation(group = "org.example", name = "latest-named", '
+            'version = "latest.milestone")\n'
             '}\n', encoding="utf-8")
         dynamic_records, dynamic_warnings = gc.parse_gradle_records(
             dynamic, "build.gradle.kts")
@@ -341,23 +347,36 @@ def test_parse_gradle_records():
         ("escaped", None, "\\$version"),
         ("range", None, "[1.0,2.0)"),
         ("floating", None, "1.+"),
+        ("latest", None, "latest.integration"),
+        ("latest-single", None, "latest.release"),
+        ("malformed", None, "1..0"),
+        ("build", "1.0.0+build.1", None),
         ("named", None, "$\u7248\u672c"),
+        ("latest-named", None, "latest.milestone"),
     ]
-    assert len(dynamic_warnings) == 9
+    assert len(dynamic_warnings) == 13
     assert all(w["category"] == "unresolved_version"
                for w in dynamic_warnings)
     dynamic_config = gc.generate_config(dynamic_scan, "dynamic")
     assert not [p for p in _products(dynamic_config)
                 if p.get("artifact") in {
                     "short", "braced", "dotted", "unicode", "single",
-                    "escaped", "named", "range", "floating"}
+                    "escaped", "named", "range", "floating", "latest",
+                    "latest-single", "latest-named", "malformed"}
                 and p.get("source") == "maven_central"]
+    assert len([p for p in _products(dynamic_config)
+                if p.get("artifact") == "build"
+                and p.get("version") == "1.0.0+build.1"]) == 1
     assert [(item["name"], item["version_spec"])
             for item in dynamic_config["_inventory"]["unmapped"]] == [
         ("org.example:braced", "${versions.long}"),
         ("org.example:dotted", "$versions.long"),
         ("org.example:escaped", "\\$version"),
         ("org.example:floating", "1.+"),
+        ("org.example:latest", "latest.integration"),
+        ("org.example:latest-named", "latest.milestone"),
+        ("org.example:latest-single", "latest.release"),
+        ("org.example:malformed", "1..0"),
         ("org.example:named", "$\u7248\u672c"),
         ("org.example:range", "[1.0,2.0)"),
         ("org.example:short", "$version"),
