@@ -923,16 +923,24 @@ def parse_pipfile_records(path, rel_path, root=None):
                 candidate = spec[2:] if spec.startswith("==") else spec
                 if _is_version(candidate):
                     version = candidate
+            resolved_from_lock = False
             lock_info = locked.get(name) if isinstance(locked, dict) else None
             lock_version = lock_info.get("version") if isinstance(lock_info, dict) else None
             if version is None and isinstance(lock_version, str) \
                     and lock_version.startswith("=="):
-                version = lock_version[2:]
+                candidate = lock_version[2:]
+                if _is_version(candidate):
+                    version = candidate
+                    resolved_from_lock = True
             record = new_record("python", name, version=version,
                                 version_spec=None if version else spec,
                                 scope=scope, direct=True)
             add_location(record, rel_path, "pipfile",
                          locator=f"{section}.{name}")
+            if resolved_from_lock:
+                add_location(
+                    record, _sibling_rel(rel_path, "Pipfile.lock"),
+                    "pipfile-lock", locator=f"{lock_section}.{name}")
             if version is None:
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,

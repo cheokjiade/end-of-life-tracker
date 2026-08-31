@@ -500,7 +500,18 @@ def test_pipfile_direct_dependencies_resolve_from_lock():
         ("requests", "2.32.3", "runtime", True),
         ("pytest", "8.2.0", "dev", True),
     ]
-    assert records[0]["found_in"][0]["locator"] == "packages.flask"
+    assert records[0]["found_in"] == [{
+        "path": "Pipfile", "manifest": "pipfile",
+        "locator": "packages.flask"}]
+    assert _one(records, "requests")["found_in"] == [
+        {"path": "Pipfile", "manifest": "pipfile",
+         "locator": "packages.requests"},
+        {"path": "Pipfile.lock", "manifest": "pipfile-lock",
+         "locator": "default.requests"},
+    ]
+    assert _one(records, "pytest")["found_in"][-1] == {
+        "path": "Pipfile.lock", "manifest": "pipfile-lock",
+        "locator": "develop.pytest"}
 
 
 def test_pipfile_malformed_sibling_lock_warns():
