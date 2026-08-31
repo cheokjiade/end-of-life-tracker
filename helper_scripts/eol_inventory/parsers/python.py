@@ -55,7 +55,7 @@ _LOCAL_PATH_RE = re.compile(
 
 def _is_version(spec):
     """True when spec is a plain exact version (no operators/wildcards)."""
-    return bool(_VERSION_CHARSET_RE.match(spec)) and "*" not in spec
+    return bool(_VERSION_CHARSET_RE.fullmatch(spec)) and "*" not in spec
 
 
 def _is_local_path(token):

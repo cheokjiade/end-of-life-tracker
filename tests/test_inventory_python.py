@@ -526,6 +526,25 @@ def test_pipfile_malformed_sibling_lock_warns():
     assert _has_warning(warnings, "parse_error", "Pipfile.lock")
 
 
+def test_pipfile_lock_control_character_is_not_a_version():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pipfile = root / "Pipfile"
+        pipfile.write_text(
+            '[packages]\nrequests = "*"\n', encoding="utf-8")
+        (root / "Pipfile.lock").write_text(json.dumps({
+            "default": {"requests": {"version": "==2.32.3\n"}},
+        }), encoding="utf-8")
+        records, warnings = python_parser.parse_pipfile_records(
+            pipfile, "Pipfile", root=root)
+    requests = _one(records, "requests")
+    assert requests["version"] is None
+    assert requests["found_in"] == [{
+        "path": "Pipfile", "manifest": "pipfile",
+        "locator": "packages.requests"}]
+    assert _has_warning(warnings, "unresolved_version", "requests")
+
+
 # ---------------------------------------------------------------------------
 # Runtime evidence
 # ---------------------------------------------------------------------------
@@ -614,6 +633,7 @@ TESTS = [
     test_pipfile_lock_malformed_json,
     test_pipfile_direct_dependencies_resolve_from_lock,
     test_pipfile_malformed_sibling_lock_warns,
+    test_pipfile_lock_control_character_is_not_a_version,
     test_python_version_file,
     test_runtime_txt_file,
     test_parsing_is_deterministic,
