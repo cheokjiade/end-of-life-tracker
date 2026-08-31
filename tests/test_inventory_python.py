@@ -537,12 +537,22 @@ def test_pipfile_lock_control_character_is_not_a_version():
         }), encoding="utf-8")
         records, warnings = python_parser.parse_pipfile_records(
             pipfile, "Pipfile", root=root)
+        lock_records, lock_warnings = (
+            python_parser.parse_pipfile_lock_records(
+                root / "Pipfile.lock", "Pipfile.lock"))
     requests = _one(records, "requests")
     assert requests["version"] is None
     assert requests["found_in"] == [{
         "path": "Pipfile", "manifest": "pipfile",
         "locator": "packages.requests"}]
     assert _has_warning(warnings, "unresolved_version", "requests")
+    locked_requests = _one(lock_records, "requests")
+    assert locked_requests["version"] is None
+    assert locked_requests["found_in"] == [{
+        "path": "Pipfile.lock", "manifest": "pipfile-lock",
+        "locator": "default.requests"}]
+    assert _has_warning(
+        lock_warnings, "unresolved_version", "requests")
 
 
 # ---------------------------------------------------------------------------

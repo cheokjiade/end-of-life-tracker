@@ -981,8 +981,8 @@ def parse_pipfile_lock_records(path, rel_path):
                     f"{section}.{name} is not a table; skipped"))
                 continue
             version = info.get("version")
-            if isinstance(version, str) and version.startswith("==") \
-                    and len(version) > 2:
+            if (isinstance(version, str) and version.startswith("==")
+                    and _is_version(version[2:])):
                 record = new_record("python", name, version=version[2:],
                                     scope=scope, direct=False)
             else:
