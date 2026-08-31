@@ -271,9 +271,13 @@ def test_go_invalid_version_tokens_remain_untracked():
             "module example.test/app\n"
             "go latest\n"
             "go 0.0\n"
+            "go 1.10\u0660\n"
             "toolchain default\n"
             "require example.test/invalid latest\n"
             "require example.test/invalid-prerelease v1.2.3-01\n"
+            "require example.test/empty-prerelease v1.2.3-a..b\n"
+            "require example.test/empty-build v1.2.3+build..x\n"
+            "require example.test/unicode-digit v1.2.3\u0663\n"
             "require example.test/pseudo "
             "v0.0.0-20240101120000-abcdefabcdef\n"
             "replace example.test/invalid => example.test/replacement next\n",
@@ -288,21 +292,31 @@ def test_go_invalid_version_tokens_remain_untracked():
     invalid_prerelease = _one(records, "example.test/invalid-prerelease")
     assert invalid_prerelease["version"] is None
     assert invalid_prerelease["version_spec"] == "v1.2.3-01"
+    for name, spec in (
+            ("example.test/empty-prerelease", "v1.2.3-a..b"),
+            ("example.test/empty-build", "v1.2.3+build..x"),
+            ("example.test/unicode-digit", "v1.2.3\u0663")):
+        invalid_module = _one(records, name)
+        assert invalid_module["version"] is None
+        assert invalid_module["version_spec"] == spec
     runtimes = _records_named(records, "go")
     assert {record["version_spec"] for record in runtimes} == {
-        "latest", "0.0", "default"}
+        "latest", "0.0", "1.10\u0660", "default"}
     assert len([warning for warning in warnings
-                if warning["category"] == "unresolved_version"]) == 6
+                if warning["category"] == "unresolved_version"]) == 10
     assert not [product for product in config["products"]
                 if product.get("product") == "golang"
                 or product.get("module") in {
                     "example.test/invalid", "example.test/invalid-prerelease",
+                    "example.test/empty-prerelease",
+                    "example.test/empty-build", "example.test/unicode-digit",
                     "example.test/replacement"}]
     assert len([product for product in config["products"]
                 if product.get("module") == "example.test/pseudo"]) == 1
     unmapped = config["_inventory"]["unmapped"]
     assert {item.get("version_spec") for item in unmapped} >= {
-        "latest", "0.0", "default", "v1.2.3-01"}
+        "latest", "0.0", "1.10\u0660", "default", "v1.2.3-01",
+        "v1.2.3-a..b", "v1.2.3+build..x", "v1.2.3\u0663"}
 
 
 def test_go_parsing_is_deterministic():

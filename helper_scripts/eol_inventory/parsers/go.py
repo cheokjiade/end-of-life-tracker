@@ -34,10 +34,10 @@ _TOOLCHAIN_RE = re.compile(r"^toolchain\s+(\S+)$")
 _GO_RE = re.compile(r"^go\s+(\S+)$")
 _MODULE_RE = re.compile(r"^module\s+(\S+)$")
 _GO_RUNTIME_VERSION_RE = re.compile(
-    r"^[1-9]\d*\.(?:0|[1-9]\d*)"
-    r"(?:\.(?:0|[1-9]\d*))?$")
+    r"^[1-9][0-9]*\.(?:0|[1-9][0-9]*)"
+    r"(?:\.(?:0|[1-9][0-9]*))?$")
 _GO_MODULE_VERSION_RE = re.compile(
-    r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
     r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 
@@ -55,12 +55,16 @@ def _module_version(version):
     """Normalized canonical Go module version, or None."""
     if not version or not _GO_MODULE_VERSION_RE.fullmatch(version):
         return None
-    without_build = version.split("+", 1)[0]
+    without_build, has_build, build = version.partition("+")
+    if has_build and any(not identifier for identifier in build.split(".")):
+        return None
     if "-" in without_build:
         prerelease = without_build.split("-", 1)[1]
+        identifiers = prerelease.split(".")
+        if any(not identifier for identifier in identifiers):
+            return None
         if any(identifier.isdigit() and len(identifier) > 1
-               and identifier.startswith("0")
-               for identifier in prerelease.split(".")):
+               and identifier.startswith("0") for identifier in identifiers):
             return None
     return version[1:]
 
