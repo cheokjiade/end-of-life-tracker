@@ -33,6 +33,13 @@ _BLOCK_RE = re.compile(r"^(\w+)\s*\(\s*$")
 _TOOLCHAIN_RE = re.compile(r"^toolchain\s+(\S+)$")
 _GO_RE = re.compile(r"^go\s+(\S+)$")
 _MODULE_RE = re.compile(r"^module\s+(\S+)$")
+_GO_RUNTIME_VERSION_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:\.(?:0|[1-9]\d*))?$")
+_GO_MODULE_VERSION_RE = re.compile(
+    r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
+    r"(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 
 _IGNORED_BLOCKS = ("exclude", "retract")
 
@@ -42,6 +49,13 @@ def _strip_v(version):
     if version and version[0] in "vV" and len(version) > 1:
         return version[1:]
     return version
+
+
+def _module_version(version):
+    """Normalized canonical Go module version, or None."""
+    if not version or not _GO_MODULE_VERSION_RE.fullmatch(version):
+        return None
+    return version[1:]
 
 
 def _is_local_path(token):
@@ -57,13 +71,13 @@ def _is_local_path(token):
 
 
 def _parse_replace_side(side):
-    """'<old> [vX]' / '<new> [vY]' -> (path_or_dir, version_or_None)."""
+    """'<old> [vX]' / '<new> [vY]' -> (path_or_dir, raw-version)."""
     tokens = side.split()
     if not tokens:
         return None, None
     target = tokens[0]
     version = tokens[1] if len(tokens) > 1 else None
-    return target, _strip_v(version)
+    return target, version
 
 
 def parse_go_mod_records(path, rel_path):
@@ -80,8 +94,10 @@ def parse_go_mod_records(path, rel_path):
     original_requirements = ()
     block = None
 
-    def emit_dependency(name, version, direct, line, locator):
-        record = new_record("go", name, version=version, direct=direct)
+    def emit_dependency(name, version, version_spec, direct, line, locator):
+        record = new_record(
+            "go", name, version=version, version_spec=version_spec,
+            direct=direct)
         add_location(record, rel_path, "go", line=line, locator=locator)
         records.append(record)
         return record
@@ -93,8 +109,16 @@ def parse_go_mod_records(path, rel_path):
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed require: {code!r}"))
             return
-        emit_dependency(tokens[0], _strip_v(tokens[1]), not indirect,
-                        line, f"require:{tokens[0]}")
+        raw_version = tokens[1]
+        version = _module_version(raw_version)
+        if version is None:
+            warnings.append(new_warning(
+                "unresolved_version", rel_path,
+                f"go.mod line {line}: require {tokens[0]} has non-canonical "
+                f"module version {raw_version!r}; not guessed"))
+        emit_dependency(
+            tokens[0], version, raw_version if version is None else None,
+            not indirect, line, f"require:{tokens[0]}")
 
     def parse_replace(code, line):
         if "=>" not in code:
@@ -102,13 +126,29 @@ def parse_go_mod_records(path, rel_path):
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed replace: {code!r}"))
             return None
-        old, old_version = _parse_replace_side(code.split("=>", 1)[0])
-        target, target_version = _parse_replace_side(code.split("=>", 1)[1])
+        old, old_version_raw = _parse_replace_side(code.split("=>", 1)[0])
+        target, target_version_raw = _parse_replace_side(
+            code.split("=>", 1)[1])
         if not old or not target:
             warnings.append(new_warning(
                 "parse_error", rel_path,
                 f"go.mod line {line}: malformed replace: {code!r}"))
             return None
+
+        old_version = _module_version(old_version_raw) \
+            if old_version_raw else None
+        target_version = _module_version(target_version_raw) \
+            if target_version_raw else None
+        if old_version_raw and old_version is None:
+            warnings.append(new_warning(
+                "unresolved_version", rel_path,
+                f"line {line}: replace {old} has non-canonical old version "
+                f"{old_version_raw!r}; directive cannot match"))
+        if target_version_raw and target_version is None:
+            warnings.append(new_warning(
+                "unresolved_version", rel_path,
+                f"line {line}: replace target {target} has non-canonical "
+                f"version {target_version_raw!r}; not guessed"))
 
         local_target = _is_local_path(target)
         if local_target:
@@ -121,12 +161,14 @@ def parse_go_mod_records(path, rel_path):
             warnings.append(new_warning(
                 "go_replace", rel_path,
                 f"line {line}: replace {old} => {target}"
-                + (f" {target_version}" if target_version else "")))
+                + (f" {target_version_raw}" if target_version_raw else "")))
         return {
             "old": old,
             "old_version": old_version,
+            "old_version_raw": old_version_raw,
             "target": target,
             "target_version": target_version,
+            "target_version_raw": target_version_raw,
             "local_target": local_target,
             "line": line,
         }
@@ -142,6 +184,8 @@ def parse_go_mod_records(path, rel_path):
         else:
             target_record = emit_dependency(
                 target, target_version,
+                replacement["target_version_raw"]
+                if target_version is None else None,
                 direct=old_record["direct"],
                 line=line,
                 locator=f"replace:{old}")
@@ -191,20 +235,40 @@ def parse_go_mod_records(path, rel_path):
 
         m = _GO_RE.match(code)
         if m:
-            record = new_record("go", "go", version=m.group(1),
-                                kind="runtime")
+            raw_version = m.group(1)
+            version = raw_version if _GO_RUNTIME_VERSION_RE.fullmatch(
+                raw_version) else None
+            record = new_record(
+                "go", "go", version=version,
+                version_spec=raw_version if version is None else None,
+                kind="runtime")
             add_location(record, rel_path, "go", line=lineno, locator="go")
             records.append(record)
+            if version is None:
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"go.mod line {lineno}: go directive has non-canonical "
+                    f"version {raw_version!r}; not guessed"))
             continue
 
         m = _TOOLCHAIN_RE.match(code)
         if m:
-            record = new_record("go", "go",
-                                version=_strip_v(m.group(1)).removeprefix("go"),
-                                kind="runtime")
+            raw_version = m.group(1)
+            candidate = raw_version.removeprefix("go")
+            version = candidate if raw_version.startswith("go") \
+                and _GO_RUNTIME_VERSION_RE.fullmatch(candidate) else None
+            record = new_record(
+                "go", "go", version=version,
+                version_spec=raw_version if version is None else None,
+                kind="runtime")
             add_location(record, rel_path, "go", line=lineno,
                          locator="toolchain")
             records.append(record)
+            if version is None:
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"go.mod line {lineno}: toolchain directive has "
+                    f"non-canonical version {raw_version!r}; not guessed"))
             continue
 
         tokens = code.split(None, 1)
@@ -221,9 +285,13 @@ def parse_go_mod_records(path, rel_path):
         if (replacement := parse_replace(code, lineno)) is not None
     ]
     for old_record in original_requirements:
+        if old_record.get("version_spec"):
+            continue
         matches = [
             replacement for replacement in parsed_replacements
             if replacement["old"] == old_record["name"]
+            and not (replacement["old_version_raw"]
+                     and replacement["old_version"] is None)
             and (replacement["old_version"] is None
                  or replacement["old_version"] == old_record.get("version"))
         ]

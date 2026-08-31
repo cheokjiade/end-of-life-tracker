@@ -264,6 +264,41 @@ def test_go_malformed_lines_warn_and_parsing_continues():
     assert any("line 8" in w["message"] for w in parse_errors)
 
 
+def test_go_invalid_version_tokens_remain_untracked():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        path.write_text(
+            "module example.test/app\n"
+            "go latest\n"
+            "toolchain default\n"
+            "require example.test/invalid latest\n"
+            "require example.test/pseudo "
+            "v0.0.0-20240101120000-abcdefabcdef\n"
+            "replace example.test/invalid => example.test/replacement next\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+        config = generate_config(scan_folder(tmpdir), "invalid-go")
+
+    invalid = _one(records, "example.test/invalid")
+    assert invalid["version"] is None and invalid["version_spec"] == "latest"
+    pseudo = _one(records, "example.test/pseudo")
+    assert pseudo["version"] == "0.0.0-20240101120000-abcdefabcdef"
+    runtimes = _records_named(records, "go")
+    assert {record["version_spec"] for record in runtimes} == {
+        "latest", "default"}
+    assert len([warning for warning in warnings
+                if warning["category"] == "unresolved_version"]) == 4
+    assert not [product for product in config["products"]
+                if product.get("product") == "golang"
+                or product.get("module") in {
+                    "example.test/invalid", "example.test/replacement"}]
+    assert len([product for product in config["products"]
+                if product.get("module") == "example.test/pseudo"]) == 1
+    unmapped = config["_inventory"]["unmapped"]
+    assert {item.get("version_spec") for item in unmapped} >= {
+        "latest", "default"}
+
+
 def test_go_parsing_is_deterministic():
     first = _parse_go("go", "basic", "go.mod")
     second = _parse_go("go", "basic", "go.mod")
@@ -769,6 +804,7 @@ TESTS = [
     test_go_unused_same_module_version_replace_is_warning_only,
     test_go_local_replace_never_public_dependency,
     test_go_malformed_lines_warn_and_parsing_continues,
+    test_go_invalid_version_tokens_remain_untracked,
     test_go_parsing_is_deterministic,
     test_dotnet_tfm_version,
     test_dotnet_requested_lower_bound,
