@@ -22,6 +22,15 @@ from ..mappings import _POM_PROPERTY_MAPPINGS
 from ..models import add_location, load_safe_xml, new_record, new_warning
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
+_JAVA_EXACT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]*$")
+
+
+def _is_exact_java_version(value):
+    """Whether a Maven/Gradle token is a concrete registry version."""
+    return bool(
+        value
+        and _JAVA_EXACT_VERSION_RE.fullmatch(value)
+        and value.upper() not in ("LATEST", "RELEASE"))
 
 
 def _t(elem, name, ns=_POM_NS):
@@ -72,7 +81,7 @@ def parse_pom_records(path, rel_path):
     def emit(group, artifact, version, kind, locator):
         # ${...} that survived resolution is retained as a warning + a
         # record without a version; it is never emitted as a product.
-        if "${" in version:
+        if "${" in version or not _is_exact_java_version(version):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
                 kind=kind, group=group, artifact=artifact,
@@ -80,7 +89,7 @@ def parse_pom_records(path, rel_path):
             )
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
-                f"unresolved property expression in {group}:{artifact} version"
+                f"no exact version for {group}:{artifact}"
                 f" ({version})"))
         else:
             record = new_record(
@@ -111,14 +120,14 @@ def parse_pom_records(path, rel_path):
     for prop_name, mapper in _POM_PROPERTY_MAPPINGS.items():
         if prop_name in props:
             value = props[prop_name]
-            if "${" in value:
+            if "${" in value or not _is_exact_java_version(value):
                 record = new_record(
                     "java", prop_name, version=None, kind="property",
                     version_spec=value,
                 )
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
-                    f"unresolved property expression in <{prop_name}>"
+                    f"no exact version in <{prop_name}>"
                     f" ({value})"))
             else:
                 record = new_record(
@@ -180,14 +189,15 @@ def parse_gradle_records(path, rel_path):
     def emit(group, artifact, version, line, interpolates=True):
         # A Groovy/Kotlin string interpolation is retained as a warning and
         # a versionless record; it is never emitted as an exact product.
-        if interpolates and _has_gradle_interpolation(version):
+        if ((interpolates and _has_gradle_interpolation(version))
+                or not _is_exact_java_version(version)):
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
                 group=group, artifact=artifact, version_spec=version,
             )
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
-                f"unresolved expression in {group}:{artifact} version"
+                f"no exact version for {group}:{artifact}"
                 f" ({version}) at line {line}"))
         else:
             if interpolates:

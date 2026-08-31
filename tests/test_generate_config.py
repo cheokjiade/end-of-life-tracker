@@ -325,6 +325,8 @@ def test_parse_gradle_records():
             '  implementation("org.example:escaped:\\$version")\n'
             '  implementation(group = "org.example", name = "named", '
             'version = "$\u7248\u672c")\n'
+            '  implementation("org.example:range:[1.0,2.0)")\n'
+            '  implementation("org.example:floating:1.+")\n'
             '}\n', encoding="utf-8")
         dynamic_records, dynamic_warnings = gc.parse_gradle_records(
             dynamic, "build.gradle.kts")
@@ -335,26 +337,48 @@ def test_parse_gradle_records():
         ("braced", None, "${versions.long}"),
         ("dotted", None, "$versions.long"),
         ("unicode", None, "$\u03c0"),
-        ("single", "$version", None),
-        ("escaped", "$version", None),
+        ("single", None, "$version"),
+        ("escaped", None, "\\$version"),
+        ("range", None, "[1.0,2.0)"),
+        ("floating", None, "1.+"),
         ("named", None, "$\u7248\u672c"),
     ]
-    assert len(dynamic_warnings) == 5
+    assert len(dynamic_warnings) == 9
     assert all(w["category"] == "unresolved_version"
                for w in dynamic_warnings)
     dynamic_config = gc.generate_config(dynamic_scan, "dynamic")
     assert not [p for p in _products(dynamic_config)
                 if p.get("artifact") in {
-                    "short", "braced", "dotted", "unicode", "named"}
+                    "short", "braced", "dotted", "unicode", "single",
+                    "escaped", "named", "range", "floating"}
                 and p.get("source") == "maven_central"]
     assert [(item["name"], item["version_spec"])
             for item in dynamic_config["_inventory"]["unmapped"]] == [
         ("org.example:braced", "${versions.long}"),
         ("org.example:dotted", "$versions.long"),
+        ("org.example:escaped", "\\$version"),
+        ("org.example:floating", "1.+"),
         ("org.example:named", "$\u7248\u672c"),
+        ("org.example:range", "[1.0,2.0)"),
         ("org.example:short", "$version"),
+        ("org.example:single", "$version"),
         ("org.example:unicode", "$\u03c0"),
     ]
+
+    with tempfile.TemporaryDirectory() as td:
+        pom = Path(td) / "pom.xml"
+        pom.write_text(
+            '<project><modelVersion>4.0.0</modelVersion><dependencies>'
+            '<dependency><groupId>org.example</groupId>'
+            '<artifactId>range</artifactId><version>[1.0,2.0)</version>'
+            '</dependency></dependencies></project>', encoding="utf-8")
+        pom_records, pom_warnings = gc.parse_pom_records(pom, "pom.xml")
+        pom_config = gc.generate_config(gc.scan_folder(td), "dynamic-pom")
+    assert pom_records[0]["version"] is None
+    assert pom_records[0]["version_spec"] == "[1.0,2.0)"
+    assert len(pom_warnings) == 1
+    assert not [product for product in _products(pom_config)
+                if product.get("source") == "maven_central"]
 
 
 def test_parse_package_json_records():
