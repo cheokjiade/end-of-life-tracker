@@ -69,6 +69,14 @@ def _child_version(elem):
     return None
 
 
+def _child_version_is_conditional(elem):
+    """Whether a <Version> metadata child carries an MSBuild condition."""
+    return any(
+        _local(child.tag).lower() == "version"
+        and bool(_attrs_ci(child).get("condition"))
+        for child in elem)
+
+
 def _resolve_props(value, props):
     """One-pass $(Name) substitution, case-insensitive; unresolved stay."""
     if not value:
@@ -167,10 +175,7 @@ def _collect_central_versions(root):
             name = attrs.get("include") or attrs.get("update")
             if name:
                 version = attrs.get("version") or _child_version(elem)
-                child_conditional = any(
-                    _local(child.tag).lower() == "version"
-                    and bool(_attrs_ci(child).get("condition"))
-                    for child in elem)
+                child_conditional = _child_version_is_conditional(elem)
                 declarations.setdefault(name.lower(), []).append(
                     (name, version, conditional or child_conditional))
         for child in elem:
@@ -391,6 +396,22 @@ def parse_csproj_records(path, rel_path, root=None):
 
         raw_version = attrs.get("version") or _child_version(elem)
         version = _resolve_props(raw_version, props) if raw_version else None
+        if raw_version and _child_version_is_conditional(elem):
+            locked = lock.get(name.lower())
+            record = new_record(
+                "dotnet", name, version=locked, version_spec=version)
+            add_location(record, rel_path, "dotnet",
+                         locator=f"PackageReference:{name}")
+            if locked:
+                add_location(record, lock_rel, "dotnet",
+                             locator=f"lock:{name}")
+            else:
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"PackageReference {name} has conditional Version "
+                    f"metadata ({version}); not guessed"))
+            records.append(record)
+            continue
         if _has_msbuild_expression(version):
             record = new_record(
                 "dotnet", name, version=None, version_spec=version)

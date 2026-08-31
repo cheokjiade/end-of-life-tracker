@@ -559,6 +559,8 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         (root / "packages.lock.json").write_text(json.dumps({
             "dependencies": {"net8.0": {
                 "DirectLocked": {"type": "Direct", "resolved": "2.4.0"},
+                "DirectChildLocked": {
+                    "type": "Direct", "resolved": "3.2.0"},
                 "CentralLocked": {"type": "Direct", "resolved": "1.9.0"},
             }},
         }), encoding="utf-8")
@@ -582,6 +584,12 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<ItemGroup>'
             '<PackageReference Include="DirectRange" Version="[1.0,2.0)" />'
             '<PackageReference Include="DirectLocked" Version="2.*" />'
+            '<PackageReference Include="DirectChildConditional"><Version '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'">3.1.0'
+            '</Version></PackageReference>'
+            '<PackageReference Include="DirectChildLocked"><Version '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'">3.*'
+            '</Version></PackageReference>'
             '<PackageReference Include="CentralRange" />'
             '<PackageReference Include="CentralLocked" />'
             '<PackageReference Include="ConditionalCentral" />'
@@ -620,6 +628,17 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     assert conditional_central["version_spec"] == (
         "conditional PackageVersion: 5.0.0 | 6.0.0")
     assert _has_warning(warnings, "unresolved_version", "ConditionalCentral")
+
+    direct_child = _one(records, "DirectChildConditional")
+    assert direct_child["version"] is None
+    assert direct_child["version_spec"] == "3.1.0"
+    assert _has_warning(
+        warnings, "unresolved_version", "DirectChildConditional")
+    direct_child_locked = _one(records, "DirectChildLocked")
+    assert direct_child_locked["version"] == "3.2.0"
+    assert direct_child_locked["version_spec"] == "3.*"
+    assert direct_child_locked["found_in"][-1]["locator"] == (
+        "lock:DirectChildLocked")
 
     assert _one(records, "AgreeingCentral")["version"] == "7.0.0"
     for name, spec in (
@@ -661,10 +680,10 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         "DirectRange", "CentralRange", "ConditionalPkg",
         "ChooseConditionalPkg", "ConditionalCentral",
         "DisagreeingCentral", "ChildConditional", "EmptyConditional",
-        "TargetConditional",
+        "TargetConditional", "DirectChildConditional",
     }.isdisjoint(tracked_names)
     assert {"DirectLocked", "CentralLocked", "ExactPkg",
-            "AgreeingCentral"} <= tracked_names
+            "AgreeingCentral", "DirectChildLocked"} <= tracked_names
     assert not [p for p in config["products"] if p.get("product") == "dotnet"]
 
 
