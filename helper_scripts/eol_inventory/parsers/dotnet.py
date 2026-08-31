@@ -286,9 +286,10 @@ def _read_lock_versions(lock_abs, root, rel_path):
             "parse_error", rel_path,
             "packages.lock.json top-level value is not an object")
     if "dependencies" not in data:
-        dependencies = {}
-    else:
-        dependencies = data["dependencies"]
+        return {}, new_warning(
+            "parse_error", rel_path,
+            "packages.lock.json has no dependencies object")
+    dependencies = data["dependencies"]
     if not isinstance(dependencies, dict):
         return {}, new_warning(
             "parse_error", rel_path,
@@ -407,8 +408,11 @@ def parse_csproj_records(path, rel_path, root=None):
         version = _resolve_props(raw_version, props) if raw_version else None
         if _child_version_is_conditional(elem):
             version_spec = version
-            if attribute_version:
-                raw_candidates = [attribute_version] + _child_versions(elem)
+            child_versions = _child_versions(elem)
+            if attribute_version or len(child_versions) > 1:
+                raw_candidates = (
+                    ([attribute_version] if attribute_version else [])
+                    + child_versions)
                 candidates = [
                     (_resolve_props(candidate, props) if candidate
                      else "no version") or "no version"

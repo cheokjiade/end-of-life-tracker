@@ -620,6 +620,10 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '<PackageReference Include="EmptyConditionalChild"><Version '
             'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
             '</PackageReference>'
+            '<PackageReference Include="MultiChildConditional"><Version '
+            'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
+            '<Version Condition="\'$(TargetFramework)\' == \'net9.0\'">'
+            '3.5.0</Version></PackageReference>'
             '<PackageReference Include="ExpressionLocked" '
             'Version="$(Missing)" />'
             '<PackageReference Include="CentralRange" />'
@@ -680,6 +684,12 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     assert empty_child["version"] is None
     assert empty_child["version_spec"] is None
     assert _has_warning(warnings, "unresolved_version", "is empty")
+    multi_child = _one(records, "MultiChildConditional")
+    assert multi_child["version"] is None
+    assert multi_child["version_spec"] == (
+        "conditional PackageReference Version: no version | 3.5.0")
+    assert _has_warning(
+        warnings, "unresolved_version", "MultiChildConditional")
     expression_locked = _one(records, "ExpressionLocked")
     assert expression_locked["version"] == "4.4.4"
     assert expression_locked["version_spec"] == "$(Missing)"
@@ -727,7 +737,7 @@ def test_dotnet_ranges_locks_and_conditional_properties():
         "ChooseConditionalPkg", "ConditionalCentral",
         "DisagreeingCentral", "ChildConditional", "EmptyConditional",
         "TargetConditional", "DirectChildConditional",
-        "EmptyConditionalChild", "AttributeWins",
+        "EmptyConditionalChild", "MultiChildConditional", "AttributeWins",
     }.isdisjoint(tracked_names)
     assert {"DirectLocked", "CentralLocked", "ExactPkg",
             "AgreeingCentral", "DirectChildLocked",
@@ -784,6 +794,7 @@ def test_dotnet_malformed_sidecars_and_entities_warn():
 
 def test_dotnet_falsey_malformed_lock_structures_warn():
     cases = (
+        ({}, "no dependencies object"),
         ({"dependencies": None}, "dependencies value"),
         ({"dependencies": []}, "dependencies value"),
         ({"dependencies": {"net8.0": None}}, "dependency group 'net8.0'"),
