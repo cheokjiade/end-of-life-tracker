@@ -257,7 +257,9 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "  image: $LATE_IMAGE\n"
             "  services:\n"
             "    - $SHARED_SERVICE\n"
-            "    - $DEFAULT_SERVICE\n",
+            "    - $DEFAULT_SERVICE\n"
+            "leak-check:\n"
+            "  image: $SERVICE_SECRET\n",
             encoding="utf-8")
         ci = root / ".gitlab-ci.yml"
         ci.write_text(
@@ -272,6 +274,10 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "  LATE_IMAGE: python:3.12\n"
             "  SHARED_SERVICE: redis:7.2\n"
             "default:\n"
+            "  services:\n"
+            "    - name: postgres:16\n"
+            "      variables:\n"
+            "        SERVICE_SECRET: secret:tag\n"
             "  variables:\n"
             "    DEFAULT_SERVICE: alpine:3.20\n",
             encoding="utf-8")
@@ -285,8 +291,11 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
     assert _one(records, "node")["version"] == "22"
     assert _one(records, "redis")["version"] == "7.2"
     assert _one(records, "alpine")["version"] == "3.20"
-    assert not [warning for warning in warnings
-                if warning["category"] == "unresolved_variable"]
+    assert not _records_named(records, "secret")
+    unresolved = [warning for warning in warnings
+                  if warning["category"] == "unresolved_variable"]
+    assert len(unresolved) == 1
+    assert "SERVICE_SECRET" in unresolved[0]["message"]
 
 
 def test_gitlab_services_forms():

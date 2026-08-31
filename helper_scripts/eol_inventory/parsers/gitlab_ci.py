@@ -51,6 +51,7 @@ def _collect_top_level_variables(text):
     """Collect simple top-level/default variables before include traversal."""
     variables = {}
     current_top = None
+    default_child_indent = None
     collecting = False
     collect_indent = None
     variable_indent = None
@@ -66,11 +67,15 @@ def _collect_top_level_variables(text):
         value = value.strip()
         if indent == 0:
             current_top = key
+            default_child_indent = None
             collecting = key == "variables" and not value
             collect_indent = 0 if collecting else None
             variable_indent = None
             continue
-        if current_top == "default" and key == "variables":
+        if current_top == "default" and default_child_indent is None:
+            default_child_indent = indent
+        if (current_top == "default" and indent == default_child_indent
+                and key == "variables"):
             collecting = not value
             collect_indent = indent if collecting else None
             variable_indent = None
