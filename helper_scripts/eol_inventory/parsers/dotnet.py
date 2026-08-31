@@ -61,12 +61,19 @@ def _attrs_ci(elem):
     return {k.lower(): (v or "").strip() for k, v in elem.attrib.items()}
 
 
-def _child_version(elem):
-    """Text of a <Version> child element, case-insensitive, or None."""
+def _child_versions(elem):
+    """All <Version> child values, case-insensitive; empty stays empty."""
+    versions = []
     for child in elem:
         if _local(child.tag).lower() == "version":
-            return (child.text or "").strip()
-    return None
+            versions.append((child.text or "").strip())
+    return versions
+
+
+def _child_version(elem):
+    """Text of the first <Version> child, or None when absent."""
+    versions = _child_versions(elem)
+    return versions[0] if versions else None
 
 
 def _child_version_is_conditional(elem):
@@ -401,11 +408,11 @@ def parse_csproj_records(path, rel_path, root=None):
         if _child_version_is_conditional(elem):
             version_spec = version
             if attribute_version:
+                raw_candidates = [attribute_version] + _child_versions(elem)
                 candidates = [
-                    _resolve_props(attribute_version, props),
-                    (_resolve_props(child_version, props)
-                     if child_version else "no version"),
-                ]
+                    (_resolve_props(candidate, props) if candidate
+                     else "no version") or "no version"
+                    for candidate in raw_candidates]
                 details = " | ".join(dict.fromkeys(candidates))
                 version_spec = (
                     f"conditional PackageReference Version: {details}")

@@ -614,7 +614,9 @@ def test_dotnet_ranges_locks_and_conditional_properties():
             '</Version></PackageReference>'
             '<PackageReference Include="AttributeWins" Version="1.0.0">'
             '<Version Condition="\'$(TargetFramework)\' == \'net8.0\'">'
-            '2.0.0</Version></PackageReference>'
+            '2.0.0</Version><Version '
+            'Condition="\'$(TargetFramework)\' == \'net9.0\'">3.0.0'
+            '</Version></PackageReference>'
             '<PackageReference Include="EmptyConditionalChild"><Version '
             'Condition="\'$(TargetFramework)\' == \'net8.0\'" />'
             '</PackageReference>'
@@ -672,7 +674,7 @@ def test_dotnet_ranges_locks_and_conditional_properties():
     mixed_version = _one(records, "AttributeWins")
     assert mixed_version["version"] is None
     assert mixed_version["version_spec"] == (
-        "conditional PackageReference Version: 1.0.0 | 2.0.0")
+        "conditional PackageReference Version: 1.0.0 | 2.0.0 | 3.0.0")
     assert _has_warning(warnings, "unresolved_version", "AttributeWins")
     empty_child = _one(records, "EmptyConditionalChild")
     assert empty_child["version"] is None
