@@ -211,7 +211,7 @@ def _map_java_dep(group, artifact, version):
     # builds (in-flight project versions), internal coordinate prefixes,
     # and ${unresolved.property} placeholders that slipped through.
     if (
-        version.endswith("-SNAPSHOT")
+        version.lower().endswith("-snapshot")
         or group.startswith("internal.")
         or "${" in version
     ):

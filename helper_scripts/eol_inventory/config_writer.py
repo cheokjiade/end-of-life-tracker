@@ -209,6 +209,11 @@ def generate_config(scan, project_name, include_transitive=False):
                 add_unmapped(record, _spec_reason(record))
                 continue
             v = record["version"]
+            if v.lower().endswith("-snapshot"):
+                add_unmapped(
+                    record,
+                    "SNAPSHOT build resolves on no public registry")
+                continue
             entry = mapper(v)
             if not added_section:
                 products.append({
@@ -480,7 +485,7 @@ def _java_skip_reason(record):
     version = record["version"] or record["version_spec"] or ""
     group = record["group"] or ""
     artifact = record["artifact"] or ""
-    if version.endswith("-SNAPSHOT"):
+    if version.lower().endswith("-snapshot"):
         return "SNAPSHOT build resolves on no public registry"
     if group.startswith("internal."):
         return "internal coordinate prefix resolves on no public registry"

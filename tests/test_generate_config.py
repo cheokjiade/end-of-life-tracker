@@ -142,6 +142,7 @@ def test_map_java_dep():
     assert gc._map_java_dep("org.webjars.npm", "chart.js", "4.4.3") is None
     # silent skips: snapshots, internal groups, unresolved properties
     assert gc._map_java_dep("com.example", "lib", "2.0.0-SNAPSHOT") is None
+    assert gc._map_java_dep("com.example", "lib", "2.0.0-snapshot") is None
     assert gc._map_java_dep("internal.tools", "lib", "1.0.0") is None
     assert gc._map_java_dep("org.acme", "lib", "${lib.version}") is None
     # generic fallback keeps the full Maven version
@@ -767,6 +768,26 @@ def test_generate_config_maven_multi():
     ]
     assert all(u["ecosystem"] == "java" and u["found_in"]
                for u in inv["unmapped"])
+
+
+def test_snapshot_properties_stay_unmapped():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "pom.xml").write_text(
+            '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+            '<properties><java.version>21-SNAPSHOT</java.version>'
+            '<netty.version>4.2.0-snapshot</netty.version></properties>'
+            '</project>', encoding="utf-8")
+        config = gc.generate_config(gc.scan_folder(root), "snapshots")
+
+    assert not [p for p in _products(config)
+                if p.get("product") == "amazon-corretto"
+                or p.get("artifact") == "netty-codec-http"]
+    assert [(item["name"], item["reason"])
+            for item in config["_inventory"]["unmapped"]] == [
+        ("java.version", "SNAPSHOT build resolves on no public registry"),
+        ("netty.version", "SNAPSHOT build resolves on no public registry"),
+    ]
 
 
 def test_generate_config_gradle():
