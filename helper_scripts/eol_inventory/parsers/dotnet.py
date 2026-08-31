@@ -394,9 +394,28 @@ def parse_csproj_records(path, rel_path, root=None):
                 "PackageReference without Include/Update"))
             continue
 
-        raw_version = attrs.get("version") or _child_version(elem)
+        attribute_version = attrs.get("version")
+        raw_version = attribute_version or _child_version(elem)
         version = _resolve_props(raw_version, props) if raw_version else None
-        if raw_version and _child_version_is_conditional(elem):
+        if not attribute_version and _child_version_is_conditional(elem):
+            locked = lock.get(name.lower())
+            record = new_record(
+                "dotnet", name, version=locked, version_spec=version)
+            add_location(record, rel_path, "dotnet",
+                         locator=f"PackageReference:{name}")
+            if locked:
+                add_location(record, lock_rel, "dotnet",
+                             locator=f"lock:{name}")
+            else:
+                detail = (f" ({version})" if version
+                          else " is empty")
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"PackageReference {name} has conditional Version "
+                    f"metadata{detail}; not guessed"))
+            records.append(record)
+            continue
+        if _has_msbuild_expression(version):
             locked = lock.get(name.lower())
             record = new_record(
                 "dotnet", name, version=locked, version_spec=version)
@@ -408,19 +427,8 @@ def parse_csproj_records(path, rel_path, root=None):
             else:
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
-                    f"PackageReference {name} has conditional Version "
-                    f"metadata ({version}); not guessed"))
+                    f"unresolved MSBuild expression for {name} ({version})"))
             records.append(record)
-            continue
-        if _has_msbuild_expression(version):
-            record = new_record(
-                "dotnet", name, version=None, version_spec=version)
-            add_location(record, rel_path, "dotnet",
-                         locator=f"PackageReference:{name}")
-            records.append(record)
-            warnings.append(new_warning(
-                "unresolved_version", rel_path,
-                f"unresolved MSBuild expression for {name} ({version})"))
             continue
 
         if version and _is_exact_nuget_version(version):
