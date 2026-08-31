@@ -259,7 +259,9 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "    - $SHARED_SERVICE\n"
             "    - $DEFAULT_SERVICE\n"
             "leak-check:\n"
-            "  image: $SERVICE_SECRET\n",
+            "  image: $SERVICE_SECRET\n"
+            "cache-leak-check:\n"
+            "  image: $CACHE_SECRET\n",
             encoding="utf-8")
         ci = root / ".gitlab-ci.yml"
         ci.write_text(
@@ -270,6 +272,8 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "  image: $JOB_IMAGE\n"
             "  variables:\n"
             "    JOB_IMAGE: node:22\n"
+            "cache-leak-root:\n"
+            "  image: $CACHE_SECRET\n"
             "variables:\n"
             "  LATE_IMAGE: python:3.12\n"
             "  SHARED_SERVICE: redis:7.2\n"
@@ -278,6 +282,9 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
             "    - name: postgres:16\n"
             "      variables:\n"
             "        SERVICE_SECRET: secret:tag\n"
+            "  cache:\n"
+            "    variables:\n"
+            "      CACHE_SECRET: cache-secret:tag\n"
             "  variables:\n"
             "    DEFAULT_SERVICE: alpine:3.20\n",
             encoding="utf-8")
@@ -292,10 +299,14 @@ def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
     assert _one(records, "redis")["version"] == "7.2"
     assert _one(records, "alpine")["version"] == "3.20"
     assert not _records_named(records, "secret")
+    assert not _records_named(records, "cache-secret")
     unresolved = [warning for warning in warnings
                   if warning["category"] == "unresolved_variable"]
-    assert len(unresolved) == 1
-    assert "SERVICE_SECRET" in unresolved[0]["message"]
+    assert len(unresolved) == 3
+    assert {name for name in ("SERVICE_SECRET", "CACHE_SECRET")
+            if any(name in warning["message"]
+                   for warning in unresolved)} == {
+        "SERVICE_SECRET", "CACHE_SECRET"}
 
 
 def test_gitlab_services_forms():

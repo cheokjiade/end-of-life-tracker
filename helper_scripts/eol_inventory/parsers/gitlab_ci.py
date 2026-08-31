@@ -72,6 +72,7 @@ def _collect_top_level_variables(text):
             collect_indent = 0 if collecting else None
             variable_indent = None
             continue
+
         if current_top == "default" and default_child_indent is None:
             default_child_indent = indent
         if (current_top == "default" and indent == default_child_indent
@@ -134,6 +135,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
     job_vars = {}
     pending_emissions = []   # (raw value, line, locator, job variable dict)
     current_top = None
+    section_child_indent = None
     collecting = None          # None | "variables" | "services" | "include"
     collect_indent = 0
     vars_target = None         # dict receiving captured variables
@@ -369,6 +371,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
 
         if indent == 0:
             current_top = key
+            section_child_indent = None
             job_vars = {}
             collecting = None
             pending_image = None
@@ -398,6 +401,9 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
                 collecting = "include"
                 collect_indent = indent
             continue
+
+        if section_child_indent is None:
+            section_child_indent = indent
 
         if collecting and indent <= collect_indent:
             collecting = None
@@ -454,6 +460,8 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             pending_item_name = False
             continue
         if key == "variables":
+            if indent != section_child_indent:
+                continue
             if val:
                 warn("ci_yaml_unsupported",
                      f"line {lineno}: inline variables mapping is not parsed")
