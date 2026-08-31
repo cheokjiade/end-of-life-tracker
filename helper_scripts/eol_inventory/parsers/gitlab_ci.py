@@ -47,6 +47,36 @@ _REMOTE_INCLUDE_KINDS = frozenset({
 _IGNORED_INCLUDE_KINDS = frozenset({"file", "ref", "inputs"})
 
 
+def _collect_top_level_variables(text):
+    """Collect simple top-level variables before image/include traversal."""
+    variables = {}
+    collecting = False
+    variable_indent = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        content = re.sub(r"\s+#.*$", "", raw.strip()).strip()
+        if not content or ":" not in content:
+            continue
+        key, _, value = content.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if indent == 0:
+            collecting = key == "variables" and not value
+            variable_indent = None
+            continue
+        if not collecting:
+            continue
+        if variable_indent is None:
+            variable_indent = indent
+        if indent != variable_indent:
+            continue
+        if value and value not in ("|", "|-", "|+", ">", ">-", ">+"):
+            variables[key] = value.strip("\"'")
+    return variables
+
+
 def parse_gitlab_ci_records(path, rel_path, root=None, include_state=None):
     """Parse one GitLab CI YAML file; return (records, warnings).
 
@@ -78,14 +108,16 @@ def parse_gitlab_ci_records(path, rel_path, root=None, include_state=None):
 
 
 def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
-                   include_state=None):
+                   include_state=None, inherited_vars=None):
     if include_state is None:
         include_state = {"files": 0, "visited": set()}
     visited = include_state.setdefault("visited", set())
     records = []
     warnings = []
-    top_vars = {}
+    top_vars = dict(inherited_vars or {})
+    top_vars.update(_collect_top_level_variables(text))
     job_vars = {}
+    pending_emissions = []   # (raw value, line, locator, job variable dict)
     current_top = None
     collecting = None          # None | "variables" | "services" | "include"
     collect_indent = 0
@@ -113,10 +145,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
                  f"line {line}: inline mapping or sequence image values "
                  f"are not parsed")
             return
-        values = dict(top_vars)
-        values.update(job_vars)
-        emit_image_record(value, rel_path, "gitlab_ci", line, locator,
-                          records, warnings, values=values)
+        pending_emissions.append((value, line, locator, job_vars))
 
     def follow_resolved(resolved, line):
         try:
@@ -167,7 +196,7 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
         visited.add(resolved)
         inc_records, inc_warnings = _parse_ci_text(
             inc_text, inc_rel, root, depth + 1, active | {resolved},
-            include_state)
+            include_state, inherited_vars=dict(top_vars))
         records.extend(inc_records)
         warnings.extend(inc_warnings)
 
@@ -427,4 +456,9 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             continue
         # script:, stage:, rules:, artifacts:, and other keys ignored.
 
+    for value, line, locator, image_job_vars in pending_emissions:
+        values = dict(top_vars)
+        values.update(image_job_vars)
+        emit_image_record(value, rel_path, "gitlab_ci", line, locator,
+                          records, warnings, values=values)
     return records, warnings

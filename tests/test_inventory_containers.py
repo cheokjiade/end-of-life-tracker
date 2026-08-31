@@ -247,6 +247,43 @@ def test_gitlab_image_forms_and_variable_resolution():
     assert not _records_named(records, "example-token-value")
 
 
+def test_gitlab_variables_are_order_independent_and_inherited_by_includes():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        included = root / ".gitlab" / "included.yml"
+        included.parent.mkdir()
+        included.write_text(
+            "included-job:\n"
+            "  image: $LATE_IMAGE\n"
+            "  services:\n"
+            "    - $SHARED_SERVICE\n",
+            encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "image: $LATE_IMAGE\n"
+            "include:\n"
+            "  - local: .gitlab/included.yml\n"
+            "job:\n"
+            "  image: $JOB_IMAGE\n"
+            "  variables:\n"
+            "    JOB_IMAGE: node:22\n"
+            "variables:\n"
+            "  LATE_IMAGE: python:3.12\n"
+            "  SHARED_SERVICE: redis:7.2\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+
+    python_records = _records_named(records, "python")
+    assert len(python_records) == 2
+    assert {record["found_in"][0]["path"] for record in python_records} == {
+        ".gitlab-ci.yml", ".gitlab/included.yml"}
+    assert _one(records, "node")["version"] == "22"
+    assert _one(records, "redis")["version"] == "7.2"
+    assert not [warning for warning in warnings
+                if warning["category"] == "unresolved_variable"]
+
+
 def test_gitlab_services_forms():
     records, _ = _parse_ci("gitlab", ".gitlab-ci.yml")
 
@@ -532,6 +569,7 @@ TESTS = [
     test_stage_alias_can_match_image_name,
     test_gitlab_top_level_image_and_services,
     test_gitlab_image_forms_and_variable_resolution,
+    test_gitlab_variables_are_order_independent_and_inherited_by_includes,
     test_gitlab_services_forms,
     test_gitlab_local_include_followed,
     test_gitlab_unresolved_and_remote_include_warnings,
