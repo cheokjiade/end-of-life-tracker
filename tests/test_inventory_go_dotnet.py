@@ -270,8 +270,10 @@ def test_go_invalid_version_tokens_remain_untracked():
         path.write_text(
             "module example.test/app\n"
             "go latest\n"
+            "go 0.0\n"
             "toolchain default\n"
             "require example.test/invalid latest\n"
+            "require example.test/invalid-prerelease v1.2.3-01\n"
             "require example.test/pseudo "
             "v0.0.0-20240101120000-abcdefabcdef\n"
             "replace example.test/invalid => example.test/replacement next\n",
@@ -283,20 +285,24 @@ def test_go_invalid_version_tokens_remain_untracked():
     assert invalid["version"] is None and invalid["version_spec"] == "latest"
     pseudo = _one(records, "example.test/pseudo")
     assert pseudo["version"] == "0.0.0-20240101120000-abcdefabcdef"
+    invalid_prerelease = _one(records, "example.test/invalid-prerelease")
+    assert invalid_prerelease["version"] is None
+    assert invalid_prerelease["version_spec"] == "v1.2.3-01"
     runtimes = _records_named(records, "go")
     assert {record["version_spec"] for record in runtimes} == {
-        "latest", "default"}
+        "latest", "0.0", "default"}
     assert len([warning for warning in warnings
-                if warning["category"] == "unresolved_version"]) == 4
+                if warning["category"] == "unresolved_version"]) == 6
     assert not [product for product in config["products"]
                 if product.get("product") == "golang"
                 or product.get("module") in {
-                    "example.test/invalid", "example.test/replacement"}]
+                    "example.test/invalid", "example.test/invalid-prerelease",
+                    "example.test/replacement"}]
     assert len([product for product in config["products"]
                 if product.get("module") == "example.test/pseudo"]) == 1
     unmapped = config["_inventory"]["unmapped"]
     assert {item.get("version_spec") for item in unmapped} >= {
-        "latest", "default"}
+        "latest", "0.0", "default", "v1.2.3-01"}
 
 
 def test_go_parsing_is_deterministic():

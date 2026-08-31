@@ -34,7 +34,7 @@ _TOOLCHAIN_RE = re.compile(r"^toolchain\s+(\S+)$")
 _GO_RE = re.compile(r"^go\s+(\S+)$")
 _MODULE_RE = re.compile(r"^module\s+(\S+)$")
 _GO_RUNTIME_VERSION_RE = re.compile(
-    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"^[1-9]\d*\.(?:0|[1-9]\d*)"
     r"(?:\.(?:0|[1-9]\d*))?$")
 _GO_MODULE_VERSION_RE = re.compile(
     r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -55,6 +55,13 @@ def _module_version(version):
     """Normalized canonical Go module version, or None."""
     if not version or not _GO_MODULE_VERSION_RE.fullmatch(version):
         return None
+    without_build = version.split("+", 1)[0]
+    if "-" in without_build:
+        prerelease = without_build.split("-", 1)[1]
+        if any(identifier.isdigit() and len(identifier) > 1
+               and identifier.startswith("0")
+               for identifier in prerelease.split(".")):
+            return None
     return version[1:]
 
 
