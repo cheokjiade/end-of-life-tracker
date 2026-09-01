@@ -32,12 +32,17 @@ _URL_TRAILING = ")]};,\"'"
 # colon and a dotted host tail so ranges, aliases, package names, and
 # ``name:tag@sha256:`` digest references never match; "<>" is excluded
 # from the password so the regex never matches its own output
-# (idempotency). The ``(segment@)+`` form also matches multi-@ userinfo
-# chains (``user:pass@extra@host``) that appear in mangled include
-# targets and module paths.
+# (idempotency). Each ``(segment@)`` iteration consumes one userinfo
+# segment; segments may contain colons and be empty, so every segment
+# of a mangled multi-@ chain (``user:pass@user2:pass2@@host``) is
+# consumed. The host must contain at least one letter, so all-numeric
+# dotted tails (versions such as "npm:user@1.2.3", IP literals) are
+# never mistaken for credential hosts; scheme-prefixed URLs redact
+# their whole authority regardless of host shape.
 _CREDENTIAL_AUTHORITY_RE = re.compile(
-    r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s:/<>]+@)+"
-    r"(?P<host>(?:[A-Za-z0-9\-]+\.)+[A-Za-z0-9\-]+|localhost)")
+    r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
+    r"(?P<host>(?=[A-Za-z0-9.\-]*[A-Za-z])(?:[A-Za-z0-9\-]+\.)+"
+    r"[A-Za-z0-9\-]+|localhost)")
 
 _HOSTED_GIT_HOSTS = ("github", "gitlab", "bitbucket", "gist", "sourcehut")
 _BARE_GIT_SHORTHAND_RE = re.compile(
@@ -202,9 +207,13 @@ def redact_image_reference(ref):
     """
     if not isinstance(ref, str) or "@" not in ref:
         return ref
-    scheme = _URL_SCHEME_RE.match(ref)
+    # Scheme detection must survive leading whitespace (" ARG=..."-style
+    # padding), so match against the leading non-whitespace region and
+    # fail closed as before.
+    leading = ref.lstrip()
+    scheme = _URL_SCHEME_RE.match(leading)
     if scheme:
-        return _strip_scheme_image_reference(ref, scheme.end())
+        return _strip_scheme_image_reference(leading, scheme.end())
     slash = ref.find("/")
     head = ref if slash < 0 else ref[:slash]
     at = head.rfind("@")

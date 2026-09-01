@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
-from ..redact import redact_image_reference
+from ..redact import redact_image_reference, redact_urls
 
 # Registry hosts stripped during name normalization; the remaining
 # repository path is the stable identity used for lifecycle mapping.
@@ -50,7 +50,9 @@ def resolve_variables(text, values):
 
     Returns (text, missing_names): missing_names lists variables that
     had neither a value nor a default, in first-seen order. An empty
-    value counts as unset, matching Docker's ARG semantics.
+    value counts as unset, matching Docker's ARG semantics; values and
+    defaults are stripped of surrounding whitespace so padded ARG
+    assignments cannot carry whitespace into image references.
     """
     missing = []
 
@@ -59,9 +61,13 @@ def resolve_variables(text, values):
         default = match.group(2)
         value = values.get(name)
         if value:
-            return value
+            value = value.strip()
+            if value:
+                return value
         if default is not None:
-            return default
+            default = default.strip()
+            if default:
+                return default
         missing.append(name)
         return match.group(0)
 
@@ -278,7 +284,10 @@ def _parse_dockerfile_text(text, rel_path):
             continue
         emit_image_record(
             rest, rel_path, "dockerfile", start_line,
-            f"FROM {redact_image_reference(rest)}",
+            # redact_urls is a fail-closed backstop: redact_image_reference
+            # cannot see credentials hidden inside an unresolved
+            # ${VAR:- https://user:pass@host/...} template.
+            f"FROM {redact_urls(redact_image_reference(rest))}",
             records, warnings, values=args)
         if alias:
             aliases.add(alias.lower())

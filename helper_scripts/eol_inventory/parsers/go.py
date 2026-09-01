@@ -248,7 +248,7 @@ def parse_go_mod_records(path, rel_path):
 
         m = _MODULE_RE.match(code)
         if m:
-            record = new_record("go", m.group(1), kind="module")
+            record = new_record("go", redact_urls(m.group(1)), kind="module")
             add_location(record, rel_path, "go", line=lineno, locator="module")
             records.append(record)
             continue

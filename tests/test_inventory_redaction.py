@@ -83,6 +83,7 @@ def test_redact_urls_userinfo_query_fragment_matrix():
     for text in ("https://example.com/ci.yml", "1.2.3", "^1.2.3", "~2.7.0",
                  ">=1.0,<2", "==1.2.*", "*", "latest", "requests",
                  "python_version >= \"3.8\"", "npm:@scope/real@^1.2.3",
+                 "npm:user@1.2.3",
                  "./libs/tool", "file:///opt/pkg", "registry:5000/img:1.0"):
         assert redact_urls(text) == text, text
     assert redact_urls(None) is None
@@ -169,6 +170,22 @@ def test_redaction_is_idempotent():
     img = redact_image_reference("user:pass@registry.invalid/img:1.0")
     assert img == "registry.invalid/img:1.0"
     assert redact_image_reference(img) == img
+    # Every helper is idempotent on the new audit forms as well.
+    for text in (
+            "user:pass@" + SECRET + "@evil.invalid/x",
+            "user:pass@user2:" + SECRET + "@evil.invalid/x.yml",
+            "user:pass@@sup3rsec.invalid/x.yml",
+            " https://user:pass@registry.invalid/img:1.0",
+            "\thttps://user:pass@registry.invalid/img:1.0",
+            "FROM ${IMG:- https://user:pass@registry.invalid/img:1.0}",
+            "npm:user@1.2.3",
+            "https://user:pass@user2:" + SECRET + "@evil.invalid/x"):
+        assert redact_urls(redact_urls(text)) == redact_urls(text), text
+        assert redact_image_reference(
+            redact_image_reference(text)) == redact_image_reference(text), \
+            text
+        assert redact_dependency_ref(
+            redact_dependency_ref(text)) == redact_dependency_ref(text), text
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +562,32 @@ def test_report_view_redacts_legacy_raw_material():
         "requirements.txt (pkg @ https://<redacted>@host.invalid/x)"
 
 
+def test_report_view_and_scan_preserve_npm_alias_versions():
+    # R5: "npm:user@1.2.3" is an alias, not a credential -- byte-identical
+    # through the scanner, the config, and every report view.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "dependencies": {"alias-user": "npm:user@1.2.3"}}),
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "npm-alias")
+    serialized = json.dumps(config)
+    assert "npm:user@1.2.3" in serialized
+    assert "<redacted>" not in serialized
+    view = build_inventory_view(config)
+    assert "npm:user@1.2.3" in json.dumps(view)
+    assert "<redacted>" not in json.dumps(view)
+    md = render_markdown(view)
+    csv_out = render_csv(view)
+    html_out = render_html(view)
+    assert "npm:user@1.2.3" in csv_out
+    assert "npm:user@1.2.3" in html_out
+    assert "npm:user&#64;1.2.3" in md
+    for rendered in (md, csv_out, html_out):
+        assert "<redacted>" not in rendered
+
+
 # ---------------------------------------------------------------------------
 # Leak class (e): audit F1/F2 -- scheme-prefixed and slash-less image refs
 # ---------------------------------------------------------------------------
@@ -568,6 +611,21 @@ def test_redact_image_reference_scheme_prefix_fail_closed():
     for ref in ("python:3.12", "ghcr.io/owner/image:2.0",
                 "registry.invalid/team/app:1.0"):
         assert redact_image_reference(ref) == ref, ref
+
+
+def test_redact_image_reference_padded_scheme_fail_closed():
+    # Leading whitespace must not defeat scheme detection (R1a): every
+    # padded form fails closed exactly like its unpadded counterpart.
+    for ref in (" https://user:" + SECRET +
+                "@registry.invalid/team/app:1.0",
+                "\thttps://user:" + SECRET +
+                "@registry.invalid/team/app:1.0",
+                " \t\r\nhttps://user:pass@registry.invalid/team/app:1.0",
+                " user:pass@registry.invalid/team/app:1.0"):
+        stripped = redact_image_reference(ref)
+        assert stripped == "registry.invalid/team/app:1.0", ref
+        assert "user:pass" not in stripped and SECRET not in stripped
+        assert redact_image_reference(stripped) == stripped
 
 
 def test_redact_image_reference_digest_shape_guard():
@@ -596,7 +654,21 @@ def test_redact_urls_multi_at_authority_chain():
     once = redact_urls("user:pass@" + SECRET + "@evil.invalid/x")
     assert once == "<redacted>@evil.invalid/x"
     assert redact_urls(once) == once
-    for text in ("npm:@scope/real@^1.2.3", "img@sha256:" + "a" * 64,
+    # Colon-carrying chains consume every userinfo segment, including
+    # the first password.
+    assert redact_urls(
+        "user:pass@user2:" + SECRET + "@evil.invalid/x.yml") == \
+        "<redacted>@evil.invalid/x.yml"
+    assert redact_urls(
+        "see a:b@c.d and e:f@g.h end") == \
+        "see <redacted>@c.d and <redacted>@g.h end"
+    # Empty chain segments are consumed too.
+    assert redact_urls("user:pass@@sup3rsec.invalid/x.yml") == \
+        "<redacted>@sup3rsec.invalid/x.yml"
+    assert redact_urls("user:pass@@@" + SECRET + ".invalid/x") == \
+        "<redacted>@sup3rsecret.invalid/x"
+    for text in ("npm:@scope/real@^1.2.3", "npm:user@1.2.3",
+                 "img@sha256:" + "a" * 64,
                  "name:tag@sha256:0123456789abcdef",
                  "github.com/org/repo", "golang.org/x/net",
                  "example.com/mod"):
@@ -661,6 +733,53 @@ def test_dockerfile_slashless_credential_repro_redacted():
     rendered = "\n".join((
         render_markdown(view), render_csv(view), render_html(view)))
     assert SECRET not in rendered
+
+
+def test_dockerfile_padded_arg_credentials_redacted():
+    # R1 end-to-end: padded ARG values and padded inline defaults must
+    # not smuggle scheme-prefixed credentials into records, config, or
+    # reports, and the credential_redacted warning must fire.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "ARG IMG= https://user:" + SECRET +
+            "@registry.invalid/team/app:1.0\n"
+            "FROM $IMG\n"
+            "FROM registry.invalid/team/app:2.0\n"
+            "FROM ${BASE:- https://user:" + SECRET +
+            "@registry.invalid/team/other:3.0}\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "padded-arg")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert "user:pass" not in serialized
+    # The unresolved-template locator is fail-closed redacted too.
+    assert "https://<redacted>@registry.invalid" in serialized
+    redactions = config["_inventory"]["warnings"]
+    assert _has_warning(redactions, "credential_redacted",
+                        "redacted to 'registry.invalid/team/app:1.0'")
+    assert _has_warning(redactions, "credential_redacted",
+                        "redacted to 'registry.invalid/team/other:3.0'")
+    items = {item["image_reference"]: item
+             for item in config["_inventory"]["unmapped"]
+             if item.get("image_reference")}
+    # Both repro forms parse as the clean reference; no raw secret row.
+    assert items["registry.invalid/team/app:1.0"]["tag"] == "1.0"
+    assert items["registry.invalid/team/app:1.0"]["name"] == \
+        "registry.invalid/team/app"
+    assert items["registry.invalid/team/app:1.0"]["found_in"][0][
+        "locator"] == "FROM $IMG"
+    assert items["registry.invalid/team/app:2.0"]["tag"] == "2.0"
+    other = items["registry.invalid/team/other:3.0"]
+    assert other["tag"] == "3.0"
+    assert other["found_in"][0]["locator"] == \
+        "FROM ${BASE:- https://<redacted>@registry.invalid/team/other:3.0}"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "user:pass" not in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +898,26 @@ def test_go_module_paths_redacted():
                         "github.com/fork/repo v1.2.3")
 
 
+def test_go_module_directive_credentials_redacted():
+    # R4: even though config_writer drops kind="module" rows, the
+    # record-layer invariant holds: a credential-shaped module directive
+    # is redacted; legitimate module paths pass through byte-identical.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "go.mod").write_text(
+            "module user:pass@" + SECRET + "@evil.invalid/weird\n"
+            "module example.com/app\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(
+            root / "go.mod", "go.mod")
+    modules = [r["name"] for r in records if r["kind"] == "module"]
+    assert modules == ["<redacted>@evil.invalid/weird", "example.com/app"]
+    assert SECRET not in json.dumps({"records": records,
+                                     "warnings": warnings})
+    assert "user:pass" not in json.dumps({"records": records,
+                                          "warnings": warnings})
+
+
 # ---------------------------------------------------------------------------
 # Leak class (h): audit F5 -- python runtime version specs
 # ---------------------------------------------------------------------------
@@ -861,13 +1000,17 @@ TESTS = [
     test_scan_to_config_and_reports_carry_no_secrets,
     test_report_view_redacts_legacy_raw_material,
     test_redact_image_reference_scheme_prefix_fail_closed,
+    test_redact_image_reference_padded_scheme_fail_closed,
     test_redact_image_reference_digest_shape_guard,
     test_redact_urls_multi_at_authority_chain,
     test_dockerfile_scheme_image_ref_repro_redacted,
     test_dockerfile_slashless_credential_repro_redacted,
+    test_dockerfile_padded_arg_credentials_redacted,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,
+    test_go_module_directive_credentials_redacted,
     test_python_runtime_constraints_redacted,
+    test_report_view_and_scan_preserve_npm_alias_versions,
 ]
 
 
