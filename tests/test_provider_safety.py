@@ -19,9 +19,46 @@ class FakeResponse:
     def __init__(self, body, headers=None):
         self.body = body
         self.headers = headers or {}
+        self._offset = 0
 
     def read(self, size=-1):
-        return self.body if size < 0 else self.body[:size]
+        if size is None or size < 0:
+            chunk = self.body[self._offset:]
+        else:
+            chunk = self.body[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+
+class OneByteStream:
+    """Worst-case compliant body: one byte per read until EOF."""
+
+    def __init__(self, body):
+        self._body = body
+        self._offset = 0
+        self.reads = 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        chunk = self._body[self._offset:self._offset + 1]
+        self._offset += len(chunk)
+        return chunk
+
+
+class TwoByteStream:
+    """Compliant body that short-reads at most two bytes per read."""
+
+    def __init__(self, body):
+        self._body = body
+        self._offset = 0
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            chunk = self._body[self._offset:]
+        else:
+            chunk = self._body[self._offset:self._offset + min(size, 2)]
+        self._offset += len(chunk)
+        return chunk
 
 
 def test_bounded_response_and_gzip_helpers():
@@ -44,6 +81,43 @@ def test_bounded_response_and_gzip_helpers():
         assert "decompressed response" in str(exc)
     else:
         raise AssertionError("gzip expansion was not bounded")
+
+    double = gzip.compress(b"a" * 60) + gzip.compress(b"b" * 60)
+    assert decompress_gzip_bytes(double, max_bytes=120) == b"a" * 60 + b"b" * 60
+    try:
+        decompress_gzip_bytes(double, max_bytes=90)
+    except ValueError as exc:
+        assert "decompressed response" in str(exc)
+    else:
+        raise AssertionError("multi-member gzip expansion was not bounded")
+
+
+def test_short_read_streams_are_read_to_limit():
+    # A stream returning one byte per read must be read to completion, not
+    # truncated at the first short read.
+    stream = OneByteStream(b"1234")
+    assert read_response_bytes(stream, max_bytes=4) == b"1234"
+    assert stream.reads == 5  # four data reads plus one EOF probe
+    assert read_response_bytes(TwoByteStream(b"abcdefgh"), max_bytes=8) == \
+        b"abcdefgh"
+
+    # Over-limit bodies are still detected even when they short-read.
+    for stream in (OneByteStream(b"123456"), TwoByteStream(b"123456")):
+        try:
+            read_response_bytes(stream, max_bytes=4)
+        except ValueError as exc:
+            assert "byte limit" in str(exc)
+        else:
+            raise AssertionError("oversize short-read response was not rejected")
+
+    # The limit boundary stays exact: max accepted, max+1 rejected.
+    assert read_response_bytes(OneByteStream(b"1234"), max_bytes=4) == b"1234"
+    try:
+        read_response_bytes(OneByteStream(b"12345"), max_bytes=4)
+    except ValueError as exc:
+        assert "byte limit" in str(exc)
+    else:
+        raise AssertionError("limit boundary was not exact")
 
 
 def test_dispatch_isolates_provider_failures():
@@ -172,6 +246,7 @@ def test_provider_url_failures_do_not_break_html_reports():
 
 TESTS = [
     test_bounded_response_and_gzip_helpers,
+    test_short_read_streams_are_read_to_limit,
     test_dispatch_isolates_provider_failures,
     test_malformed_provider_documents_return_error_rows,
     test_endoflife_urls_escape_config_values,

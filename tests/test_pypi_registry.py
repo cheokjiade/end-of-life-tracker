@@ -204,8 +204,14 @@ assert r_mal["status"] == "error" and "malformed" in r_mal["message"]
 class _FakeResp:
     def __init__(self, payload):
         self._payload = payload
+        self._offset = 0
     def read(self, size=-1):
-        return self._payload if size < 0 else self._payload[:size]
+        if size is None or size < 0:
+            chunk = self._payload[self._offset:]
+        else:
+            chunk = self._payload[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
     def __enter__(self):
         return self
     def __exit__(self, *_a):

@@ -11,11 +11,25 @@ the registration resource, then the package's registration index is read
 (following paged leaves), matching the pinned version case-insensitively and
 with NuGet-style version normalization (1.2 == 1.2.0 == 1.2.0.0, build
 metadata ignored). Registration content may arrive gzipped, which is handled
-transparently. A published date of 1900-01-01 is NuGet's "unknown" marker.
+transparently (decompressed size stays bounded by core.decompress_gzip_bytes).
+A published date of 1900-01-01 is NuGet's "unknown" marker.
+
+Per-lookup (provider invocation) cumulative budgets, all failing loudly as
+error results when exhausted:
+  - _NUGET_MAX_REQUESTS     — total HTTP requests issued by one lookup
+                              (service index + registration + paged leaves)
+  - _NUGET_MAX_TOTAL_BYTES  — total wire bytes downloaded across those
+                              requests (aligned with MAX_HTTP_BODY_BYTES,
+                              the per-response cap)
+  - _NUGET_MAX_LEAVES       — catalogEntry dicts retained while walking one
+                              registration (already enforced in
+                              _collect_leaves)
+Each response is additionally bounded per-response by _NUGET_BODY_BYTES.
 """
 
 import json
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +50,41 @@ _NUGET_CACHE = {}
 _NUGET_BODY_BYTES = MAX_HTTP_BODY_BYTES
 _NUGET_MAX_PAGES = 256
 _NUGET_MAX_LEAVES = 100_000
+_NUGET_MAX_REQUESTS = 256
+_NUGET_MAX_TOTAL_BYTES = MAX_HTTP_BODY_BYTES
+
+# Per-invocation fetch budget, consulted by _http_get_json. Thread-local so a
+# budget belongs to exactly one provider call even if checks ever run
+# concurrently in threads.
+_FETCH_BUDGET = threading.local()
+
+
+class _NugetBudget:
+    """Cumulative per-lookup fetch budgets; raises ValueError on exhaustion
+    so the lookup stops fetching and surfaces a loud error result."""
+
+    __slots__ = ("max_requests", "max_bytes", "requests", "bytes")
+
+    def __init__(self):
+        self.max_requests = _NUGET_MAX_REQUESTS
+        self.max_bytes = _NUGET_MAX_TOTAL_BYTES
+        self.requests = 0
+        self.bytes = 0
+
+    def begin_request(self):
+        self.requests += 1
+        if self.requests > self.max_requests:
+            raise ValueError(
+                f"NuGet budget exceeded: more than {self.max_requests} "
+                f"requests in one lookup")
+
+    def add_bytes(self, count):
+        self.bytes += count
+        if self.bytes > self.max_bytes:
+            raise ValueError(
+                f"NuGet budget exceeded: downloaded more than "
+                f"{self.max_bytes} bytes in one lookup "
+                f"across {self.requests} requests")
 
 # Registration resource types, best first (3.6.0+ supports SemVer 2.0.0).
 _REG_TYPE_RANK = {
@@ -57,7 +106,15 @@ _REG_TYPE_RANK = {
 # ---------------------------------------------------------------------------
 
 def _http_get_json(url):
-    """GET *url* and parse the JSON body, or raise. Handles gzip responses."""
+    """GET *url* and parse the JSON body, or raise. Handles gzip responses.
+
+    Counts against the per-invocation fetch budget (see _NugetBudget) when
+    one is installed, so one lookup cannot issue unbounded requests or
+    download unbounded bytes across many individually bounded responses.
+    """
+    budget = getattr(_FETCH_BUDGET, "budget", None)
+    if budget is not None:
+        budget.begin_request()
     req = urllib.request.Request(url, headers={
         "Accept": "application/json",
         "Accept-Encoding": "gzip",
@@ -66,6 +123,8 @@ def _http_get_json(url):
     with urllib.request.urlopen(req, timeout=15) as resp:
         raw = read_response_bytes(resp, max_bytes=_NUGET_BODY_BYTES)
         encoding = str(resp.headers.get("Content-Encoding") or "").lower()
+    if budget is not None:
+        budget.add_bytes(len(raw))
     if encoding == "gzip":
         raw = decompress_gzip_bytes(raw, max_bytes=_NUGET_BODY_BYTES)
     return json.loads(raw.decode("utf-8", "replace"))
@@ -484,11 +543,15 @@ def _provider_nuget_registry(entry, today):
         result = _error_result(entry, "nuget_registry entries require 'package'")
         result["source"] = SOURCE
         return result
+    budget = _NugetBudget()
+    _FETCH_BUDGET.budget = budget
     try:
         leaves = _fetch_package(package)
     except Exception as exc:
         logger.error("NuGet registry fetch failed for %s: %s", package, exc)
         return _nuget_error(entry, package, f"NuGet registry query failed: {exc}")
+    finally:
+        _FETCH_BUDGET.budget = None
     return _nuget_result_from_leaves(entry, leaves, today)
 
 

@@ -18,11 +18,35 @@ logger.setLevel(logging.INFO)
 MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
 
 
+def _read_bounded(stream, max_bytes, label):
+    """Read *stream* until EOF or *max_bytes* bytes, tolerating short reads.
+
+    ``read(size)`` may legitimately return fewer bytes than requested before
+    EOF (``http.client.HTTPResponse`` and boto3 ``StreamingBody`` are both
+    allowed to), so reads loop until EOF. One extra byte beyond the limit is
+    consumed to detect over-limit bodies, which raise instead of being
+    returned silently truncated.
+    """
+    chunks = []
+    total = 0
+    while total <= max_bytes:
+        chunk = stream.read(max_bytes + 1 - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > max_bytes:
+        raise ValueError(f"{label} exceeds {max_bytes} byte limit")
+    return b"".join(chunks)
+
+
 def read_response_bytes(response, max_bytes=MAX_HTTP_BODY_BYTES):
     """Read a response body with a hard byte limit.
 
     ``urllib`` response bodies and boto3 ``StreamingBody`` objects both
-    support ``read(size)``. Reading one byte beyond the limit lets callers
+    support ``read(size)``, which may short-read before EOF; the read loops
+    until EOF or the limit so a compliant short-reading stream is never
+    silently truncated. Reading one byte beyond the limit lets callers
     fail loudly instead of parsing a silently truncated document.
     """
     if max_bytes < 1:
@@ -40,22 +64,20 @@ def read_response_bytes(response, max_bytes=MAX_HTTP_BODY_BYTES):
             raise ValueError(
                 f"response exceeds {max_bytes} byte limit "
                 f"(Content-Length: {content_length})")
-    body = response.read(max_bytes + 1)
-    if len(body) > max_bytes:
-        raise ValueError(f"response exceeds {max_bytes} byte limit")
-    return body
+    return _read_bounded(response, max_bytes, "response")
 
 
 def decompress_gzip_bytes(raw, max_bytes=MAX_HTTP_BODY_BYTES):
-    """Decompress one gzip body without allowing unbounded expansion."""
+    """Decompress one gzip body without allowing unbounded expansion.
+
+    Decompression streams through ``GzipFile`` with the same hard cap as the
+    byte-limited HTTP read, so a decompression bomb fails loudly instead of
+    exhausting memory.
+    """
     if max_bytes < 1:
         raise ValueError("decompressed byte limit must be positive")
     with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
-        body = stream.read(max_bytes + 1)
-    if len(body) > max_bytes:
-        raise ValueError(
-            f"decompressed response exceeds {max_bytes} byte limit")
-    return body
+        return _read_bounded(stream, max_bytes, "decompressed response")
 
 
 def parse_date_field(value):

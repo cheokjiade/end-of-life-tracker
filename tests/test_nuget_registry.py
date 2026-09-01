@@ -109,14 +109,21 @@ class FakeHttp:
 
 
 class FakeResponse:
-    """Context-manager stand-in for the object urllib.request.urlopen returns."""
+    """Context-manager stand-in for the object urllib.request.urlopen returns
+    (a compliant stream: each read consumes up to *size* bytes)."""
 
     def __init__(self, body, headers=None):
         self._body = body
+        self._offset = 0
         self.headers = headers or {}
 
     def read(self, size=-1):
-        return self._body if size < 0 else self._body[:size]
+        if size is None or size < 0:
+            chunk = self._body[self._offset:]
+        else:
+            chunk = self._body[self._offset:self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
     def __enter__(self):
         return self
@@ -527,6 +534,101 @@ def t_gzip_end_to_end():
          "version": "13.0.3"}, TODAY)
     assert r["status"] == "ok", r
     assert r["latest_patch"] == "13.0.3"
+
+
+# ---------------------------------------------------------------------------
+# Per-lookup cumulative budgets (requests / bytes / retained entries)
+# ---------------------------------------------------------------------------
+
+def paged_docs(pkg, n_pages):
+    """Service index + registration for *pkg* with *n_pages* paged pages."""
+    reg_url = f"{REG_BASE}/{pkg.lower()}/index.json"
+    pages = [{"@id": f"{REG_BASE}/{pkg.lower()}/page{i}.json", "count": 1,
+              "items": None} for i in range(n_pages)]
+    docs = {SERVICE_INDEX_URL: service_index(), reg_url: reg_index(*pages)}
+    for i in range(n_pages):
+        docs[f"{REG_BASE}/{pkg.lower()}/page{i}.json"] = page(
+            leaf(f"1.{i}.0", "2020-01-01T00:00:00Z", pkg=pkg),
+            page_id=f"page{i}")
+    return docs
+
+
+@test
+def t_budget_requests_exhausted():
+    docs = paged_docs("Budget.Pkg", 5)
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        seen.append(url)
+        return FakeResponse(json.dumps(docs[url]).encode("utf-8"), {})
+
+    urllib.request.urlopen = fake_urlopen
+    original = nuget._NUGET_MAX_REQUESTS
+    try:
+        nuget._NUGET_MAX_REQUESTS = 3  # index + registration + first page
+        r = nuget._provider_nuget_registry(
+            {"source": "nuget_registry", "package": "Budget.Pkg",
+             "version": "1.0.0"}, TODAY)
+    finally:
+        nuget._NUGET_MAX_REQUESTS = original
+    assert r["status"] == "error", r
+    assert "budget exceeded" in r["message"], r["message"]
+    assert "requests" in r["message"], r["message"]
+    assert len(seen) == 3, seen  # fetching stopped at the cap
+    assert ("pkg", "budget.pkg") not in nuget._NUGET_CACHE
+    assert getattr(nuget._FETCH_BUDGET, "budget", None) is None
+
+
+@test
+def t_budget_bytes_exhausted():
+    docs = newtonsoft_docs()
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        return FakeResponse(json.dumps(docs[url]).encode("utf-8"), {})
+
+    urllib.request.urlopen = fake_urlopen
+    original = nuget._NUGET_MAX_TOTAL_BYTES
+    try:
+        nuget._NUGET_MAX_TOTAL_BYTES = 10
+        r = nuget._provider_nuget_registry(
+            {"source": "nuget_registry", "package": "Newtonsoft.Json",
+             "version": "13.0.3"}, TODAY)
+    finally:
+        nuget._NUGET_MAX_TOTAL_BYTES = original
+    assert r["status"] == "error", r
+    assert "budget exceeded" in r["message"], r["message"]
+    assert "bytes" in r["message"], r["message"]
+    assert ("pkg", "newtonsoft.json") not in nuget._NUGET_CACHE
+
+
+@test
+def t_budget_retained_entries_exhausted():
+    # _NUGET_MAX_LEAVES is the retained-catalogEntry budget for one lookup;
+    # exhausting it surfaces as a loud error result from the provider.
+    fake = FakeHttp(newtonsoft_docs())  # five catalog entries
+    nuget._http_get_json = fake
+    original = nuget._NUGET_MAX_LEAVES
+    try:
+        nuget._NUGET_MAX_LEAVES = 4
+        r = nuget._provider_nuget_registry(
+            {"source": "nuget_registry", "package": "Newtonsoft.Json",
+             "version": "13.0.3"}, TODAY)
+    finally:
+        nuget._NUGET_MAX_LEAVES = original
+    assert r["status"] == "error", r
+    assert "leaf limit" in r["message"], r["message"]
+
+
+@test
+def t_budget_not_installed_for_direct_fetches():
+    # _http_get_json called outside a provider lookup carries no budget.
+    doc = service_index()
+    urllib.request.urlopen = lambda req, timeout=None: FakeResponse(
+        json.dumps(doc).encode("utf-8"), {})
+    assert nuget._http_get_json(SERVICE_INDEX_URL) == doc
+    assert getattr(nuget._FETCH_BUDGET, "budget", None) is None
 
 
 # ---------------------------------------------------------------------------
