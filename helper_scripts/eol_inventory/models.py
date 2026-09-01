@@ -191,18 +191,31 @@ def _xml_declaration_status(raw):
 # Exclusion matching (gitignore-lite, documented conservatively)
 # ---------------------------------------------------------------------------
 
+# Only link redirection reparse tags are rejected outright. Other reparse
+# tags (OneDrive cloud placeholders, ProjFS/GVFS placeholders, WOF
+# compaction) annotate readable plain files that resolve to themselves;
+# those are left to the realpath containment check below.
+_LINK_REPARSE_TAGS = frozenset((
+    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+))
+
+
 def _is_link_or_reparse(candidate):
-    """True for symlinks and Windows junctions/reparse points."""
+    """True for symlinks and Windows junctions/link reparse points.
+
+    Non-link reparse tags are not rejected here: they fall through to
+    the realpath containment check, which still rejects genuine
+    redirections while accepting readable placeholders that resolve to
+    themselves.
+    """
     if candidate.is_symlink():
         return True
     try:
         st = candidate.lstat()
     except OSError:
         return False
-    if getattr(st, "st_reparse_tag", 0):
-        return True
-    attributes = getattr(st, "st_file_attributes", 0)
-    if attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+    if getattr(st, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS:
         return True
     return _resolves_away_from_parent(candidate)
 

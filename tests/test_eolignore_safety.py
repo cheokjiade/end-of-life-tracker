@@ -1,14 +1,16 @@
 """Tests for .eolignore containment and bounds (load_ignore_patterns).
 
-Covers symlink/junction/reparse rejection, escape-outside-root
-containment, the MAX_FILE_BYTES read bound, unreadable-file handling,
-and that normal multi-pattern parsing is unchanged. One bad .eolignore
-must warn, never abort a scan. Standalone assertion script: no pytest,
-no network, no subprocesses.
+Covers symlink/junction/reparse rejection, acceptance of non-link
+reparse tags (cloud placeholders) via the realpath fallback,
+escape-outside-root containment, the MAX_FILE_BYTES read bound,
+unreadable-file handling, and that normal multi-pattern parsing is
+unchanged. One bad .eolignore must warn, never abort a scan.
+Standalone assertion script: no pytest, no network, no subprocesses.
 
 Run from the repository root:  python tests/test_eolignore_safety.py
 """
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -54,6 +56,50 @@ def _make_symlink(target, link):
     except (OSError, NotImplementedError):
         return False
     return link.exists()
+
+
+# IO_REPARSE_TAG_MOUNT_POINT (junctions); stat exposes it only on Windows.
+_MOUNT_POINT_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+# Simulated cloud-placeholder tag (OneDrive Files-On-Demand range).
+_PLACEHOLDER_TAG = 0x9000001A
+_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+class _ReparseStat:
+    """lstat result stand-in with overridden reparse tag/attributes."""
+
+    def __init__(self, base, reparse_tag, file_attributes):
+        self.st_mode = base.st_mode
+        self.st_reparse_tag = reparse_tag
+        self.st_file_attributes = file_attributes
+
+
+def _patch_path_lstat(entry, reparse_tag, file_attributes):
+    """While active, pathlib.Path.lstat reports fake reparse fields on
+    entry only; other paths and st_mode keep their real values, so
+    realpath containment checks keep working. Returns the restore
+    callable.
+    """
+    real_lstat = Path.lstat
+    entry_key = os.path.normcase(os.path.abspath(str(entry)))
+
+    def fake_lstat(self, *args, **kwargs):
+        st = real_lstat(self, *args, **kwargs)
+        if os.path.normcase(os.path.abspath(str(self))) == entry_key:
+            return _ReparseStat(st, reparse_tag, file_attributes)
+        return st
+
+    Path.lstat = fake_lstat
+
+    def restore():
+        Path.lstat = real_lstat
+
+    return restore
+
+
+def _reparse_attributes(entry):
+    """Real lstat attributes for entry, plus the reparse-point bit."""
+    return getattr(entry.lstat(), "st_file_attributes", 0) | _REPARSE_ATTRIBUTE
 
 
 def test_load_ignore_patterns_normal_and_multiple():
@@ -141,6 +187,73 @@ def test_link_detection_realpath_fallback_layer():
             return
         assert _resolves_away_from_parent(link)
         assert _is_link_or_reparse(link)
+
+
+def test_load_ignore_patterns_accepts_non_link_reparse_tag():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".eolignore").write_text("dist\n*.log\n", encoding="utf-8")
+        entry = root / ".eolignore"
+        restore = _patch_path_lstat(
+            entry, _PLACEHOLDER_TAG, _reparse_attributes(entry))
+        try:
+            assert not _is_link_or_reparse(entry)
+            warnings = []
+            patterns = load_ignore_patterns(root, warnings)
+        finally:
+            restore()
+        assert patterns == ["dist", "*.log"]
+        assert warnings == []
+
+
+def test_load_ignore_patterns_rejects_mount_point_tag():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".eolignore").write_text("dist\n", encoding="utf-8")
+        entry = root / ".eolignore"
+        restore = _patch_path_lstat(
+            entry, _MOUNT_POINT_TAG, _reparse_attributes(entry))
+        try:
+            assert _is_link_or_reparse(entry)
+            warnings = []
+            assert load_ignore_patterns(root, warnings) == []
+        finally:
+            restore()
+        link = _link_warnings(warnings)
+        assert len(link) == 1
+        assert link[0]["path"] == ".eolignore"
+        assert "reparse" in link[0]["message"]
+
+
+def test_link_tag_defeat_falls_back_to_realpath():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        root = base / "project"
+        root.mkdir()
+        outside = base / "outside"
+        outside.mkdir()
+        (outside / "real_ignore.txt").write_text("pom.xml\n", encoding="utf-8")
+        link = root / ".eolignore"
+        made = _make_junction(outside, link)
+        if not made:
+            made = _make_symlink(outside / "real_ignore.txt", link)
+        if not made:
+            print("skip: no link creation available")
+            return
+        plain_mode = not stat.S_ISLNK(link.lstat().st_mode)
+        attributes = (
+            getattr(link.lstat(), "st_file_attributes", 0)
+            & ~_REPARSE_ATTRIBUTE)
+        restore = _patch_path_lstat(link, 0, attributes)
+        try:
+            if plain_mode:
+                assert not link.is_symlink()
+            assert _is_link_or_reparse(link)
+            warnings = []
+            assert load_ignore_patterns(root, warnings) == []
+        finally:
+            restore()
+        assert len(_link_warnings(warnings)) == 1
 
 
 def test_load_ignore_patterns_rejects_escape_outside_root():
@@ -249,6 +362,9 @@ TESTS = [
     test_load_ignore_patterns_rejects_symlink,
     test_load_ignore_patterns_rejects_junction_reparse,
     test_link_detection_realpath_fallback_layer,
+    test_load_ignore_patterns_accepts_non_link_reparse_tag,
+    test_load_ignore_patterns_rejects_mount_point_tag,
+    test_link_tag_defeat_falls_back_to_realpath,
     test_load_ignore_patterns_rejects_escape_outside_root,
     test_load_ignore_patterns_oversize_bound,
     test_load_ignore_patterns_unreadable_warning,
