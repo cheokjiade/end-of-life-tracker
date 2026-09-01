@@ -22,6 +22,7 @@ sys.path.insert(0, str(_HELPER_DIR))
 
 import eol_inventory as gc
 from generate_config import (
+    _dockerfile_from_key,
     _live_smoke_command,
     _merge_existing_config,
     main as generate_config_main,
@@ -1439,6 +1440,65 @@ def test_update_remaps_distinct_dockerfile_images_by_repository():
             "retained_not_observed": 0}
 
 
+def test_dockerfile_from_key_redacts_legacy_credential_locator():
+    # R6: a legacy pre-redaction locator keys on the redacted repository,
+    # so it matches the fresh redacted row instead of the username, and
+    # it cannot collide with a username-named image.
+    assert _dockerfile_from_key(
+        "FROM ci:token@registry.example.com/app:1.0") == \
+        "FROM registry.example.com/app"
+    assert _dockerfile_from_key(
+        "FROM registry.example.com/app:1.0") == \
+        "FROM registry.example.com/app"
+    assert _dockerfile_from_key(
+        "FROM ci:token@registry.example.com/app:1.0 AS build") == \
+        "FROM registry.example.com/app"
+    assert _dockerfile_from_key("FROM ci:1.0") == "FROM ci"
+    assert _dockerfile_from_key("FROM ci/app:1.0") == "FROM ci/app"
+    assert _dockerfile_from_key("FROM") == "FROM"
+
+
+def test_update_cleanses_legacy_credential_locator_row():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Dockerfile").write_text(
+            "FROM ci:token@registry.example.com/app:1.0\n", encoding="utf-8")
+        generated = gc.generate_config(gc.scan_folder(str(root)), "demo")
+    assert not any("ci:token" in json.dumps(p)
+                   for p in _products(generated))
+    legacy_locator = "FROM ci:token@registry.example.com/app:1.0"
+    existing = {
+        "products": [{
+            "source": "manual", "label": "ci", "version": "token",
+            "note": "image tag provides no endoflife.date cycle",
+            "_comment": "Untracked container inventory item",
+            "_found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                           "line": 1, "locator": legacy_locator}],
+            "_inventory_generated": "unmapped",
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": "container", "name": "ci", "version": "token",
+            "reason": "image tag provides no endoflife.date cycle",
+            "found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                          "line": 1, "locator": legacy_locator}],
+        }]},
+    }
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    # The raw-locator row remapped onto the fresh redacted row: cleansed
+    # provenance, no duplicate row.
+    assert len(products) == 1
+    row = products[0]
+    assert row["label"] == "registry.example.com/app"
+    assert row["version"] == "1.0"
+    assert row["_found_in"][0]["locator"] == \
+        "FROM registry.example.com/app:1.0"
+    assert "ci:token" not in json.dumps(merged)
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
 def test_update_unmapped_defaults_match_the_right_sibling():
     loc_a = {"path": "Dockerfile", "manifest": "dockerfile", "line": 3,
              "locator": "FROM team/app:1.0"}
@@ -1683,6 +1743,8 @@ TESTS = [
     test_update_replaces_generated_manual_row_when_now_tracked,
     test_update_uses_stable_provenance_and_preserves_unmapped_edits,
     test_update_remaps_distinct_dockerfile_images_by_repository,
+    test_dockerfile_from_key_redacts_legacy_credential_locator,
+    test_update_cleanses_legacy_credential_locator_row,
     test_update_unmapped_defaults_match_the_right_sibling,
     test_update_legacy_bare_from_key_still_merges_conservatively,
     test_update_legacy_bare_from_key_never_clobbers_when_ambiguous,

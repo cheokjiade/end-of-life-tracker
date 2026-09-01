@@ -38,7 +38,7 @@ import tempfile
 
 from eol_inventory import generate_config, scan_folder
 from eol_inventory.parsers.docker import split_image_reference
-from eol_inventory.redact import redact_urls
+from eol_inventory.redact import redact_image_reference, redact_urls
 
 
 def _live_smoke_command(output, executable=None, platform=None):
@@ -70,12 +70,15 @@ def _dockerfile_from_key(locator):
     provenance keys while a re-pinned tag still matches the row generated
     for the same image. Legacy configs may carry a bare "FROM" locator;
     it keys as-is and the update path matches it against every FROM in
-    the same file.
+    the same file. Legacy pre-redaction locators (registry-authority
+    credentials) are redacted before splitting, so they key onto the
+    fresh redacted row instead of onto the username.
     """
     alias = re.search(r"\s+AS\s+(\S+)\s*$", locator, re.IGNORECASE)
     if alias:
         locator = locator[:alias.start()].rstrip()
-    repo, _, _ = split_image_reference(locator[5:].strip())
+    repo, _, _ = split_image_reference(
+        redact_image_reference(locator[5:].strip()))
     return f"FROM {repo}" if repo else "FROM"
 
 
