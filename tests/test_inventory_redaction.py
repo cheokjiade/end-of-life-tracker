@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,6 +34,7 @@ import eol_inventory.parsers.node as node_parser
 import eol_inventory.parsers.python as python_parser
 from eol_inventory import generate_config, scan_folder
 from eol_inventory.redact import (
+    _COMPOSED_CREDENTIAL_RE,
     hosted_git_placeholder,
     redact_dependency_ref,
     redact_display_reference,
@@ -863,23 +865,24 @@ def test_dockerfile_unresolved_template_warning_redacted():
 
 
 def test_dockerfile_template_credential_backstop_shapes():
-    # F3: scheme-less template defaults with a dotless or IP-literal
-    # credential host survive the narrow global redactors; the composed
-    # display backstop collapses them at both docker.py call sites
-    # (unresolved-variable warning and FROM locator).
+    # F3, round-6: scheme-less template defaults with an @-bearing path
+    # segment lose the credential segment at both docker.py call sites
+    # (unresolved-variable warning and FROM locator). The composed
+    # display backstop remains defense in depth for anything the strip
+    # cannot reach, collapsing it to url:<redacted>.
     shapes = (
-        "${A:-evil/xops8:pw8x@e8/y}${B}",
-        "${A:-evil/xuser:pw9@10.0.0.1/y}${B}",
+        ("${A:-evil/xops8:pw8x@e8/y}${B}", "${A:-evil/e8/y}${B}"),
+        ("${A:-evil/xuser:pw9@10.0.0.1/y}${B}",
+         "${A:-evil/10.0.0.1/y}${B}"),
     )
-    for shape in shapes:
-        once = redact_display_reference(shape)
-        assert "url:<redacted>" in once, shape
-        assert "pw8x" not in once and "pw9" not in once, once
-        assert redact_display_reference(once) == once, shape
+    for raw, stripped in shapes:
+        once = redact_display_reference(raw)
+        assert once == stripped, (raw, once)
+        assert redact_display_reference(once) == once, once
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         (root / "Dockerfile").write_text(
-            "FROM " + shapes[0] + "\nFROM " + shapes[1] + "\n",
+            "FROM " + shapes[0][0] + "\nFROM " + shapes[1][0] + "\n",
             encoding="utf-8")
         scan = scan_folder(root)
         config = generate_config(scan, "template-backstop")
@@ -888,19 +891,99 @@ def test_dockerfile_template_credential_backstop_shapes():
     unresolved = [w for w in config["_inventory"]["warnings"]
                   if w["category"] == "unresolved_variable"]
     assert len(unresolved) == 2
-    assert all("url:<redacted>" in w["message"] for w in unresolved)
+    assert unresolved[0]["message"] == \
+        "line 1: image '" + shapes[0][1] + "' references variables " \
+        "with no resolvable value"
+    assert unresolved[1]["message"] == \
+        "line 2: image '" + shapes[1][1] + "' references variables " \
+        "with no resolvable value"
     view = build_inventory_view(config)
     rendered = "\n".join((
         render_markdown(view), render_csv(view), render_html(view)))
     assert "pw8x" not in rendered and "pw9" not in rendered
     # The backstop is scoped to composed display text: redact_urls keeps
-    # its global contract, and benign shapes pass the helper unchanged.
+    # its global contract, the strip handles @-bearing path segments,
+    # and the backstop regex still catches host shapes the strip or the
+    # narrow global redactors would miss.
     assert redact_urls("npm:user@1.2.3") == "npm:user@1.2.3"
+    for fragment in ("ops8:pw8x@[::1]", "user:pw9@0177.0.0.1",
+                     "user:pw9@2130706433", "xops8:pw9x@sha256:a.bcd.com"):
+        assert _COMPOSED_CREDENTIAL_RE.search("evil/x" + fragment + "/y"), \
+            fragment
+    assert not _COMPOSED_CREDENTIAL_RE.search(
+        "name:tag@sha256:" + "a" * 64)
     for ref in ("${A:-registry.invalid/team/app:1.0}${B}", "${IMG}",
                 "python:3.12", ">=1.0,<2", "registry:5000/img:1.0",
                 "name:tag@sha256:" + "a" * 64,
                 "${BASE:- https://<redacted>@registry.invalid/team/x:1}"):
         assert redact_display_reference(ref) == ref, ref
+
+
+# ---------------------------------------------------------------------------
+# Leak class (f): audit F3 -- GitLab local include targets
+# ---------------------------------------------------------------------------
+
+def test_redact_image_reference_mid_path_credentials_stripped():
+    # Round-6 finding A: an @ after the first slash is credential
+    # material unless it is a clean digest anchor on the repository
+    # segment; scheme'd URL authorities stay with redact_urls.
+    assert redact_image_reference("evil/xops8:pw8x@e8/y") == "evil/e8/y"
+    assert redact_image_reference("evil/xuser:pw9@10.0.0.1/y") == \
+        "evil/10.0.0.1/y"
+    assert redact_image_reference("evil/xa@b@c/y") == "evil/c/y"
+    assert redact_image_reference("@e8/y") == "e8/y"
+    digest = "sha256:" + "a" * 64
+    assert redact_image_reference("registry.invalid/team/app@" + digest) == \
+        "registry.invalid/team/app@" + digest
+    assert redact_image_reference("registry.invalid/img:1.0@" + digest) == \
+        "registry.invalid/img:1.0@" + digest
+    assert redact_image_reference("evil/app@user:pw@" + digest) == \
+        "evil/" + digest
+    assert redact_image_reference("registry:5000/img:1") == \
+        "registry:5000/img:1"
+    assert redact_image_reference("user:pass@img:1.0") == "img:1.0"
+    # An @ inside a scheme'd URL authority is URL userinfo, not path
+    # material: the scheme'd handling keeps the <redacted> marker form.
+    padded = "${BASE:- https://user:pw@registry.invalid/team/x:1}"
+    assert redact_display_reference(padded) == \
+        "${BASE:- https://<redacted>@registry.invalid/team/x:1}"
+
+
+def test_dockerfile_resolvable_template_credentials_stripped():
+    # Round-6 finding A end-to-end: a fully resolvable template default
+    # carrying a scheme-less credential in the image path must never
+    # reach records, config JSON, or reports.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "ARG A=evil/xuser:" + SECRET + "@10.0.0.1/y\n"
+            "FROM ${A}\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "resolvable-template")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert _has_warning(config["_inventory"]["warnings"],
+                        "credential_redacted", "redacted to")
+    items = [item for item in config["_inventory"]["unmapped"]
+             if item.get("image_reference")]
+    assert items and items[0]["image_reference"] == "evil/10.0.0.1/y"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
+def test_redact_urls_at_less_colon_text_is_fast():
+    # Round-6 finding D: the scheme-less credential pass is skipped for
+    # text without any @ (the pattern requires one), so colon-rich
+    # @-less input no longer hits quadratic backtracking.
+    text = "a:b:c:d:" * 20000
+    start = time.perf_counter()
+    out = redact_urls(text)
+    elapsed = time.perf_counter() - start
+    assert out == text
+    assert elapsed < 15.0, elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -1130,6 +1213,9 @@ TESTS = [
     test_dockerfile_slashless_credential_repro_redacted,
     test_dockerfile_padded_arg_credentials_redacted,
     test_dockerfile_unresolved_template_warning_redacted,
+    test_redact_image_reference_mid_path_credentials_stripped,
+    test_dockerfile_resolvable_template_credentials_stripped,
+    test_redact_urls_at_less_colon_text_is_fast,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,

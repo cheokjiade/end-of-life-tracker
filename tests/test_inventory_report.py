@@ -42,6 +42,57 @@ from eol_inventory.report_writer import (
 SECRET = "sup3rsecret"
 
 
+def test_view_hostile_identity_fields_render_clean():
+    # Round-6 finding B: hostile non-string or credential-bearing text in
+    # identity fields renders nowhere raw; every field passes the same
+    # redaction boundary as version_spec.
+    credential = "https://user:" + SECRET + "@registry.example/x"
+    config = {
+        "products": [{
+            "source": {"s": credential},
+            "label": {"l": credential},
+            "product": "pkg",
+            "version": {"v": credential},
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": {"e": credential},
+            "name": {"n": credential},
+            "version": {"v": credential},
+            "version_spec": None,
+            "reason": "",
+            "found_in": [],
+        }]},
+    }
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "user:" not in rendered
+
+
+def test_view_benign_identity_fields_byte_identical():
+    config = {
+        "products": [{
+            "source": "npm_registry", "label": "lodash",
+            "product": "lodash", "version": "4.17.21",
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": "java", "name": "acme-lib", "version": "2.3.4",
+            "version_spec": "^2.3", "reason": "no mapping", "found_in": [],
+        }]},
+    }
+    view = build_inventory_view(config)
+    product = view["products"][0]
+    assert product["label"] == "lodash"
+    assert product["version"] == "4.17.21"
+    assert product["provider"] == "npm_registry"
+    unmapped = view["unmapped"][0]
+    assert unmapped["ecosystem"] == "java"
+    assert unmapped["name"] == "acme-lib"
+    assert unmapped["version"] == "2.3.4"
+    assert unmapped["version_spec"] == "^2.3"
+
+
 def _new_model_config():
     """Synthetic config carrying the new `_inventory` model."""
     return {
@@ -633,6 +684,8 @@ TESTS = [
     test_view_non_string_version_spec_benign_and_absent,
     test_view_non_string_reason_locator_details_redacted,
     test_view_deep_nested_version_spec_renders_bounded,
+    test_view_hostile_identity_fields_render_clean,
+    test_view_benign_identity_fields_byte_identical,
     test_markdown_new_model,
     test_markdown_container_separation,
     test_markdown_pipe_escaping,

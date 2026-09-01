@@ -70,6 +70,8 @@ def redact_urls(text):
         return text
     if "://" in text:
         text = _redact_url_tokens(text)
+    if "@" not in text:
+        return text
     return _CREDENTIAL_AUTHORITY_RE.sub(
         lambda m: f"{REDACTED}@{m.group('host')}", text)
 
@@ -223,11 +225,13 @@ def redact_image_reference(ref):
     ``registry.example.com/img:1.0`` (stripped, not placeholder-marked,
     so downstream reference parsing stays valid). Digest references
     (``img@sha256:...``) and clean references pass through unchanged.
-    Scheme-prefixed text (``https://user:pass@host/img:1.0``) is not a
-    valid image reference and fails closed: scheme and authority
-    userinfo are stripped down to a parseable registry/repository form,
-    or the whole ref collapses to ``url:<redacted>`` when anything
-    credential-shaped survives.
+    Credential-bearing ``@`` segments after the first slash are stripped
+    the same way; only a clean digest anchor on a repository segment
+    passes through. Scheme-prefixed text (``https://user:pass@host/img:
+    1.0``) is not a valid image reference and fails closed: scheme and
+    authority userinfo are stripped down to a parseable
+    registry/repository form, or the whole ref collapses to
+    ``url:<redacted>`` when anything credential-shaped survives.
     """
     if not isinstance(ref, str) or "@" not in ref:
         return ref
@@ -242,7 +246,20 @@ def redact_image_reference(ref):
     head = ref if slash < 0 else ref[:slash]
     at = head.rfind("@")
     if at < 0:
-        return ref
+        # The @ sits after the first slash: legitimate only as a digest
+        # anchor on a clean repository segment (registry/team/app@sha256:
+        # <hex>); any other @-bearing path segment carries credential
+        # material and is stripped like a registry authority. An @ inside
+        # a scheme'd URL authority (an embedded https://...) is URL
+        # userinfo, not path material, and stays with redact_urls.
+        last_at = ref.rfind("@")
+        if _URL_SCHEME_RE.search(ref, 0, last_at):
+            return ref
+        segment = ref[ref.rfind("/", 0, last_at) + 1:last_at]
+        if _DIGEST_TAIL_RE.fullmatch(ref[last_at + 1:]) \
+                and "@" not in segment:
+            return ref
+        return ref[:ref.rfind("/", 0, last_at) + 1] + ref[last_at + 1:]
     rest = head[at + 1:]
     if not rest:
         return ref
@@ -285,19 +302,23 @@ def _strip_scheme_image_reference(ref, scheme_end):
 # or localhost, so versions, ranges, and alias specs (npm:user@1.2.3,
 # name:tag@sha256:...) pass through unchanged everywhere -- but inside
 # an unresolved ${VAR:-...} template that narrowness can leave a
-# surviving ``user:pass@`` fragment with a dotless or IP-literal host
-# (``.../xuser:pw9@10.0.0.1/y``). Composed display text therefore
-# collapses any such fragment to ``url:<redacted>``: the host must
-# contain a letter or be an IPv4 literal; digest tails
-# (``@sha256:<hex>``) stay exempt, matching redact_image_reference's
-# digest guard; "<>" is excluded so the pattern never matches the
-# markers' output or its own (idempotent), and colon-then-@-less tails
-# such as npm:user@1.2.3 never match.
+# surviving ``user:pass@`` fragment with a dotless, IP-literal, or
+# bracketed-IPv6 host. Composed display text therefore collapses any
+# such fragment to ``url:<redacted>``: the host may be a bracketed IPv6
+# literal, a dotted group of up to four digits (octal spellings), a bare
+# decimal integer, or any letter-bearing token; the digest exemption
+# requires a FULL digest-shaped tail (``<algo>:<hex>`` consumed to a
+# non-hex boundary), so a ``sha256:``-prefixed hostname cannot exploit
+# it; "<>" is excluded so the pattern never matches the markers' output
+# or its own (idempotent), and colon-then-@-less tails such as
+# npm:user@1.2.3 never match.
 _COMPOSED_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
-    rf"(?!(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F])"
-    r"(?P<host>(?=[^\s/<>@]*[A-Za-z])[^\s/<>@]*"
-    r"|\d{1,3}(?:\.\d{1,3}){3})")
+    rf"(?!(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F]+(?![0-9a-fA-F.]))"
+    r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
+    r"|\d{1,4}(?:\.\d{1,4}){3}"
+    r"|\d{7,10}"
+    r"|(?=[^\s/<>@]*[A-Za-z])[^\s/<>@]*)")
 
 
 def redact_display_reference(ref):

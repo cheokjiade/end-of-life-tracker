@@ -191,14 +191,15 @@ def _product_row(entry, sink):
     provider = entry.get("source") or "endoflife_date"
     if not isinstance(provider, str):
         provider = str(provider)
+    provider = redact_urls(provider)
     details = []
     for key in ("policy_note", "note", "image_reference", "registry",
                 "repository", "tag", "digest", "reference_url"):
         if entry.get(key) not in (None, ""):
             details.append(f"{key}={entry[key]}")
     return {
-        "label": _product_label(entry),
-        "version": entry.get("version"),
+        "label": redact_urls(_product_label(entry)),
+        "version": _redacted_text(entry.get("version")),
         "provider": provider,
         "inferred": "auto-derived" in _comment_text(entry),
         "ecosystem": ecosystem,
@@ -218,9 +219,9 @@ def _unmapped_row(item, sink):
     if not isinstance(ecosystem, str):
         ecosystem = str(ecosystem)
     return {
-        "ecosystem": ecosystem,
-        "name": str(item.get("name", "")),
-        "version": item.get("version"),
+        "ecosystem": redact_urls(ecosystem),
+        "name": redact_urls(str(item.get("name", ""))),
+        "version": _redacted_text(item.get("version")),
         "version_spec": _redacted_text(item.get("version_spec")),
         "reason": redact_urls(str(item.get("reason", ""))),
         "found_in": _norm_locations(item.get("found_in"), sink, "found_in"),
@@ -242,8 +243,8 @@ def _legacy_unmapped_rows(config, known_names, sink):
         known_names.add(_hashable(name))
         rows.append({
             "ecosystem": "node",
-            "name": str(name),
-            "version": skipped.get("version"),
+            "name": redact_urls(str(name)),
+            "version": _redacted_text(skipped.get("version")),
             "version_spec": None,
             "reason": "legacy: skipped npm package (no mapping at "
                       "generation time)",
