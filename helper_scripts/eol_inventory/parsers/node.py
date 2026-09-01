@@ -24,6 +24,7 @@ from ..models import (
     new_warning,
     scan_root_for,
 )
+from ..redact import hosted_git_placeholder, ssh_placeholder
 
 _EXACT_VERSION_RE = re.compile(
     r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?$")
@@ -84,6 +85,11 @@ def _safe_spec(value):
             r"npm:(?:@[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+|"
             r"[A-Za-z0-9._~-]+)(?:@[A-Za-z0-9.*+^~<>=| -]+)?", spec):
         return spec
+    placeholder, _ = hosted_git_placeholder(spec)
+    if placeholder is not None:
+        return placeholder
+    if spec.startswith(("git+ssh://", "ssh://")):
+        return ssh_placeholder(spec)
     if spec.startswith("git+"):
         return "git+<redacted>"
     if "://" in spec:
@@ -119,6 +125,14 @@ def _lock_lookup(data, name):
 
 def _spec_warning(name, spec, rel_path):
     """Warning for a specification that lock evidence cannot resolve."""
+    if spec.startswith("<hosted-git:"):
+        return new_warning(
+            "url_dependency", rel_path,
+            f"hosted-git shorthand {name}: {spec} has no lock evidence")
+    if spec.startswith("<ssh:"):
+        return new_warning(
+            "url_dependency", rel_path,
+            f"ssh reference {name}: {spec} has no lock evidence")
     if spec.startswith("workspace:"):
         return new_warning(
             "workspace_dependency", rel_path,

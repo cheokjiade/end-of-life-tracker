@@ -18,6 +18,7 @@ import re
 from datetime import date
 
 from .models import sort_locations
+from .redact import redact_urls
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ def _norm_location(loc):
     if loc.get("line") is not None:
         norm["line"] = loc["line"]
     if loc.get("locator"):
-        norm["locator"] = loc["locator"]
+        norm["locator"] = redact_urls(str(loc["locator"]))
     return norm
 
 
@@ -137,7 +138,7 @@ def _product_row(entry):
         "ecosystem": ecosystem,
         "container": ecosystem == "container",
         "provenance": provenance,
-        "details": "; ".join(details),
+        "details": redact_urls("; ".join(details)),
     }
 
 
@@ -151,10 +152,10 @@ def _unmapped_row(item):
         "ecosystem": item.get("ecosystem", "other"),
         "name": str(item.get("name", "")),
         "version": item.get("version"),
-        "version_spec": item.get("version_spec"),
-        "reason": str(item.get("reason", "")),
+        "version_spec": redact_urls(item.get("version_spec")),
+        "reason": redact_urls(str(item.get("reason", ""))),
         "found_in": _norm_locations(item.get("found_in")),
-        "details": "; ".join(details),
+        "details": redact_urls("; ".join(details)),
     }
 
 
@@ -194,7 +195,7 @@ def build_inventory_view(config, project_name=None):
     manifests = inventory.get("manifests") or []
     warnings = [
         {"category": w.get("category", ""), "path": w.get("path", ""),
-         "message": w.get("message", "")}
+         "message": redact_urls(str(w.get("message", "")))}
         for w in (inventory.get("warnings") or []) if isinstance(w, dict)
     ]
 
@@ -272,8 +273,9 @@ def format_found_in(locations):
     """Provenance text: `path:line`, `path (locator)`, or plain `path`.
 
     Multiple locations join with "; ". Returns "" when nothing was
-    recorded (renderers substitute "not recorded"). Markdown escaping
-    is applied per renderer, never here.
+    recorded (renderers substitute "not recorded"). Locator text derives
+    from scanned files, so it passes through URL redaction; Markdown
+    escaping is applied per renderer, never here.
     """
     parts = []
     for loc in locations or []:
@@ -286,7 +288,7 @@ def format_found_in(locations):
             parts.append(f"{path} ({locator})")
         elif path:
             parts.append(path)
-    return "; ".join(parts)
+    return redact_urls("; ".join(parts))
 
 
 # ---------------------------------------------------------------------------

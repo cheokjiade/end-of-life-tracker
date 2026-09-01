@@ -39,6 +39,7 @@ from ..models import (
     new_warning,
     scan_root_for,
 )
+from ..redact import redact_dependency_ref, redact_urls
 
 # ---------------------------------------------------------------------------
 # Requirement-line parsing (shared by requirements files and pyproject)
@@ -51,6 +52,7 @@ _NAME_RE = re.compile(
 _VERSION_CHARSET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._!+~-]*$")
 _LOCAL_PATH_RE = re.compile(
     r"^(?:\./|\.\./|\.\\|\.\.\\|/|\\|~(?:[/\\]|\Z)|[A-Za-z]:[/\\]|file:)")
+_INCLUDE_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 def _is_version(spec):
@@ -70,14 +72,15 @@ def _parse_requirement(spec_line):
 
     Keys: name, extras (inner text or None), version, version_spec,
     problem (None | "unpinned" | "unresolved" | "url" | "local" |
-    "malformed"), ref (URL/path text or None), raw.
+    "malformed"), ref (URL/path text with any embedded credentials
+    redacted, or None), raw.
     """
     line = spec_line.strip()
     raw = line
 
     m = _DIRECT_REF_RE.match(line)
     if m:
-        ref = m.group(4).strip()
+        ref = redact_dependency_ref(m.group(4).strip())
         problem = "local" if _is_local_path(ref) else "url"
         return {"name": m.group(1), "extras": m.group(3), "version": None,
                 "version_spec": None, "problem": problem, "ref": ref,
@@ -102,7 +105,7 @@ def _parse_requirement(spec_line):
     name, extras, rest = m.group(1), m.group(3), m.group(4).strip()
 
     if rest.startswith("@"):
-        ref = rest[1:].strip()
+        ref = redact_dependency_ref(rest[1:].strip())
         problem = "local" if _is_local_path(ref) else "url"
         return {"name": name, "extras": extras, "version": None,
                 "version_spec": None, "problem": problem, "ref": ref,
@@ -136,6 +139,8 @@ def _parse_requirement(spec_line):
             version_spec = marker
         else:
             version_spec = rest or None
+        if version_spec is not None:
+            version_spec = redact_urls(version_spec)
 
     return {"name": name, "extras": extras, "version": version,
             "version_spec": version_spec, "problem": problem, "ref": None,
@@ -155,7 +160,7 @@ def _emit_requirement(parsed, scope, manifest, rel_path, locator_prefix="",
                 f"not a registry package")
         return None, new_warning(
             "parse_error", rel_path,
-            f"malformed requirement ({parsed['raw']})")
+            f"malformed requirement ({redact_urls(parsed['raw'])})")
 
     locator = f"{locator_prefix}{name}"
     if parsed["extras"]:
@@ -332,12 +337,18 @@ def _handle_option_line(
                 f"missing target for {option} include"))
             return
         target = target.strip().strip('"').strip("'")
+        if _INCLUDE_URL_RE.match(target):
+            warnings.append(new_warning(
+                "include_remote", rel_path,
+                f"include target {redact_urls(target)} is remote; "
+                f"not followed"))
+            return
         inc_abs, inc_rel = _resolve_include(target, abs_path, root_abs)
         if inc_abs is None:
             warnings.append(new_warning(
                 "include_escape", rel_path,
-                f"include target {target} lies outside the scan root; "
-                f"not followed"))
+                f"include target {redact_urls(target)} lies outside the "
+                f"scan root; not followed"))
             return
         sub_records, sub_warnings = _parse_requirements_file(
             inc_abs, inc_rel, root_abs, active, visited, manifests, depth + 1)
@@ -351,15 +362,17 @@ def _handle_option_line(
         elif _is_local_path(target):
             warnings.append(new_warning(
                 "local_path_dependency", rel_path,
-                f"editable local path ({target}); not a registry package"))
+                f"editable local path ({redact_dependency_ref(target)}); "
+                f"not a registry package"))
         elif "://" in target or target.startswith("git+"):
             warnings.append(new_warning(
                 "url_dependency", rel_path,
-                f"editable URL reference ({target}); version not resolved"))
+                f"editable URL reference ({redact_dependency_ref(target)}); "
+                f"version not resolved"))
         else:
             warnings.append(new_warning(
                 "parse_error", rel_path,
-                f"unsupported editable target ({target})"))
+                f"unsupported editable target ({redact_dependency_ref(target)})"))
     elif option in ("-c", "--constraint"):
         warnings.append(new_warning(
             "unsupported_option", rel_path,
@@ -400,18 +413,26 @@ class _MiniToml:
     arrays, and single-line inline tables. Everything else raises
     _UnsupportedToml with a line number; the caller keeps the tables
     parsed so far and warns.
+
+    With skip_array_tables=True, array-of-tables headers ([[a.b]]) are
+    recognized instead of rejected: their header path is consumed and
+    their key/values are parked in a scratch table that is never
+    returned, so later [table] sections still parse. Used for Pipfile,
+    where [[source]] index blocks carry no dependency data.
     """
 
     _BARE = set(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
 
-    def __init__(self, text):
+    def __init__(self, text, skip_array_tables=False):
         self.s = text
         self.n = len(text)
         self.i = 0
         self.line = 1
         self.tables = {}
         self.current = self.tables
+        self.skip_array_tables = skip_array_tables
+        self._scratch = {}
 
     def parse(self):
         while True:
@@ -447,9 +468,22 @@ class _MiniToml:
     def _parse_table_header(self):
         self.i += 1
         if self._peek() == "[":
-            raise _UnsupportedToml(
-                f"line {self.line}: array of tables ([[...]]) is not "
-                f"supported")
+            if not self.skip_array_tables:
+                raise _UnsupportedToml(
+                    f"line {self.line}: array of tables ([[...]]) is not "
+                    f"supported")
+            self.i += 1
+            self._parse_header_path()
+            if self._peek() != "]":
+                raise _UnsupportedToml(
+                    f"line {self.line}: malformed table header")
+            self.i += 1
+            if self._peek() != "]":
+                raise _UnsupportedToml(
+                    f"line {self.line}: malformed table header")
+            self.i += 1
+            self.current = self._scratch
+            return
         path = self._parse_header_path()
         if self._peek() != "]":
             raise _UnsupportedToml(
@@ -845,21 +879,24 @@ def _emit_poetry_dependency(name, value, scope, locator, records, warnings,
         if _is_version(value):
             record["version"] = value
         else:
-            record["version_spec"] = value
+            spec = redact_dependency_ref(value)
+            record["version_spec"] = spec
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
-                f"{name} has no exact version ({value}); not guessed"))
+                f"{name} has no exact version ({spec}); not guessed"))
         return
     if isinstance(value, dict):
         version = value.get("version")
         if isinstance(version, str) and version.strip():
-            if _is_version(version.strip()):
-                record["version"] = version.strip()
+            spec = version.strip()
+            if _is_version(spec):
+                record["version"] = spec
             else:
-                record["version_spec"] = version.strip()
+                spec = redact_dependency_ref(spec)
+                record["version_spec"] = spec
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
-                    f"{name} has no exact version ({version.strip()}); "
+                    f"{name} has no exact version ({spec}); "
                     f"not guessed"))
         elif "path" in value or "file" in value:
             warnings.append(new_warning(
@@ -884,10 +921,14 @@ def _emit_poetry_dependency(name, value, scope, locator, records, warnings,
 # ---------------------------------------------------------------------------
 
 def parse_pipfile_records(path, rel_path, root=None):
-    """Parse direct Pipfile declarations, enriched by a sibling lock file."""
+    """Parse direct Pipfile declarations, enriched by a sibling lock file.
+
+    [[source]] index blocks are recognized and skipped; they carry
+    package-index configuration, not dependencies.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
-        tables = _MiniToml(text).parse()
+        tables = _MiniToml(text, skip_array_tables=True).parse()
     except (OSError, _UnsupportedToml) as exc:
         message = exc.message if isinstance(exc, _UnsupportedToml) else str(exc)
         return [], [new_warning("parse_error", rel_path,
@@ -938,7 +979,9 @@ def parse_pipfile_records(path, rel_path, root=None):
                     version = candidate
                     resolved_from_lock = True
             record = new_record("python", name, version=version,
-                                version_spec=None if version else spec,
+                                version_spec=None if version else (
+                                    redact_urls(spec)
+                                    if isinstance(spec, str) else spec),
                                 scope=scope, direct=True)
             add_location(record, rel_path, "pipfile",
                          locator=f"{section}.{name}")
@@ -1035,7 +1078,7 @@ def parse_python_version_records(path, rel_path):
             return [], [new_warning(
                 "unresolved_version", rel_path,
                 f".python-version does not contain a recognized version "
-                f"({line})")]
+                f"({redact_urls(line)})")]
         record = new_record("python", "python", version=m.group(1),
                             kind="runtime")
         add_location(record, rel_path, "python", locator="python-version")
@@ -1058,7 +1101,7 @@ def parse_runtime_txt_records(path, rel_path):
         return [], [new_warning(
             "unresolved_version", rel_path,
             f"runtime.txt does not contain a recognized Python version "
-            f"({content})")]
+            f"({redact_urls(content)})")]
     record = new_record("python", "python", version=m.group(1),
                         kind="runtime")
     add_location(record, rel_path, "python", locator="runtime.txt")

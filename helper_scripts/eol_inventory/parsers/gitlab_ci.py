@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 
 from ..models import MAX_FILES, guarded_local_file, new_warning
+from ..redact import redact_urls
 from .docker import emit_image_record
 
 _MAX_INCLUDE_DEPTH = 5
@@ -226,8 +227,8 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             return
         if _INCLUDE_URL_RE.match(target):
             warn("ci_remote_include",
-                 f"line {line}: include URL {target!r} is remote; "
-                 f"not followed")
+                 f"line {line}: include URL {redact_urls(target)!r} is "
+                 f"remote; not followed")
             return
         if root is None:
             warn("ci_include_skipped",
@@ -266,8 +267,8 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
         target = target_raw.strip().strip("\"'")
         if kind in _REMOTE_INCLUDE_KINDS:
             warn("ci_remote_include",
-                 f"line {line}: {kind} include {target!r} is remote; "
-                 f"not followed")
+                 f"line {line}: {kind} include {redact_urls(target)!r} is "
+                 f"remote; not followed")
             return
         if kind == "artifact":
             warn("ci_yaml_unsupported",

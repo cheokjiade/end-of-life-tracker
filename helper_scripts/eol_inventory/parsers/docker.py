@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
+from ..redact import redact_image_reference
 
 # Registry hosts stripped during name normalization; the remaining
 # repository path is the stable identity used for lifecycle mapping.
@@ -126,7 +127,9 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
     Digest-only and latest/untagged references yield warnings instead
     of records; references with unresolvable variables yield a warning
     and no record. Recognized tagged references become normalized
-    container records.
+    container records. Registry-authority credentials embedded in a
+    resolved reference are stripped before anything is recorded, with a
+    credential_redacted warning.
     """
     resolved = ref
     if "$" in resolved:
@@ -134,9 +137,16 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
         if missing or "$" in resolved:
             warnings.append(new_warning(
                 "unresolved_variable", rel_path,
-                f"line {line}: image {ref!r} references variables "
-                f"with no resolvable value"))
+                f"line {line}: image {redact_image_reference(ref)!r} "
+                f"references variables with no resolvable value"))
             return
+    stripped = redact_image_reference(resolved)
+    if stripped != resolved:
+        warnings.append(new_warning(
+            "credential_redacted", rel_path,
+            f"line {line}: image reference embedded credentials in the "
+            f"registry authority; redacted to {stripped!r}"))
+        resolved = stripped
     repo, tag, digest = split_image_reference(resolved)
     identity, registry, repository = image_identity(repo)
     name = normalize_image_name(repo)
@@ -267,7 +277,8 @@ def _parse_dockerfile_text(text, rel_path):
                 aliases.add(alias.lower())
             continue
         emit_image_record(
-            rest, rel_path, "dockerfile", start_line, f"FROM {rest}",
+            rest, rel_path, "dockerfile", start_line,
+            f"FROM {redact_image_reference(rest)}",
             records, warnings, values=args)
         if alias:
             aliases.add(alias.lower())

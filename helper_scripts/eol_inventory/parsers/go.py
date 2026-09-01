@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
+from ..redact import redact_urls
 
 _BLOCK_RE = re.compile(r"^(\w+)\s*\(\s*$")
 _TOOLCHAIN_RE = re.compile(r"^toolchain\s+(\S+)$")
@@ -118,9 +119,10 @@ def parse_go_mod_records(path, rel_path):
         if len(tokens) != 2:
             warnings.append(new_warning(
                 "parse_error", rel_path,
-                f"go.mod line {line}: malformed require: {code!r}"))
+                f"go.mod line {line}: malformed require: "
+                f"{redact_urls(code)!r}"))
             return
-        raw_version = tokens[1]
+        raw_version = redact_urls(tokens[1])
         version = _module_version(raw_version)
         if version is None:
             warnings.append(new_warning(
@@ -135,15 +137,19 @@ def parse_go_mod_records(path, rel_path):
         if "=>" not in code:
             warnings.append(new_warning(
                 "parse_error", rel_path,
-                f"go.mod line {line}: malformed replace: {code!r}"))
+                f"go.mod line {line}: malformed replace: "
+                f"{redact_urls(code)!r}"))
             return None
         old, old_version_raw = _parse_replace_side(code.split("=>", 1)[0])
         target, target_version_raw = _parse_replace_side(
             code.split("=>", 1)[1])
+        old_version_raw = redact_urls(old_version_raw)
+        target_version_raw = redact_urls(target_version_raw)
         if not old or not target:
             warnings.append(new_warning(
                 "parse_error", rel_path,
-                f"go.mod line {line}: malformed replace: {code!r}"))
+                f"go.mod line {line}: malformed replace: "
+                f"{redact_urls(code)!r}"))
             return None
 
         old_version = _module_version(old_version_raw) \
@@ -246,7 +252,7 @@ def parse_go_mod_records(path, rel_path):
 
         m = _GO_RE.match(code)
         if m:
-            raw_version = m.group(1)
+            raw_version = redact_urls(m.group(1))
             version = raw_version if _GO_RUNTIME_VERSION_RE.fullmatch(
                 raw_version) else None
             record = new_record(
@@ -264,7 +270,7 @@ def parse_go_mod_records(path, rel_path):
 
         m = _TOOLCHAIN_RE.match(code)
         if m:
-            raw_version = m.group(1)
+            raw_version = redact_urls(m.group(1))
             candidate = raw_version.removeprefix("go")
             version = candidate if raw_version.startswith("go") \
                 and _GO_RUNTIME_VERSION_RE.fullmatch(candidate) else None

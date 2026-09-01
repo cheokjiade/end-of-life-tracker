@@ -36,6 +36,7 @@ from ..models import (
     new_warning,
     scan_root_for,
 )
+from ..redact import redact_urls
 
 _PROP_RE = re.compile(r"\$\(([^)]+)\)")
 _NUGET_EXACT_VERSION_RE = re.compile(
@@ -210,7 +211,8 @@ def _collect_central_versions(root):
             details = " | ".join(details_values) if details_values else (
                 "no version")
             selected[key] = (
-                display, None, f"conditional PackageVersion: {details}")
+                display, None,
+                f"conditional PackageVersion: {redact_urls(details)}")
     return selected
 
 
@@ -334,7 +336,7 @@ def _read_lock_versions(lock_abs, root, rel_path):
                     return {}, new_warning(
                         "parse_error", rel_path,
                         f"packages.lock.json package {pkg!r} resolved version "
-                        f"{version!r} is not exact")
+                        f"{redact_urls(version)!r} is not exact")
                 if package_type != wanted:
                     continue
                 lock[key] = version
@@ -376,7 +378,8 @@ def parse_csproj_records(path, rel_path, root=None):
             if _has_msbuild_expression(text):
                 warnings.append(new_warning(
                     "unresolved_version", rel_path,
-                    f"unresolved property expression in <{tag}> ({text})"))
+                    f"unresolved property expression in <{tag}> "
+                    f"({redact_urls(text)})"))
                 continue
             for tfm in (t.strip() for t in text.split(";")):
                 if not tfm:
@@ -385,7 +388,7 @@ def parse_csproj_records(path, rel_path, root=None):
                 if not version:
                     warnings.append(new_warning(
                         "unresolved_version", rel_path,
-                        f"unrecognized target framework {tfm!r}"))
+                        f"unrecognized target framework {redact_urls(tfm)!r}"))
                     continue
                 record = new_record("dotnet", "dotnet", version=version,
                                     kind="runtime")
@@ -406,8 +409,9 @@ def parse_csproj_records(path, rel_path, root=None):
 
         attribute_version = attrs.get("version")
         child_version = _child_version(elem)
-        raw_version = attribute_version or child_version
-        version = _resolve_props(raw_version, props) if raw_version else None
+        raw_version = redact_urls(attribute_version or child_version)
+        version = redact_urls(
+            _resolve_props(raw_version, props)) if raw_version else None
         if _child_version_is_conditional(elem):
             version_spec = version
             child_versions = _child_versions(elem)
@@ -416,8 +420,9 @@ def parse_csproj_records(path, rel_path, root=None):
                     ([attribute_version] if attribute_version else [])
                     + child_versions)
                 candidates = [
-                    (_resolve_props(candidate, props) if candidate
-                     else "no version") or "no version"
+                    redact_urls(
+                        (_resolve_props(candidate, props) if candidate
+                         else "no version") or "no version")
                     for candidate in raw_candidates]
                 details = " | ".join(dict.fromkeys(candidates))
                 version_spec = (
@@ -482,7 +487,7 @@ def parse_csproj_records(path, rel_path, root=None):
         hit = central.get(name.lower())
         if hit:
             declared, version, conditional_spec = hit
-            version_spec = conditional_spec or version
+            version_spec = redact_urls(conditional_spec or version)
             unresolved = (conditional_spec is not None
                           or not _is_exact_nuget_version(version)
                           or _has_msbuild_expression(version))
@@ -548,7 +553,7 @@ def parse_directory_packages_props(path, rel_path):
                 and not _has_msbuild_expression(version)):
             record = new_record("dotnet", name, version=version)
         else:
-            version_spec = conditional_spec or version
+            version_spec = redact_urls(conditional_spec or version)
             record = new_record(
                 "dotnet", name, version=None,
                 version_spec=version_spec if version_spec else None)
@@ -592,6 +597,7 @@ def parse_global_json_records(path, rel_path):
     version = version.strip()
     if not version:
         return [], []
+    version = redact_urls(version)
     exact = bool(_SDK_EXACT_VERSION_RE.fullmatch(version))
     record = new_record(
         "dotnet", "dotnet-sdk", version=version if exact else None,

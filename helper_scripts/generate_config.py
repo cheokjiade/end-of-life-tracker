@@ -37,6 +37,7 @@ import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
+from eol_inventory.redact import redact_urls
 
 
 def _live_smoke_command(output, executable=None, platform=None):
@@ -284,7 +285,7 @@ def main(argv=None):
         print("  Warnings:")
         for warning in inventory["warnings"]:
             print(f"    - [{warning['category']}] {warning['path']}: "
-                  f"{warning['message']}")
+                  f"{redact_urls(warning['message'])}")
 
     if args.strict and inventory["warnings"]:
         print(f"\n--strict: {inventory['summary']['warnings']} warning(s) "

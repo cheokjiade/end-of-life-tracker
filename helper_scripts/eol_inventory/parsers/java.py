@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ..mappings import _POM_PROPERTY_MAPPINGS
 from ..models import add_location, load_safe_xml, new_record, new_warning
+from ..redact import redact_urls
 
 _POM_NS = "{http://maven.apache.org/POM/4.0.0}"
 _JAVA_EXACT_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
@@ -85,6 +86,7 @@ def parse_pom_records(path, rel_path):
     def emit(group, artifact, version, kind, locator):
         # Expressions, ranges, dynamics, and malformed tokens are retained as
         # warnings plus versionless records; they never become provider rows.
+        version = redact_urls(version)
         if "${" in group or "${" in artifact:
             record = new_record(
                 "java", f"{group}:{artifact}", version=None,
@@ -134,7 +136,7 @@ def parse_pom_records(path, rel_path):
     # mapping become records; everything else stays invisible, as before.
     for prop_name, mapper in _POM_PROPERTY_MAPPINGS.items():
         if prop_name in props:
-            value = props[prop_name]
+            value = redact_urls(props[prop_name])
             if "${" in value or not _is_exact_java_version(value):
                 record = new_record(
                     "java", prop_name, version=None, kind="property",
@@ -245,6 +247,7 @@ def parse_gradle_records(path, rel_path):
     def emit(group, artifact, version, line, interpolates=True):
         # A Groovy/Kotlin string interpolation is retained as a warning and
         # a versionless record; it is never emitted as an exact product.
+        version = redact_urls(version)
         if ((interpolates and _has_gradle_interpolation(version))
                 or not _is_exact_java_version(version)):
             record = new_record(
