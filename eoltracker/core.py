@@ -197,7 +197,8 @@ class _AWSCalendarParser(html.parser.HTMLParser):
             return
         if not self._in_target:
             return
-        if tag in ("th", "td") and self._cell_kind is not None:
+        if tag in ("th", "td") and self._cell_kind is not None \
+                and self._row is not None:
             cell = " ".join("".join(self._cell_buf).split())
             self._row.append((self._cell_kind, cell))
             self._cell_kind = None
@@ -275,7 +276,8 @@ class _HtmlTableExtractor(html.parser.HTMLParser):
             return
         if self._depth != 1:
             return
-        if tag in ("th", "td") and self._cell_kind is not None:
+        if tag in ("th", "td") and self._cell_kind is not None \
+                and self._row is not None:
             cell = " ".join("".join(self._cell_buf).split())
             self._row.append((self._cell_kind, cell))
             self._cell_kind = None

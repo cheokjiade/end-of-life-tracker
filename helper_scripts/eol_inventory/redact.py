@@ -302,7 +302,10 @@ def redact_image_reference(ref):
         return _strip_path_credentials(ref)
     rest = head[at + 1:]
     if not rest:
-        return ref
+        # An @ with nothing after it in the authority position carries
+        # only credentials ("user:pass@/img"): strip the userinfo and
+        # keep whatever follows instead of returning the raw text.
+        return ref[at + 1:]
     if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
             and "@" not in head[:at]:
         return ref
@@ -355,7 +358,7 @@ def _strip_scheme_image_reference(ref, scheme_end):
 # npm:user@1.2.3 never match.
 _COMPOSED_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
-    rf"(?!{_DIGEST_SHAPE}(?![0-9a-fA-F.]))"
+    rf"(?!({_DIGEST_SHAPE})(?![0-9a-fA-F.]))"
     r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|\d{1,4}(?:\.\d{1,4}){3}"
     r"|\d{7,10}"

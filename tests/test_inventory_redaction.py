@@ -936,6 +936,23 @@ def test_dockerfile_template_credential_backstop_shapes():
             fragment
     assert not _COMPOSED_CREDENTIAL_RE.search(
         "name:tag@sha256:" + "a" * 64)
+    # The digest exemption boundary applies to every algorithm: a hex
+    # tail followed by a dot is a hostname, not a digest. The path scan
+    # strips the credential segment outright; the backstop regex pins
+    # the same boundary for anything the strip cannot reach.
+    composed = "user:pass@reg/x:y@sha256:" + "a" * 64 + ".evil.com/img"
+    out = redact_display_reference(composed)
+    assert out == "reg/sha256:" + "a" * 64 + ".evil.com/img", out
+    assert redact_display_reference(out) == out, out
+    assert redact_display_reference(
+        "user:pass@reg/x:y@sha1:" + "b" * 40 + ".evil.com/img") == \
+        "reg/sha1:" + "b" * 40 + ".evil.com/img"
+    assert _COMPOSED_CREDENTIAL_RE.search(
+        "u:p@sha256:" + "a" * 64 + ".evil.com")
+    assert not _COMPOSED_CREDENTIAL_RE.search(
+        "u:p@sha256:" + "a" * 64)
+    assert not _COMPOSED_CREDENTIAL_RE.search(
+        "u:p@sha256:" + "a" * 64 + "/x")
     for ref in ("${A:-registry.invalid/team/app:1.0}${B}", "${IMG}",
                 "python:3.12", ">=1.0,<2", "registry:5000/img:1.0",
                 "name:tag@sha256:" + "a" * 64,
@@ -966,6 +983,10 @@ def test_redact_image_reference_mid_path_credentials_stripped():
     assert redact_image_reference("registry:5000/img:1") == \
         "registry:5000/img:1"
     assert redact_image_reference("user:pass@img:1.0") == "img:1.0"
+    # An @ with nothing after it in the authority position carries only
+    # credentials: the userinfo is stripped, not returned raw.
+    assert redact_image_reference("user:pass@/img") == "/img"
+    assert redact_image_reference("/img") == "/img"
     # An @ inside a scheme'd URL authority is URL userinfo, not path
     # material: the scheme'd handling keeps the <redacted> marker form.
     padded = "${BASE:- https://user:pw@registry.invalid/team/x:1}"
@@ -992,6 +1013,29 @@ def test_dockerfile_resolvable_template_credentials_stripped():
     items = [item for item in config["_inventory"]["unmapped"]
              if item.get("image_reference")]
     assert items and items[0]["image_reference"] == "evil/10.0.0.1/y"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
+def test_dockerfile_deferred_authority_credentials_redacted():
+    # Round-eight: an @ inside a scheme'd URL authority is deferred to
+    # redact_urls, which also runs at the record boundary, so doubly
+    # scheme'd FROM lines never carry raw credentials into records,
+    # config JSON, or reports.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "FROM a/b://c/d://user:" + SECRET + "@evil.com/img\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "deferred-authority")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert "<redacted>@evil.com" in serialized
+    assert _has_warning(config["_inventory"]["warnings"],
+                        "credential_redacted", "redacted to")
     view = build_inventory_view(config)
     rendered = "\n".join((
         render_markdown(view), render_csv(view), render_html(view)))
@@ -1239,6 +1283,7 @@ TESTS = [
     test_dockerfile_unresolved_template_warning_redacted,
     test_redact_image_reference_mid_path_credentials_stripped,
     test_dockerfile_resolvable_template_credentials_stripped,
+    test_dockerfile_deferred_authority_credentials_redacted,
     test_redact_urls_at_less_colon_text_is_fast,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,

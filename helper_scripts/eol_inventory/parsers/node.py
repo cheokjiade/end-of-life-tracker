@@ -195,6 +195,7 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
             "parse_error", rel_path,
             "package.json engines.node value is not a string; skipped"))
     else:
+        record = None
         spec = _safe_spec(node_engine)
         if not spec:
             warnings.append(new_warning(
@@ -212,7 +213,7 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
                 "unresolved_version", rel_path,
                 f"engines.node has no exact version ({spec}); "
                 "specification recorded, not guessed"))
-        if spec:
+        if record is not None:
             add_location(record, rel_path, "npm", locator="engines.node")
             records.append(record)
 

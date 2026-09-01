@@ -196,12 +196,11 @@ def _compare_semver(a, b):
     for x, y in zip(pre_a, pre_b):
         if x == y:
             continue
-        x_num, y_num = isinstance(x, int), isinstance(y, int)
-        if x_num and y_num:
+        if isinstance(x, int) and isinstance(y, int):
             return -1 if x < y else 1
-        if x_num:
+        if isinstance(x, int):
             return -1  # numeric identifiers have lower precedence
-        if y_num:
+        if isinstance(y, int):
             return 1
         return -1 if x < y else 1
     return -1 if len(pre_a) < len(pre_b) else 1
@@ -224,7 +223,7 @@ def _latest_stable(versions):
     for v in versions:
         if not _is_stable(v):
             continue
-        if best is None or _compare_semver(v, best) > 0:
+        if best is None or _compare_semver(v, best) == 1:
             best = v
     return best
 
@@ -445,7 +444,8 @@ def _compose_go_result(entry, data, today):
         result["message"] = message
         return result
 
-    if _parse_semver(version)[1]:
+    parsed = _parse_semver(version)
+    if parsed is not None and parsed[1]:
         message = f"Prerelease {version}"
         if in_use:
             message += f" (published {in_use})"

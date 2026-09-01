@@ -256,10 +256,11 @@ def _atomic_write_json(config, output):
 
 
 def main(argv=None):
+    doc = __doc__ or ""
     parser = argparse.ArgumentParser(
-        description=__doc__.split("\n", 1)[0],
+        description=doc.split("\n", 1)[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__.split("Usage:", 1)[1] if "Usage:" in __doc__ else "",
+        epilog=doc.split("Usage:", 1)[1] if "Usage:" in doc else "",
     )
     parser.add_argument("folder", help="Folder to scan (recursively) for dependency files")
     parser.add_argument("--name", help="Project name (default: folder basename)", default=None)

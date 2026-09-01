@@ -27,7 +27,11 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
-from ..redact import redact_display_reference, redact_image_reference
+from ..redact import (
+    redact_display_reference,
+    redact_image_reference,
+    redact_urls,
+)
 
 # Registry hosts stripped during name normalization; the remaining
 # repository path is the stable identity used for lifecycle mapping.
@@ -147,7 +151,7 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
                 f"{redact_display_reference(ref)!r} "
                 f"references variables with no resolvable value"))
             return
-    stripped = redact_image_reference(resolved)
+    stripped = redact_urls(redact_image_reference(resolved))
     if stripped != resolved:
         warnings.append(new_warning(
             "credential_redacted", rel_path,
@@ -264,7 +268,13 @@ def _parse_dockerfile_text(text, rel_path):
             continue
         seen_from = True
 
-        rest = _FROM_RE.match(code).group(1)
+        from_match = _FROM_RE.match(code)
+        if from_match is None:
+            warnings.append(new_warning(
+                "parse_error", rel_path,
+                f"line {start_line}: malformed FROM instruction; skipped"))
+            continue
+        rest = from_match.group(1)
         rest = _PLATFORM_FLAG_RE.sub("", rest)
         rest = _strip_inline_comment(rest).strip()
         alias = None

@@ -82,7 +82,8 @@ def _collect_top_level_variables(text):
             collect_indent = indent if collecting else None
             variable_indent = None
             continue
-        if not collecting or indent <= collect_indent:
+        if not collecting or collect_indent is None \
+                or indent <= collect_indent:
             collecting = False
             continue
         if variable_indent is None:
@@ -434,7 +435,8 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             pending_item_name = False
             continue
 
-        if collecting == "variables" and indent > collect_indent:
+        if collecting == "variables" and vars_target is not None \
+                and indent > collect_indent:
             # Captured for resolution only; never emitted into the
             # inventory.
             if val:
