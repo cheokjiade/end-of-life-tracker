@@ -1405,6 +1405,174 @@ def test_update_replaces_generated_manual_row_when_now_tracked():
         "retained_not_observed": 0}
 
 
+def test_update_remaps_distinct_dockerfile_images_by_repository():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Dockerfile").write_text(
+            "FROM python:latest\nFROM nginx:latest\n", encoding="utf-8")
+        existing = gc.generate_config(gc.scan_folder(str(root)), "demo")
+        (root / "Dockerfile").write_text(
+            "FROM python:3.13\nFROM nginx:1.26\n", encoding="utf-8")
+        generated = gc.generate_config(gc.scan_folder(str(root)), "demo")
+
+        stale = [p for p in _products(existing)
+                 if p.get("_inventory_generated") == "unmapped"]
+        assert [p["label"] for p in stale] == ["nginx", "python"]
+        assert all(p["source"] == "manual" for p in stale)
+
+        merged = _merge_existing_config(existing, generated)
+        products = _products(merged)
+        assert not any(p.get("source") == "manual" for p in products), products
+        assert not any(p.get("_inventory_generated") == "unmapped"
+                       for p in products)
+        assert not any(p.get("_section") == "=== Newly Discovered ==="
+                       for p in merged["products"])
+        by_product = {p.get("product"): p for p in products}
+        assert by_product["python"]["version"] == "3.13"
+        assert by_product["nginx"]["version"] == "1.26"
+        assert "note" not in by_product["python"]
+        assert "note" not in by_product["nginx"]
+        assert by_product["python"]["_found_in"][0]["locator"] == \
+            "FROM python:3.13"
+        assert merged["_inventory"]["update_summary"] == {
+            "added": 0, "changed": 2, "unchanged": 0,
+            "retained_not_observed": 0}
+
+
+def test_update_unmapped_defaults_match_the_right_sibling():
+    loc_a = {"path": "Dockerfile", "manifest": "dockerfile", "line": 3,
+             "locator": "FROM team/app:1.0"}
+    loc_b = {"path": "Dockerfile", "manifest": "dockerfile", "line": 4,
+             "locator": "FROM team/app:2.0"}
+    existing = {
+        "products": [
+            {"source": "manual", "label": "app", "version": "1.0",
+             "note": "reason one",
+             "_comment": "Untracked container inventory item",
+             "_found_in": [dict(loc_a)],
+             "_inventory_generated": "unmapped"},
+            {"source": "manual", "label": "app", "version": "2.0",
+             "note": "reason two",
+             "_comment": "Untracked container inventory item",
+             "_found_in": [dict(loc_b)],
+             "_inventory_generated": "unmapped"},
+        ],
+        "_inventory": {"unmapped": [
+            {"ecosystem": "container", "name": "app", "version": "2.0",
+             "reason": "reason two", "found_in": [dict(loc_b)]},
+            {"ecosystem": "container", "name": "app", "version": "1.0",
+             "reason": "reason one", "found_in": [dict(loc_a)]},
+        ]},
+    }
+    generated = {
+        "products": [{
+            "product": "app", "version": "3.0", "label": "app 3.0",
+            "_comment": "From Dockerfile (team/app:3.0)",
+            "_found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                           "line": 3, "locator": "FROM team/app:3.0"}]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    app = next(p for p in products if p.get("product") == "app")
+    assert app["version"] == "3.0"
+    assert "note" not in app, "wrong sibling's default leaked a stale note"
+    assert app["_comment"] == "From Dockerfile (team/app:3.0)"
+    retained = [p for p in products if p.get("source") == "manual"]
+    assert [p["version"] for p in retained] == ["2.0"]
+    assert retained[0]["note"] == "reason two"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 1}
+
+
+def test_update_legacy_bare_from_key_still_merges_conservatively():
+    location = {"path": "Dockerfile", "manifest": "dockerfile",
+                "line": 1, "locator": "FROM"}
+    existing = {
+        "products": [{
+            "source": "manual", "label": "nginx", "version": "latest",
+            "note": "Unreviewed base image",
+            "_comment": "Untracked container inventory item",
+            "_found_in": [dict(location)],
+            "_inventory_generated": "unmapped",
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": "container", "name": "nginx", "version": "latest",
+            "reason": "image tag provides no endoflife.date cycle",
+            "found_in": [dict(location)],
+        }]},
+    }
+    generated = {
+        "products": [{
+            "product": "nginx", "version": "1.26", "label": "nginx 1.26",
+            "_comment": "From Dockerfile (nginx:1.26)",
+            "_found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                           "line": 1, "locator": "FROM nginx:1.26"}]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 1
+    nginx = products[0]
+    assert nginx["product"] == "nginx" and nginx["version"] == "1.26"
+    assert nginx["note"] == "Unreviewed base image"
+    assert nginx["_comment"] == "From Dockerfile (nginx:1.26)"
+    assert nginx["_found_in"][0]["locator"] == "FROM nginx:1.26"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
+def test_update_legacy_bare_from_key_never_clobbers_when_ambiguous():
+    location = {"path": "Dockerfile", "manifest": "dockerfile",
+                "line": 1, "locator": "FROM"}
+    existing = {
+        "products": [{
+            "source": "manual", "label": "base", "version": "latest",
+            "note": "Pinned deliberately by platform team",
+            "_comment": "Reviewed by platform team",
+            "_found_in": [dict(location)],
+            "_inventory_generated": "unmapped",
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": "container", "name": "base", "version": "latest",
+            "reason": "image tag provides no endoflife.date cycle",
+            "found_in": [dict(location)],
+        }]},
+    }
+    generated = {
+        "products": [
+            {"product": "python", "version": "3.13", "label": "Python 3.13",
+             "_found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                            "line": 1, "locator": "FROM python:3.13"}]},
+            {"product": "nginx", "version": "1.26", "label": "nginx 1.26",
+             "_found_in": [{"path": "Dockerfile", "manifest": "dockerfile",
+                            "line": 2, "locator": "FROM nginx:1.26"}]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    retained = [p for p in products if p.get("source") == "manual"]
+    assert len(retained) == 1
+    assert retained[0]["note"] == "Pinned deliberately by platform team"
+    assert retained[0]["_comment"] == "Reviewed by platform team"
+    assert retained[0]["version"] == "latest"
+    assert retained[0]["_found_in"] == [dict(location)]
+    tracked = {(p.get("product"), p.get("version")) for p in products
+               if p.get("source") != "manual"}
+    assert tracked == {("python", "3.13"), ("nginx", "1.26")}
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 2, "changed": 0, "unchanged": 0,
+        "retained_not_observed": 1}
+
+
 def test_cli_update_rejects_non_object_json():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1514,6 +1682,10 @@ TESTS = [
     test_update_replaces_stale_scanner_mapping_by_provenance,
     test_update_replaces_generated_manual_row_when_now_tracked,
     test_update_uses_stable_provenance_and_preserves_unmapped_edits,
+    test_update_remaps_distinct_dockerfile_images_by_repository,
+    test_update_unmapped_defaults_match_the_right_sibling,
+    test_update_legacy_bare_from_key_still_merges_conservatively,
+    test_update_legacy_bare_from_key_never_clobbers_when_ambiguous,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,

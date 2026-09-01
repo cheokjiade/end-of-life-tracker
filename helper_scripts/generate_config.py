@@ -37,6 +37,7 @@ import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
+from eol_inventory.parsers.docker import split_image_reference
 from eol_inventory.redact import redact_urls
 
 
@@ -61,6 +62,23 @@ def _merge_identity(entry):
     return identity
 
 
+def _dockerfile_from_key(locator):
+    """Dockerfile FROM locator keyed on the image repository.
+
+    The repository identifies the declaration site (the tag is the
+    version, not the site), so distinct images in one file get distinct
+    provenance keys while a re-pinned tag still matches the row generated
+    for the same image. Legacy configs may carry a bare "FROM" locator;
+    it keys as-is and the update path matches it against every FROM in
+    the same file.
+    """
+    alias = re.search(r"\s+AS\s+(\S+)\s*$", locator, re.IGNORECASE)
+    if alias:
+        locator = locator[:alias.start()].rstrip()
+    repo, _, _ = split_image_reference(locator[5:].strip())
+    return f"FROM {repo}" if repo else "FROM"
+
+
 def _provenance_keys(entry):
     """Stable declaration-site identities for scanner-generated entries."""
     keys = set()
@@ -71,25 +89,36 @@ def _provenance_keys(entry):
         locator = location.get("locator")
         if manifest == "dockerfile" and isinstance(locator, str) \
                 and locator.upper().startswith("FROM "):
-            alias = re.search(r"\s+AS\s+(\S+)\s*$", locator, re.IGNORECASE)
-            locator = "FROM" + (f" AS {alias.group(1)}" if alias else "")
+            locator = _dockerfile_from_key(locator)
         keys.add((location.get("path"), manifest, locator))
     return keys
 
 
 def _generated_unmapped_defaults(existing, entry):
-    """Generator-owned note/comment values for one old unmapped row."""
+    """Generator-owned note/comment values for one old unmapped row.
+
+    The inventory item must be the row's own sibling (same provenance
+    keys, name, and version), so items that merely share a file never
+    lend their reason to another row's note comparison.
+    """
     old_keys = _provenance_keys(entry)
     if not old_keys:
         return {}
     inventory = existing.get("_inventory")
     if not isinstance(inventory, dict):
         return {}
+    label = entry.get("label")
+    version = entry.get("version")
     for item in inventory.get("unmapped") or []:
         if not isinstance(item, dict):
             continue
         item_keys = _provenance_keys({"_found_in": item.get("found_in")})
         if old_keys.isdisjoint(item_keys):
+            continue
+        if item.get("name") != label:
+            continue
+        item_version = item.get("version") or item.get("version_spec")
+        if item_version is not None and item_version != version:
             continue
         return {
             "note": item.get("reason"),
@@ -106,9 +135,12 @@ def _merge_existing_config(existing, generated):
     for index, product in enumerate(fresh):
         fresh_by_identity.setdefault(_merge_identity(product), []).append(index)
     fresh_by_provenance = {}
+    fresh_dockerfile_sites = {}
     for index, product in enumerate(fresh):
         for key in _provenance_keys(product):
             fresh_by_provenance.setdefault(key, set()).add(index)
+            if key[1] == "dockerfile":
+                fresh_dockerfile_sites.setdefault(key[0], set()).add(index)
     used = set()
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
@@ -133,6 +165,9 @@ def _merge_existing_config(existing, generated):
                 for key in _provenance_keys(old):
                     provenance_candidates.update(
                         fresh_by_provenance.get(key, ()))
+                    if key[1] == "dockerfile" and key[2] == "FROM":
+                        provenance_candidates.update(
+                            fresh_dockerfile_sites.get(key[0], ()))
                 provenance_candidates.difference_update(used)
                 provenance_candidates = {
                     index for index in provenance_candidates
