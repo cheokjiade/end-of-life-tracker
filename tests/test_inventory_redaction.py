@@ -953,6 +953,31 @@ def test_dockerfile_template_credential_backstop_shapes():
         "u:p@sha256:" + "a" * 64)
     assert not _COMPOSED_CREDENTIAL_RE.search(
         "u:p@sha256:" + "a" * 64 + "/x")
+    assert _COMPOSED_CREDENTIAL_RE.search(
+        "u:p@sha1:" + "b" * 40 + "+z/x")
+
+
+def test_dockerfile_mixed_scheme_digest_credentials_redacted():
+    # Round-nine: the record boundary applies the composed backstop too,
+    # so digest-shaped hostname credentials and adjacent-scheme
+    # authorities never reach records, config JSON, or reports raw.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "FROM a/u1:" + SECRET +
+            "@sha1:" + "b" * 40 + ".evil.com/c://d://u2:" + SECRET +
+            "@evil/img\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "mixed-scheme-digest")
+    serialized = json.dumps(config)
+    assert serialized.count(SECRET) == 0
+    assert _has_warning(config["_inventory"]["warnings"],
+                        "credential_redacted", "redacted to")
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
     for ref in ("${A:-registry.invalid/team/app:1.0}${B}", "${IMG}",
                 "python:3.12", ">=1.0,<2", "registry:5000/img:1.0",
                 "name:tag@sha256:" + "a" * 64,
@@ -1284,6 +1309,7 @@ TESTS = [
     test_redact_image_reference_mid_path_credentials_stripped,
     test_dockerfile_resolvable_template_credentials_stripped,
     test_dockerfile_deferred_authority_credentials_redacted,
+    test_dockerfile_mixed_scheme_digest_credentials_redacted,
     test_redact_urls_at_less_colon_text_is_fast,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,

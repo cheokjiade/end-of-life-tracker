@@ -358,7 +358,7 @@ def _strip_scheme_image_reference(ref, scheme_end):
 # npm:user@1.2.3 never match.
 _COMPOSED_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
-    rf"(?!({_DIGEST_SHAPE})(?![0-9a-fA-F.]))"
+    rf"(?!({_DIGEST_SHAPE})(?![0-9a-fA-F.+:-]))"
     r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|\d{1,4}(?:\.\d{1,4}){3}"
     r"|\d{7,10}"

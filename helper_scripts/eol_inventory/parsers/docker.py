@@ -27,11 +27,7 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
-from ..redact import (
-    redact_display_reference,
-    redact_image_reference,
-    redact_urls,
-)
+from ..redact import redact_display_reference, redact_image_reference
 
 # Registry hosts stripped during name normalization; the remaining
 # repository path is the stable identity used for lifecycle mapping.
@@ -151,7 +147,7 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
                 f"{redact_display_reference(ref)!r} "
                 f"references variables with no resolvable value"))
             return
-    stripped = redact_urls(redact_image_reference(resolved))
+    stripped = redact_display_reference(resolved)
     if stripped != resolved:
         warnings.append(new_warning(
             "credential_redacted", rel_path,
