@@ -278,7 +278,8 @@ def build_inventory_view(config, project_name=None):
     manifests = _as_list(inventory.get("manifests"),
                          "_inventory.manifests", malformed)
     warnings = [
-        {"category": w.get("category", ""), "path": w.get("path", ""),
+        {"category": redact_urls(str(w.get("category", ""))),
+         "path": redact_urls(str(w.get("path", ""))),
          "message": redact_urls(str(w.get("message", "")))}
         for w in _as_list(inventory.get("warnings"),
                           "_inventory.warnings", malformed)
@@ -330,16 +331,21 @@ def build_inventory_view(config, project_name=None):
 
     return {
         "meta": {
-            "scan_date": inventory.get("scan_date") or date.today().isoformat(),
+            # Loaded config content is untrusted: every rendered metadata
+            # value passes through redact_urls on its string form.
+            "scan_date": redact_urls(str(
+                inventory.get("scan_date") or date.today().isoformat())),
             # Additive full-timestamp field; legacy configs without it
             # render exactly as before (renderers skip the absent line).
-            "scan_timestamp": inventory.get("scan_timestamp") or None,
-            "generator_version": inventory.get("generator_version")
-            or "unknown",
-            "files_scanned": files_scanned,
+            "scan_timestamp": _redacted_text(
+                inventory.get("scan_timestamp")),
+            "generator_version": redact_urls(str(
+                inventory.get("generator_version") or "unknown")),
+            "files_scanned": _redacted_text(files_scanned),
             "warning_count": len(warnings),
-            "project": (project_name if project_name is not None
-                        else (inventory.get("scan_root") or "")),
+            "project": redact_urls(str(
+                project_name if project_name is not None
+                else (inventory.get("scan_root") or ""))),
         },
         "products": products,
         "containers": containers,

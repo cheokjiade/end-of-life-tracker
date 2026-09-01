@@ -716,6 +716,60 @@ def test_cli_missing_config():
         assert not out.exists()
 
 
+def test_view_hostile_metadata_and_warning_fields_render_clean():
+    # Sol round-two 1B: loaded config content is untrusted — warning
+    # category/path and every rendered metadata field pass through
+    # redact_urls on their string form.
+    credential = "https://user:" + SECRET + "@registry.example/x"
+    config = {
+        "products": [],
+        "_inventory": {
+            "scan_date": credential,
+            "scan_timestamp": credential,
+            "generator_version": credential,
+            "scan_root": credential,
+            "manifests": [],
+            "summary": {"files": {"f": credential}},
+            "warnings": [{"category": credential, "path": credential,
+                          "message": credential}],
+        },
+    }
+    view = build_inventory_view(config, project_name=credential)
+    assert SECRET not in json.dumps(view)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
+def test_view_benign_metadata_byte_identical():
+    config = {
+        "products": [],
+        "_inventory": {
+            "scan_date": "2026-09-02",
+            "generator_version": "test-gen",
+            "scan_root": "proj",
+            "manifests": [],
+            "summary": {"files": 1},
+            "warnings": [{"category": "parse_error", "path": "p.txt",
+                          "message": "m"}],
+        },
+    }
+    view = build_inventory_view(config, project_name="proj")
+    assert view["meta"]["scan_date"] == "2026-09-02"
+    assert view["meta"]["generator_version"] == "test-gen"
+    assert view["meta"]["project"] == "proj"
+    assert view["meta"]["files_scanned"] == 1
+    assert view["warnings"][0] == {"category": "parse_error",
+                                   "path": "p.txt", "message": "m"}
+    assert view["meta"]["scan_timestamp"] is None
+    # Reader compatibility for an optional timestamp in older configs.
+    config["_inventory"]["scan_timestamp"] = "2026-09-02T10:00:00+08:00"
+    view = build_inventory_view(config, project_name="proj")
+    assert view["meta"]["scan_timestamp"] == "2026-09-02T10:00:00+08:00"
+    rendered = render_markdown(view)
+    assert "Scan timestamp: 2026-09-02T10:00:00+08:00" in rendered
+
+
 TESTS = [
     test_build_view_new_model,
     test_view_container_separation,
@@ -727,6 +781,8 @@ TESTS = [
     test_view_deep_nested_version_spec_renders_bounded,
     test_view_hostile_identity_fields_render_clean,
     test_view_benign_identity_fields_byte_identical,
+    test_view_hostile_metadata_and_warning_fields_render_clean,
+    test_view_benign_metadata_byte_identical,
     test_markdown_new_model,
     test_markdown_container_separation,
     test_markdown_pipe_escaping,

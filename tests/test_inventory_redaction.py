@@ -139,6 +139,61 @@ def test_redact_image_reference_matrix():
         assert redact_image_reference(ref) == ref, ref
 
 
+def test_scp_style_git_refs_collapse():
+    # Sol round-two 1A: SCP-style Git/SSH references collapse to the ssh
+    # host placeholder; user, path, and fragment never survive.
+    assert redact_dependency_ref(
+        "git@github.com:private/repo.git#token-" + SECRET) == \
+        "<ssh:github.com>"
+    assert redact_dependency_ref("git@github.com:org/repo.git") == \
+        "<ssh:github.com>"
+    assert redact_dependency_ref("user@host.invalid:path/to/x") == \
+        "<ssh:host.invalid>"
+    assert redact_dependency_ref("u@h:medium@host2:x/y") == "<ssh:h>"
+    assert redact_dependency_ref("user@:path") == "user@:path"
+    # Benign specs and aliases are byte-identical: no over-broad match.
+    for benign in ("1.2.3", "^1.2.3", ">=1.0,<2.0", "npm:user@1.2.3",
+                   "npm:@scope/pkg@^1.2.3", "workspace:*",
+                   "user@127.0.0.1", "user@1.2.3:x", "../local/path",
+                   "pkg==1.0.0"):
+        assert redact_dependency_ref(benign) == benign, benign
+    assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
+
+
+def test_python_scp_direct_reference_redacted():
+    parsed = python_parser._parse_requirement(
+        "widget @ git@github.com:private/repo.git#token-" + SECRET)
+    assert parsed["problem"] == "url"
+    assert parsed["ref"] == "<ssh:github.com>"
+    record, warning = python_parser._emit_requirement(
+        parsed, "runtime", "requirements", "requirements.txt", line=5)
+    assert record["name"] == "widget" and record["version"] is None
+    assert SECRET not in warning["message"]
+    assert "<ssh:github.com>" in warning["message"]
+    # An editable SCP-style target is redacted the same way.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        reqs = root / "requirements.txt"
+        reqs.write_text(
+            "widget @ git@github.com:private/repo.git#token-" + SECRET +
+            "\n-e git@github.com:private/edit.git#egg=edit\n",
+            encoding="utf-8")
+        records, warnings = python_parser.parse_requirements_records(
+            reqs, "requirements.txt", root=root)
+        scan = scan_folder(root)
+        config = generate_config(scan, "scp-refs")
+    serialized = json.dumps({"records": records, "warnings": warnings,
+                             "config": config})
+    assert SECRET not in serialized
+    assert "private/repo" not in serialized and "private/edit" not in \
+        serialized
+    assert "<ssh:github.com>" in serialized
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
 def test_hosted_git_and_ssh_placeholders():
     assert hosted_git_placeholder("github:org/private") == \
         ("<hosted-git:github>", "github")
@@ -1311,6 +1366,9 @@ TESTS = [
     test_dockerfile_deferred_authority_credentials_redacted,
     test_dockerfile_mixed_scheme_digest_credentials_redacted,
     test_redact_urls_at_less_colon_text_is_fast,
+    test_redact_image_reference_path_scan_is_linear,
+    test_scp_style_git_refs_collapse,
+    test_python_scp_direct_reference_redacted,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,

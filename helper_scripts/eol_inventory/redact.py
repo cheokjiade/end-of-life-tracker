@@ -159,20 +159,33 @@ def _redact_one_url(url):
 # Dependency reference redaction (pip-style URL/path refs)
 # ---------------------------------------------------------------------------
 
+# SCP-style Git/SSH reference: user@host:path with a lettered host and a
+# non-empty path. The colon after the host excludes version specs
+# (npm:user@1.2.3 has no colon; 1.2.3@1.2.3:x has a digit-only host), and
+# the leading anchor excludes aliases such as npm:user@1.2.3.
+_SCP_REF_RE = re.compile(
+    r"^[A-Za-z0-9._~%-]+@(?P<host>[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*):\S")
+
+
 def redact_dependency_ref(ref):
     """Redacted form of one dependency reference token (URL or path).
 
-    Scheme URLs get userinfo/query/fragment redaction. ssh URLs collapse
-    to an ``<ssh:host>`` placeholder. When credential-shaped ``@``
-    material survives inside a URL-shaped token (for example whitespace
-    split an authority), the whole token collapses to ``url:<redacted>``
-    so nothing raw is emitted. Plain versions, ranges, and paths pass
+    Scheme URLs get userinfo/query/fragment redaction. ssh URLs and
+    SCP-style Git references (``git@host:path``, ``user@host:path``)
+    collapse to an ``<ssh:host>`` placeholder: the user, path, and
+    fragment never survive. When credential-shaped ``@`` material
+    survives inside a URL-shaped token (for example whitespace split an
+    authority), the whole token collapses to ``url:<redacted>`` so
+    nothing raw is emitted. Plain versions, ranges, and paths pass
     through unchanged.
     """
     if not isinstance(ref, str) or not ref:
         return ref
     if ref.startswith(("ssh://", "git+ssh://")):
         return ssh_placeholder(ref)
+    scp = _SCP_REF_RE.match(ref)
+    if scp:
+        return ssh_placeholder("ssh://" + scp.group("host"))
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
