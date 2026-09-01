@@ -1,4 +1,4 @@
-"""Secret-redaction tests for the inventory scanner.
+﻿"""Secret-redaction tests for the inventory scanner.
 
 Covers helper_scripts/eol_inventory/redact.py and its application at
 every scanner output boundary: pip direct/editable/legacy URL
@@ -123,12 +123,14 @@ def test_redact_image_reference_matrix():
     assert redact_image_reference(
         "user:pass@registry.invalid:5000/img:1.0") == \
         "registry.invalid:5000/img:1.0"
-    assert redact_image_reference("ubuntu@sha256:abc") == "ubuntu@sha256:abc"
+    # Short hex tails are not registry digests (exact per-algorithm
+    # lengths only): no exemption from credential stripping.
+    assert redact_image_reference("ubuntu@sha256:abc") == "sha256:abc"
     assert redact_image_reference(
-        "golang:1.23@sha256:0123456789abcdef") == \
-        "golang:1.23@sha256:0123456789abcdef"
+        "golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") == \
+        "golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     assert redact_image_reference(
-        "registry.invalid/app@sha256:abc") == "registry.invalid/app@sha256:abc"
+        "registry.invalid/app@sha256:abc") == "registry.invalid/sha256:abc"
     assert redact_image_reference(
         "user:pass@registry.invalid/img@sha256:abc") == \
         "registry.invalid/img@sha256:abc"
@@ -439,7 +441,7 @@ def test_dockerfile_userinfo_image_ref_redacted():
         dockerfile = Path(tmpdir) / "Dockerfile"
         dockerfile.write_text(
             "FROM deploy:" + SECRET + "@registry.invalid/team/app:1.0\n"
-            "FROM golang:1.23@sha256:0123456789abcdef AS pinned\n",
+            "FROM golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS pinned\n",
             encoding="utf-8")
         records, warnings = docker_parser.parse_dockerfile_records(
             dockerfile, "Dockerfile")
@@ -456,8 +458,8 @@ def test_dockerfile_userinfo_image_ref_redacted():
     pinned = [r for r in records if r["name"] == "golang"]
     assert len(pinned) == 1
     assert pinned[0]["image_reference"] == \
-        "golang:1.23@sha256:0123456789abcdef"
-    assert pinned[0]["digest"] == "sha256:0123456789abcdef"
+        "golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    assert pinned[0]["digest"] == "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     assert not _has_warning(warnings, "credential_redacted", "golang")
     assert _has_warning(warnings, "digest_reference", "golang:1.23@sha256")
 
@@ -693,10 +695,11 @@ def test_redact_image_reference_digest_shape_guard():
         "localhost:5000"
     # A real digest anchor still passes through byte-identical.
     for ref in ("img@sha256:" + "a" * 64,
-                "golang:1.23@sha256:0123456789abcdef",
-                "ubuntu@sha256:abc",
+                "golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "name:tag@sha256:" + "b" * 64):
         assert redact_image_reference(ref) == ref, ref
+    # Short hex tails are not digests: no exemption from stripping.
+    assert redact_image_reference("ubuntu@sha256:abc") == "sha256:abc"
     # A second @ before the digest anchor is not a digest reference.
     assert redact_image_reference("user:pass@img@sha256:abc") == "sha256:abc"
 
@@ -726,7 +729,7 @@ def test_redact_urls_multi_at_authority_chain():
         "<redacted>@sup3rsecret.invalid/x"
     for text in ("npm:@scope/real@^1.2.3", "npm:user@1.2.3",
                  "img@sha256:" + "a" * 64,
-                 "name:tag@sha256:0123456789abcdef",
+                 "name:tag@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                  "github.com/org/repo", "golang.org/x/net",
                  "example.com/mod"):
         assert redact_urls(text) == text, text

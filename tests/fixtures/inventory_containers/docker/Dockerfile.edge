@@ -1,7 +1,7 @@
 FROM scratch AS empty
 FROM python AS untagged
 FROM python:latest AS newest
-FROM golang:1.23@sha256:0123456789abcdef AS pinned
+FROM golang:1.23@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS pinned
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS chosen
 FROM golang:1.23.0-alpine AS build

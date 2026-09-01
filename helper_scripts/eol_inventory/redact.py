@@ -210,12 +210,14 @@ def hosted_git_placeholder(spec):
 # Container image reference redaction
 # ---------------------------------------------------------------------------
 
-# Digest tail of a slash-less reference ("@<algorithm>:<hex>"). The
-# algorithm is restricted to the algorithms registries actually serve,
-# so a tag colon ("user:pass@img:1.0") is never mistaken for a digest
-# anchor and its userinfo is stripped instead of passed through.
-_DIGEST_ALGORITHMS = "sha256|sha384|sha512|sha1"
-_DIGEST_TAIL_RE = re.compile(f"^(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F]+$")
+# Digest tail of a digest-pinned reference ("@<algorithm>:<hex>"). Only
+# the algorithms registries actually serve are accepted, with their
+# exact hex lengths, so a tag colon ("user:pass@img:1.0") is never
+# mistaken for a digest anchor and short fake tails ("sha256:abc") are
+# never exempted from credential stripping.
+_DIGEST_SHAPE = (r"sha256:[0-9a-fA-F]{64}|sha1:[0-9a-fA-F]{40}"
+                 r"|sha384:[0-9a-fA-F]{96}|sha512:[0-9a-fA-F]{128}")
+_DIGEST_TAIL_RE = re.compile(f"^(?:{_DIGEST_SHAPE})$")
 
 
 def redact_image_reference(ref):
@@ -246,20 +248,28 @@ def redact_image_reference(ref):
     head = ref if slash < 0 else ref[:slash]
     at = head.rfind("@")
     if at < 0:
-        # The @ sits after the first slash: legitimate only as a digest
-        # anchor on a clean repository segment (registry/team/app@sha256:
-        # <hex>); any other @-bearing path segment carries credential
-        # material and is stripped like a registry authority. An @ inside
-        # a scheme'd URL authority (an embedded https://...) is URL
-        # userinfo, not path material, and stays with redact_urls.
-        last_at = ref.rfind("@")
-        if _URL_SCHEME_RE.search(ref, 0, last_at):
-            return ref
-        segment = ref[ref.rfind("/", 0, last_at) + 1:last_at]
-        if _DIGEST_TAIL_RE.fullmatch(ref[last_at + 1:]) \
-                and "@" not in segment:
-            return ref
-        return ref[:ref.rfind("/", 0, last_at) + 1] + ref[last_at + 1:]
+        # @-bearing path segments are scanned right to left: a clean
+        # digest anchor is kept and the scan continues to its left, a
+        # URL authority (an @ inside a scheme'd URL, with no slash
+        # between the scheme and the @) is left to redact_urls, and
+        # every other @-bearing segment is credential material and is
+        # stripped. Looping makes one pass a fixed point for text with
+        # several credential segments.
+        scan_end = len(ref)
+        while True:
+            last_at = ref.rfind("@", 0, scan_end)
+            if last_at < 0:
+                break
+            scheme = _URL_SCHEME_RE.search(ref, 0, last_at)
+            if scheme and "/" not in ref[scheme.end():last_at]:
+                break
+            segment_start = ref.rfind("/", 0, last_at) + 1
+            if _DIGEST_TAIL_RE.fullmatch(ref[last_at + 1:]) \
+                    and "@" not in ref[segment_start:last_at]:
+                scan_end = segment_start
+                continue
+            ref = ref[:segment_start] + ref[last_at + 1:]
+        return ref
     rest = head[at + 1:]
     if not rest:
         return ref
@@ -314,7 +324,7 @@ def _strip_scheme_image_reference(ref, scheme_end):
 # npm:user@1.2.3 never match.
 _COMPOSED_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
-    rf"(?!(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F]+(?![0-9a-fA-F.]))"
+    rf"(?!{_DIGEST_SHAPE})"
     r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|\d{1,4}(?:\.\d{1,4}){3}"
     r"|\d{7,10}"
@@ -337,4 +347,6 @@ def redact_display_reference(ref):
     byte-identically wherever they legitimately appear.
     """
     redacted = redact_urls(redact_image_reference(ref))
+    if "@" not in redacted:
+        return redacted
     return _COMPOSED_CREDENTIAL_RE.sub(URL_PLACEHOLDER, redacted)

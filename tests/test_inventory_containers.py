@@ -148,7 +148,9 @@ def test_dockerfile_edge_cases():
 
     golang = _records_named(records, "golang")
     assert [r["version"] for r in golang] == ["1.23", "1.23.0-alpine"]
-    assert golang[0]["digest"] == "sha256:0123456789abcdef"
+    assert golang[0]["digest"] == (
+        "sha256:0123456789abcdef0123456789abcdef"
+        "0123456789abcdef0123456789abcdef")
     assert golang[1]["found_in"][0]["line"] == 7
 
     # Continuation-joined FROM keeps the first physical line number.
