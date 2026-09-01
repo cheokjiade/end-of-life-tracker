@@ -376,6 +376,38 @@ def format_found_in(locations):
 
 
 # ---------------------------------------------------------------------------
+# Text normalization (shared by the Markdown and CSV renderers)
+# ---------------------------------------------------------------------------
+
+# ECMA-48/ANSI escape sequences: CSI (ESC [ parameters intermediates final),
+# OSC/DCS/SOS/PM/APC strings closed by BEL or ST, two-byte ESC sequences,
+# and a lone ESC.
+_ESCAPE_SEQUENCE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)?"
+    r"|[PX^_][^\x1b]*(?:\x1b\\)?"
+    r"|[@-Z\\-_]"
+    r"|[ -/]*[@-~])?")
+
+# C0 controls other than tab/CR/LF, DEL, and C1 controls.
+_CONTROL_CHARS_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0080-\u009f]")
+
+
+def _sanitize_text(value):
+    """Text with terminal escape sequences and control characters removed.
+
+    Strips ECMA-48/ANSI escape sequences (CSI, OSC, other ESC introducers,
+    lone ESC) plus the C0/C1 control characters and DEL, keeping tab, CR,
+    and LF for the renderers to handle: Markdown collapses them to spaces,
+    CSV normalizes CR to LF and neutralizes line-leading formula triggers.
+    Printable characters, including non-ASCII, pass through unchanged.
+    """
+    text = "" if value is None else str(value)
+    text = _ESCAPE_SEQUENCE_RE.sub("", text)
+    return _CONTROL_CHARS_RE.sub("", text)
+
+
+# ---------------------------------------------------------------------------
 # Markdown rendering
 # ---------------------------------------------------------------------------
 
@@ -388,7 +420,7 @@ def _md_text(value):
     """Plain Markdown text safe for headings, bullets, and table cells."""
     if value is None:
         return ""
-    text = html.escape(str(value), quote=True)
+    text = html.escape(_sanitize_text(value), quote=True)
     for separator in ("\r", "\n", "\t", "\u2028", "\u2029"):
         text = text.replace(separator, " ")
     text = re.sub(r"(?i)((?:https?|ftp))://", r"\1&#58;//", text)
@@ -419,7 +451,7 @@ def render_markdown(view):
         title += f": {_md_text(meta['project'])}"
     lines.append(title)
     lines.append("")
-    lines.append(f"- Scan date: {meta['scan_date']}")
+    lines.append(f"- Scan date: {_md_text(meta['scan_date'])}")
     lines.append(f"- Generator version: {_md_text(meta['generator_version'])}")
     files_scanned = meta["files_scanned"]
     lines.append("- Files scanned: {}".format(
@@ -601,11 +633,20 @@ def render_csv(view):
 
 
 def _csv_cell(value):
-    """Prevent spreadsheet programs from evaluating inventory text."""
-    text = "" if value is None else str(value)
-    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return "'" + text
-    return text
+    """Prevent spreadsheet programs from evaluating inventory text.
+
+    Terminal escapes and control characters are removed and CR is
+    normalized to LF; formula trigger characters are then neutralized with
+    a leading apostrophe at the start of the cell AND immediately after
+    any embedded newline, so a hostile multi-line value cannot place a
+    live formula at the start of a new row in a CSV parser that does not
+    honour quoting. Embedded newlines stay inside the quoted cell per the
+    csv module contract; benign values are returned unchanged.
+    """
+    text = _sanitize_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(
+        "'" + line if line.startswith(("=", "+", "-", "@", "\t")) else line
+        for line in text.split("\n"))
 
 
 def render_html(view):
