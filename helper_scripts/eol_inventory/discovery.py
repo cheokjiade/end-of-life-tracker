@@ -63,7 +63,11 @@ def _parse_python_manifest(path, rel_path, root, scan_state=None):
     if name == "pipfile.lock":
         return parse_pipfile_lock_records(path, rel_path)
     if name == "pipfile":
-        return parse_pipfile_records(path, rel_path, root=root)
+        state = None if scan_state is None else scan_state.setdefault(
+            "pipfile", {"locks": set()})
+        return parse_pipfile_records(
+            path, rel_path, root=root,
+            consumed_locks=None if state is None else state["locks"])
     if name == ".python-version":
         return parse_python_version_records(path, rel_path)
     if name == "runtime.txt":
@@ -74,23 +78,31 @@ def _parse_python_manifest(path, rel_path, root, scan_state=None):
         path, rel_path, root=root, include_state=state)
 
 
-def _parse_node_manifest(path, rel_path, root):
+def _parse_node_manifest(path, rel_path, root, scan_state=None):
     if rel_path.rsplit("/", 1)[-1].lower() == ".nvmrc":
         return parse_nvmrc_records(path, rel_path)
-    return parse_package_json_records(path, rel_path, root=root)
+    state = None if scan_state is None else scan_state.setdefault(
+        "npm", {"locks": set()})
+    return parse_package_json_records(
+        path, rel_path, root=root,
+        consumed_locks=None if state is None else state["locks"])
 
 
-def _parse_dotnet_manifest(path, rel_path, root):
+def _parse_dotnet_manifest(path, rel_path, root, scan_state=None):
     """Dispatch one .NET project file to its parser by basename."""
     name = rel_path.rsplit("/", 1)[-1].lower()
     if name == "global.json":
         return parse_global_json_records(path, rel_path)
-    return parse_csproj_records(path, rel_path, root=root)
+    state = None if scan_state is None else scan_state.setdefault(
+        "dotnet", {"sidecars": set()})
+    return parse_csproj_records(
+        path, rel_path, root=root,
+        consumed=None if state is None else state["sidecars"])
 
 
 def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
     state = None if scan_state is None else scan_state.setdefault(
-        "gitlab", {"files": 0, "visited": set()})
+        "gitlab", {"files": 0, "visited": set(), "manifests": set()})
     return parse_gitlab_ci_records(
         path, rel_path, root=root, include_state=state)
 
@@ -98,24 +110,26 @@ def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
 # Manifest table in ecosystem precedence order. This preserves the
 # historical scan order (and therefore first-seen provenance) while
 # staying deterministic. Lock files (package-lock.json,
-# npm-shrinkwrap.json, packages.lock.json) are sibling-resolved by their
-# parsers and are deliberately NOT discovered. Directory.Packages.props is
-# likewise sidecar evidence used only for referenced packages. The
-# `wants_root` flag marks parsers that
-# receive the scan root (the GitLab CI parser needs it to keep local
-# includes inside the scan root); `wants_state` carries scanner-wide
-# include de-duplication and budgets.
+# npm-shrinkwrap.json, packages.lock.json) and Directory.Packages.props
+# are sibling/nearest-sidecar evidence resolved by their parsers and are
+# deliberately NOT discovered as candidates; sidecars the parsers
+# actually read are merged into the file list afterwards (see the
+# consumed-sidecar merge at the end of scan_folder). The `wants_root`
+# flag marks parsers that receive the scan root (the GitLab CI parser
+# needs it to keep local includes inside the scan root); `wants_state`
+# carries scanner-wide include de-duplication, budgets, and consumed-
+# sidecar tracking.
 _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False, False),
     ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records,
      False, False),
-    ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True, False),
+    ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True, True),
     ("python", ("requirements*.txt", "pyproject.toml", "Pipfile", "Pipfile.lock",
                 ".python-version", "runtime.txt"),
      _parse_python_manifest, True, True),
     ("go", ("go.mod",), parse_go_mod_records, False, False),
     ("dotnet", ("*.csproj", "*.fsproj", "*.vbproj", "global.json"),
-     _parse_dotnet_manifest, True, False),
+     _parse_dotnet_manifest, True, True),
     ("docker", ("Dockerfile", "Dockerfile.*", "*.Dockerfile"),
      parse_dockerfile_records, False, False),
     ("gitlab", None, _parse_gitlab_manifest, True, True),
@@ -259,8 +273,19 @@ def scan_folder(folder, exclude=None):
         warnings.extend(file_warnings)
         files.append(rel)
 
-    requirements_state = scan_state.get("requirements", {})
-    files = sorted(set(files) | set(requirements_state.get("manifests", ())))
+    # Sidecar manifests the scan consumed while resolving or enriching
+    # declarations (requirements includes, sibling Pipfile/npm lock
+    # files, .NET central/lock sidecars, followed GitLab CI local
+    # includes) join the manifest list even when they yield no records
+    # or warnings of their own. Files merely present but never read
+    # stay unlisted; failed reads surface as warnings instead.
+    consumed = set()
+    for state in (scan_state.get("requirements", {}),
+                  scan_state.get("pipfile", {}), scan_state.get("npm", {}),
+                  scan_state.get("dotnet", {}), scan_state.get("gitlab", {})):
+        for field in ("manifests", "locks", "sidecars"):
+            consumed.update(state.get(field, ()))
+    files = sorted(set(files) | consumed)
     return {
         "root": str(root.resolve()),
         "root_name": root.resolve().name or root.name,

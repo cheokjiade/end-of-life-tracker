@@ -9,8 +9,9 @@ without lock evidence the specification is kept in ``version_spec`` and a
 structured warning is raised. Versions are never guessed from ranges.
 
 The lock file is a SIBLING of the parsed package.json (same directory);
-discovery never lists it -- like Directory.Packages.props for .NET, the
-parser sees one manifest plus its siblings.
+discovery never walks it as a candidate, but a lock the scan actually
+read is reported as a consumed manifest (it lands in `_inventory.manifests`
+via discovery's consumed-sidecar merge) even when it resolves nothing.
 """
 
 import json
@@ -150,8 +151,14 @@ def _spec_warning(name, spec, rel_path):
         f"no lock evidence for {name} ({spec}); range preserved, not guessed")
 
 
-def parse_package_json_records(path, rel_path, root=None):
-    """Parse package.json; return (records, warnings)."""
+def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
+    """Parse package.json; return (records, warnings).
+
+    consumed_locks: optional set receiving the scan-root-relative path of
+    every sibling lock file successfully read (npm-shrinkwrap.json wins
+    over package-lock.json), so discovery can list consumed manifests
+    even when the lock resolves zero specifications.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -167,6 +174,8 @@ def parse_package_json_records(path, rel_path, root=None):
         path, rel_path)
     lock, lock_rel, lock_warning = _read_lock(
         Path(path).parent, rel_path, root_abs)
+    if lock_rel and consumed_locks is not None:
+        consumed_locks.add(lock_rel)
     warnings = [lock_warning] if lock_warning else []
     records = []
 

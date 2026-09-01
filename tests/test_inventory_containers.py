@@ -28,6 +28,7 @@ if str(_HELPER_DIR) not in sys.path:
 import eol_inventory.mappings as mappings
 import eol_inventory.parsers.docker as docker_parser
 import eol_inventory.parsers.gitlab_ci as gitlab_parser
+from eol_inventory import scan_folder
 
 
 def _parse_dockerfile(*parts):
@@ -621,6 +622,52 @@ def test_map_image_dep_unmapped():
 
 
 # ---------------------------------------------------------------------------
+# Consumed-manifest listing for followed GitLab CI local includes
+# ---------------------------------------------------------------------------
+
+def test_followed_gitlab_include_is_listed_as_consumed_manifest():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".gitlab-ci.yml").write_text(
+            "include:\n  - /templates/base.yml\n")
+        (root / "templates").mkdir()
+        (root / "templates" / "base.yml").write_text("image: python:3.12\n")
+        # Present but never included: no parser reads it, so it must
+        # not appear in the manifest list.
+        (root / "templates" / "unused.yml").write_text("image: redis:7\n")
+        scan = scan_folder(root)
+    assert scan["files"] == [".gitlab-ci.yml", "templates/base.yml"]
+    assert [r["name"] for r in scan["records"]
+            if r["ecosystem"] == "container"] == ["python"]
+
+
+def test_gitlab_include_without_images_is_still_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".gitlab-ci.yml").write_text(
+            "include: /templates/empty.yml\n")
+        (root / "templates").mkdir()
+        (root / "templates" / "empty.yml").write_text(
+            "stages:\n  - build\n")
+        scan = scan_folder(root)
+    # The include was followed and read even though it contributes zero
+    # records and zero warnings: consumed means listed.
+    assert scan["files"] == [".gitlab-ci.yml", "templates/empty.yml"]
+    assert scan["records"] == []
+    assert scan["warnings"] == []
+
+
+def test_gitlab_missing_include_is_not_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / ".gitlab-ci.yml").write_text(
+            "include: /templates/absent.yml\n")
+        scan = scan_folder(root)
+    assert scan["files"] == [".gitlab-ci.yml"]
+    assert _has_warning(scan["warnings"], "ci_include_missing", "absent.yml")
+
+
+# ---------------------------------------------------------------------------
 
 TESTS = [
     test_split_image_reference,
@@ -649,6 +696,9 @@ TESTS = [
     test_image_cycle_helpers,
     test_map_image_dep_recognized_images,
     test_map_image_dep_unmapped,
+    test_followed_gitlab_include_is_listed_as_consumed_manifest,
+    test_gitlab_include_without_images_is_still_listed,
+    test_gitlab_missing_include_is_not_listed,
 ]
 
 

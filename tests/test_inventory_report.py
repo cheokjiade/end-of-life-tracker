@@ -523,6 +523,47 @@ def test_markdown_deterministic():
 
 
 # ---------------------------------------------------------------------------
+# Scan timestamp surfacing (additive; legacy configs unchanged)
+# ---------------------------------------------------------------------------
+
+_STAMP = "2026-08-28T12:34:56.789012+02:00"
+
+
+def test_scan_timestamp_renders_next_to_scan_date_when_present():
+    config = _new_model_config()
+    config["_inventory"]["scan_date"] = "2026-08-28"
+    config["_inventory"]["scan_timestamp"] = _STAMP
+    view = build_inventory_view(config, project_name="demo")
+    assert view["meta"]["scan_date"] == "2026-08-28"
+    assert view["meta"]["scan_timestamp"] == _STAMP
+    md = render_markdown(view)
+    assert "- Scan date: 2026-08-28" in md
+    assert f"- Scan timestamp: {_STAMP}" in md
+    rendered = render_html(view)
+    assert ("Scan date: 2026-08-28 | Scan timestamp: "
+            f"{_STAMP} | Files scanned: 2 | Warnings: 1") in rendered
+
+
+def test_legacy_configs_without_scan_timestamp_render_unchanged():
+    config = _new_model_config()
+    config["_inventory"]["scan_date"] = "2026-08-28"
+    view = build_inventory_view(config, project_name="demo")
+    assert view["meta"]["scan_timestamp"] is None
+    md = render_markdown(view)
+    assert "- Scan date: 2026-08-28" in md
+    assert "Scan timestamp" not in md
+    rendered = render_html(view)
+    assert ("Scan date: 2026-08-28 | Files scanned: 2 | Warnings: 1"
+            in rendered)
+    assert "Scan timestamp" not in rendered
+    # The fully-legacy shape (no _inventory at all) renders the same way.
+    legacy = build_inventory_view(_legacy_config())
+    assert legacy["meta"]["scan_timestamp"] is None
+    assert "Scan timestamp" not in render_markdown(legacy)
+    assert "Scan timestamp" not in render_html(legacy)
+
+
+# ---------------------------------------------------------------------------
 # CSV rendering
 # ---------------------------------------------------------------------------
 
@@ -693,6 +734,8 @@ TESTS = [
     test_markdown_neutralizes_remote_images_and_inline_markup,
     test_markdown_legacy_config,
     test_markdown_deterministic,
+    test_scan_timestamp_renders_next_to_scan_date_when_present,
+    test_legacy_configs_without_scan_timestamp_render_unchanged,
     test_csv_output,
     test_csv_quotes_special_values,
     test_csv_neutralizes_spreadsheet_formulas,

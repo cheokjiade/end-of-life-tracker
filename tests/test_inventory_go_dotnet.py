@@ -915,6 +915,89 @@ def test_dotnet_parsing_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
+# Consumed .NET sidecar listing (Directory.Packages.props / packages.lock.json)
+# ---------------------------------------------------------------------------
+
+def test_consumed_dotnet_sidecars_listed_even_when_they_resolve_nothing():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "App.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+            "<TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+            '<ItemGroup><PackageReference Include="Serilog" '
+            'Version="2.12.0" /></ItemGroup></Project>')
+        # Both sidecars read and parse cleanly but carry no resolvable
+        # entries: zero records contributed, zero warnings, still listed.
+        (root / "Directory.Packages.props").write_text("<Project />")
+        (root / "packages.lock.json").write_text(json.dumps(
+            {"dependencies": {}}))
+        scan = scan_folder(root)
+    assert scan["warnings"] == []
+    assert scan["files"] == ["App.csproj", "Directory.Packages.props",
+                             "packages.lock.json"]
+
+
+def test_only_the_nearest_central_props_sidecar_is_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "src").mkdir()
+        (root / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup><PackageVersion Include="Root.Pkg" '
+            'Version="1.0.0" /></ItemGroup></Project>')
+        (root / "src" / "Directory.Packages.props").write_text(
+            '<Project><ItemGroup><PackageVersion Include="Src.Pkg" '
+            'Version="2.0.0" /></ItemGroup></Project>')
+        (root / "src" / "App.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+            "<TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+            '<ItemGroup><PackageReference Include="Src.Pkg" /></ItemGroup>'
+            "</Project>")
+        scan = scan_folder(root)
+    # The project file consumes the nearest props walking up (src/);
+    # the root props is merely present and stays unlisted. Neither
+    # props file is a discovery candidate, so the consumed src props
+    # appears in the manifest list only through the sidecar merge.
+    assert scan["files"] == ["src/App.csproj",
+                             "src/Directory.Packages.props"]
+    assert scan["warnings"] == []
+    src_pkg = _one(scan["records"], "Src.Pkg")
+    assert src_pkg["version"] == "2.0.0"
+
+
+def test_malformed_dotnet_sidecars_warn_but_are_not_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "App.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+            "<TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+            '<ItemGroup><PackageReference Include="Serilog" '
+            'Version="2.12.0" /></ItemGroup></Project>')
+        (root / "Directory.Packages.props").write_text("<Project><unclosed>")
+        (root / "packages.lock.json").write_text("{not json")
+        scan = scan_folder(root)
+    assert scan["files"] == ["App.csproj"]
+    assert _has_warning(scan["warnings"], "parse_error",
+                        "Directory.Packages.props")
+    assert _has_warning(scan["warnings"], "parse_error",
+                        "packages.lock.json")
+
+
+def test_dotnet_sidecars_absent_without_project_files():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "global.json").write_text(
+            json.dumps({"sdk": {"version": "8.0.100"}}))
+        (root / "Directory.Packages.props").write_text("<Project />")
+        (root / "packages.lock.json").write_text(json.dumps(
+            {"dependencies": {}}))
+        scan = scan_folder(root)
+    # global.json never triggers the project sidecar readers: the props
+    # and lock files are never read and stay unlisted.
+    assert scan["files"] == ["global.json"]
+    assert scan["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
 
 TESTS = [
     test_go_strip_v,
@@ -949,6 +1032,10 @@ TESTS = [
     test_dotnet_falsey_malformed_lock_structures_warn,
     test_dotnet_global_json_malformed_and_empty,
     test_dotnet_parsing_is_deterministic,
+    test_consumed_dotnet_sidecars_listed_even_when_they_resolve_nothing,
+    test_only_the_nearest_central_props_sidecar_is_listed,
+    test_malformed_dotnet_sidecars_warn_but_are_not_listed,
+    test_dotnet_sidecars_absent_without_project_files,
 ]
 
 

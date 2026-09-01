@@ -922,11 +922,14 @@ def _emit_poetry_dependency(name, value, scope, locator, records, warnings,
 # Pipfile and Pipfile.lock
 # ---------------------------------------------------------------------------
 
-def parse_pipfile_records(path, rel_path, root=None):
+def parse_pipfile_records(path, rel_path, root=None, consumed_locks=None):
     """Parse direct Pipfile declarations, enriched by a sibling lock file.
 
     [[source]] index blocks are recognized and skipped; they carry
-    package-index configuration, not dependencies.
+    package-index configuration, not dependencies. A sibling
+    Pipfile.lock successfully read is reported through `consumed_locks`
+    (the scan-root-relative path) so discovery lists it as a consumed
+    manifest even when it resolves nothing.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -953,6 +956,9 @@ def parse_pipfile_records(path, rel_path, root=None):
             warnings.append(new_warning(
                 "parse_error", _sibling_rel(rel_path, "Pipfile.lock"),
                 f"Pipfile.lock parse error: {exc}"))
+        else:
+            if consumed_locks is not None:
+                consumed_locks.add(_sibling_rel(rel_path, "Pipfile.lock"))
 
     records = []
     for section, lock_section, scope in (

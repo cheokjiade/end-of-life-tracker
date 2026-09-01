@@ -632,6 +632,48 @@ def test_parsing_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
+# Consumed-manifest listing for the Pipfile sibling lock
+# ---------------------------------------------------------------------------
+
+def test_pipfile_lock_sibling_listed_even_when_it_resolves_nothing():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Pipfile").write_text("")
+        (root / "Pipfile.lock").write_text(json.dumps({"default": {}}))
+        scan = scan_folder(root)
+    # The Pipfile parser reads the sibling lock even when there is
+    # nothing to resolve: zero records, zero warnings, still listed.
+    assert scan["files"] == ["Pipfile", "Pipfile.lock"]
+    assert scan["records"] == []
+    assert scan["warnings"] == []
+
+
+def test_excluded_pipfile_lock_consumed_as_sibling_is_still_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Pipfile").write_text('[packages]\nrequests = "*"\n')
+        (root / "Pipfile.lock").write_text(json.dumps(
+            {"default": {"requests": {"version": "==2.32.4"}}}))
+        scan = scan_folder(root, exclude=["Pipfile.lock"])
+    # The lock is not a discovery candidate here, but the Pipfile
+    # parser still reads it to resolve the direct declaration: the
+    # scan reports what it actually consumed.
+    assert "Pipfile.lock" in scan["files"]
+    assert "Pipfile" in scan["files"]
+    assert _one(scan["records"], "requests")["version"] == "2.32.4"
+
+
+def test_malformed_pipfile_lock_sibling_warns_but_is_not_added():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Pipfile").write_text('[packages]\nrequests = "*"\n')
+        (root / "Pipfile.lock").write_text("{not json")
+        scan = scan_folder(root, exclude=["Pipfile.lock"])
+    assert scan["files"] == ["Pipfile"]
+    assert _has_warning(scan["warnings"], "parse_error", "Pipfile.lock")
+
+
+# ---------------------------------------------------------------------------
 
 TESTS = [
     test_parse_requirement_exact_pins_and_markers,
@@ -659,6 +701,9 @@ TESTS = [
     test_python_version_file,
     test_runtime_txt_file,
     test_parsing_is_deterministic,
+    test_pipfile_lock_sibling_listed_even_when_it_resolves_nothing,
+    test_excluded_pipfile_lock_consumed_as_sibling_is_still_listed,
+    test_malformed_pipfile_lock_sibling_warns_but_is_not_added,
 ]
 
 

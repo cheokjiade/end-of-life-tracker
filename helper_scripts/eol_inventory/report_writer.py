@@ -331,6 +331,9 @@ def build_inventory_view(config, project_name=None):
     return {
         "meta": {
             "scan_date": inventory.get("scan_date") or date.today().isoformat(),
+            # Additive full-timestamp field; legacy configs without it
+            # render exactly as before (renderers skip the absent line).
+            "scan_timestamp": inventory.get("scan_timestamp") or None,
             "generator_version": inventory.get("generator_version")
             or "unknown",
             "files_scanned": files_scanned,
@@ -460,6 +463,9 @@ def render_markdown(view):
     lines.append(title)
     lines.append("")
     lines.append(f"- Scan date: {_md_text(meta['scan_date'])}")
+    if meta.get("scan_timestamp"):
+        lines.append(
+            f"- Scan timestamp: {_md_text(meta['scan_timestamp'])}")
     lines.append(f"- Generator version: {_md_text(meta['generator_version'])}")
     files_scanned = meta["files_scanned"]
     lines.append("- Files scanned: {}".format(
@@ -660,6 +666,13 @@ def _csv_cell(value):
 def render_html(view):
     """Render a deterministic, self-contained and escaped HTML inventory."""
     esc = lambda value: html.escape(str(value if value is not None else ""))
+    meta_bits = [f"Scan date: {esc(view['meta']['scan_date'])}"]
+    if view["meta"].get("scan_timestamp"):
+        meta_bits.append(
+            f"Scan timestamp: {esc(view['meta']['scan_timestamp'])}")
+    meta_bits.append(f"Files scanned: {esc(view['meta']['files_scanned'])}")
+    meta_bits.append(f"Warnings: {esc(view['meta']['warning_count'])}")
+    meta_line = " | ".join(meta_bits)
     rows = []
     for row in _sorted_rows(view["products"] + view["containers"]):
         state = "inferred" if row["inferred"] else "tracked"
@@ -688,15 +701,13 @@ def render_html(view):
 <title>Dependency inventory: {project}</title>
 <style>body{{font:16px system-ui,sans-serif;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#18212b}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd5df;padding:.5rem;text-align:left;vertical-align:top}}th{{background:#eef3f7}}.untracked{{background:#fff4d6}}code{{word-break:break-all}}</style></head>
 <body><h1>Dependency inventory: {project}</h1>
-<p>Scan date: {date} | Files scanned: {files} | Warnings: {warning_count}</p>
+<p>{meta_line}</p>
 <table><thead><tr><th>State</th><th>Ecosystem</th><th>Product</th><th>Version</th><th>Provider</th><th>Found in</th><th>Details</th></tr></thead><tbody>{rows}</tbody></table>
 <h2>Warnings</h2><ul>{warnings}</ul>
 <h2>Manual review checklist</h2><ul><li>Review every untracked row and warning.</li><li>Confirm inferred lifecycle mappings before deployment.</li></ul>
 </body></html>
 """.format(project=esc(view["meta"]["project"]),
-           date=esc(view["meta"]["scan_date"]),
-           files=esc(view["meta"]["files_scanned"]),
-           warning_count=esc(view["meta"]["warning_count"]),
+           meta_line=meta_line,
            rows="".join(rows), warnings=warning_items)
 
 

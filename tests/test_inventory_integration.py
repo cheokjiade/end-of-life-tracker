@@ -48,13 +48,16 @@ def test_scan_mixed_fixture_discovers_all_ecosystems():
     assert scan["root_name"] == "inventory_mixed"
     assert scan["files"] == [
         ".gitlab-ci.yml", ".gitlab/ci/deploy.yml", ".python-version",
-        "Dockerfile", "Dockerfile.edge",
-        "apps/web/package.json", "global.json", "go.mod",
-        "legacy/Legacy.csproj", "mono.csproj", "pyproject.toml",
-        "requirements.txt",
+        "Directory.Packages.props", "Dockerfile", "Dockerfile.edge",
+        "apps/web/package-lock.json", "apps/web/package.json",
+        "global.json", "go.mod", "legacy/Legacy.csproj", "mono.csproj",
+        "pyproject.toml", "requirements.txt",
     ]
-    # package-lock.json resolves sibling versions and is never listed
-    assert all(not f.endswith("package-lock.json") for f in scan["files"])
+    # package-lock.json resolves sibling versions, so the consumed lock
+    # is listed; the fixture has no packages.lock.json sidecar, and a
+    # merely-present-but-never-read file must stay unlisted.
+    assert "apps/web/package-lock.json" in scan["files"]
+    assert not any(f.endswith("packages.lock.json") for f in scan["files"])
     by_eco = {}
     for r in scan["records"]:
         by_eco.setdefault(r["ecosystem"], []).append(r)
@@ -181,17 +184,21 @@ def test_config_unmapped_items_and_summary():
          "message": "numpy has no exact version (~=1.26.0); not guessed"},
     ]
     assert config["_inventory"]["summary"] == {
-        "files": 12, "records": 22, "products": 14, "unmapped": 4,
+        "files": 14, "records": 22, "products": 14, "unmapped": 4,
         "warnings": 2, "indirect": 1}
     assert config["_inventory"]["include_transitive"] is False
     assert not config.get("_skipped_npm_packages")
 
 
 def test_config_is_deterministic():
-    dump1 = json.dumps(gc.generate_config(gc.scan_folder(str(FIX)), "mixed"),
-                       indent=2, ensure_ascii=True)
-    dump2 = json.dumps(gc.generate_config(gc.scan_folder(str(FIX)), "mixed"),
-                       indent=2, ensure_ascii=True)
+    config1 = gc.generate_config(gc.scan_folder(str(FIX)), "mixed")
+    config2 = gc.generate_config(gc.scan_folder(str(FIX)), "mixed")
+    # scan_timestamp carries the wall clock; normalize it like the
+    # generation date (see the plan's determinism testing strategy).
+    for config in (config1, config2):
+        config["_inventory"].pop("scan_timestamp", None)
+    dump1 = json.dumps(config1, indent=2, ensure_ascii=True)
+    dump2 = json.dumps(config2, indent=2, ensure_ascii=True)
     assert dump1 == dump2
 
 

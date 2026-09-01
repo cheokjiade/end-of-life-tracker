@@ -27,6 +27,7 @@ if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 
 import eol_inventory.parsers.node as node_parser
+from eol_inventory.discovery import scan_folder
 
 
 def _parse(*parts):
@@ -340,6 +341,73 @@ def test_nvmrc_and_wrong_typed_package_fields():
 
 
 # ---------------------------------------------------------------------------
+# Consumed-lock manifest listing (discovery integration)
+# ---------------------------------------------------------------------------
+
+def test_consumed_lock_is_listed_even_when_it_resolves_nothing():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text(json.dumps(
+            {"name": "app", "dependencies": {"react": "18.2.0"}}))
+        (root / "package-lock.json").write_text(json.dumps(
+            {"lockfileVersion": 3, "packages": {
+                "node_modules/react": {"version": "18.2.0"}}}))
+        scan = scan_folder(root)
+    # Every spec is exact, so the lock contributes no version evidence:
+    # zero records from it, zero warnings, yet the scan read it, so it
+    # is listed as a consumed manifest.
+    assert scan["warnings"] == []
+    assert scan["files"] == ["package-lock.json", "package.json"]
+
+
+def test_shrinkwrap_listed_and_unread_package_lock_not_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text(json.dumps(
+            {"name": "app", "dependencies": {"react": "^18.0.0"}}))
+        (root / "package-lock.json").write_text(json.dumps(
+            {"lockfileVersion": 3, "packages": {
+                "node_modules/react": {"version": "18.0.0"}}}))
+        (root / "npm-shrinkwrap.json").write_text(json.dumps(
+            {"lockfileVersion": 3, "packages": {
+                "node_modules/react": {"version": "18.2.0"}}}))
+        scan = scan_folder(root)
+    # npm semantics: the shrinkwrap wins and is the only lock read; the
+    # package-lock.json is merely present and stays unlisted.
+    assert scan["files"] == ["npm-shrinkwrap.json", "package.json"]
+    react = _one(scan["records"], "react")
+    assert react["version"] == "18.2.0"
+    assert scan["warnings"] == []
+
+
+def test_malformed_lock_warns_but_is_not_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text(json.dumps(
+            {"name": "app", "dependencies": {"react": "^18.0.0"}}))
+        (root / "package-lock.json").write_text("{not json")
+        scan = scan_folder(root)
+    # A failed read surfaces as a warning instead of a manifest entry
+    # (mirroring the requirements-include listing semantics).
+    assert scan["files"] == ["package.json"]
+    assert _has_warning(scan["warnings"], "parse_error", "package-lock.json")
+
+
+def test_lock_present_without_package_json_is_never_listed():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text(json.dumps(
+            {"name": "app", "dependencies": {"react": "18.2.0"}}))
+        (root / "sub").mkdir()
+        (root / "sub" / "package-lock.json").write_text("{}")
+        scan = scan_folder(root)
+    # No sibling lock exists and no parser ever opens sub/package-lock.json:
+    # a merely-present file is not a consumed manifest.
+    assert scan["files"] == ["package.json"]
+    assert scan["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
 
 TESTS = [
     test_exact_spec_passthrough_never_touches_lock,
@@ -355,6 +423,10 @@ TESTS = [
     test_optional_and_peer_dependencies_are_direct_inventory,
     test_nvmrc_and_wrong_typed_package_fields,
     test_lock_versions_must_be_exact_and_specs_do_not_leak_secrets,
+    test_consumed_lock_is_listed_even_when_it_resolves_nothing,
+    test_shrinkwrap_listed_and_unread_package_lock_not_listed,
+    test_malformed_lock_warns_but_is_not_listed,
+    test_lock_present_without_package_json_is_never_listed,
 ]
 
 

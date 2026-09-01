@@ -215,6 +215,9 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             return
         include_state["files"] += 1
         visited.add(resolved)
+        # A local include the scan actually read is a consumed manifest:
+        # discovery lists it even when it yields no records or warnings.
+        include_state.setdefault("manifests", set()).add(inc_rel)
         inc_records, inc_warnings = _parse_ci_text(
             inc_text, inc_rel, root, depth + 1, active | {resolved},
             include_state, merge_state=merge_state)

@@ -21,7 +21,10 @@ raised — mirrors the Maven/Gradle parsers.
 
 Central versions and lock files are resolved from the SAME directory as
 the project file (the parser sees one file plus its siblings; scanning
-parent directories is discovery's business).
+parent directories is discovery's business). Sidecars the scan actually
+read are reported as consumed manifests (they land in
+`_inventory.manifests` via discovery's consumed-sidecar merge) even when
+they resolve nothing.
 """
 
 import json
@@ -237,12 +240,14 @@ def _tfm_version(tfm):
 # Version sources: Directory.Packages.props and packages.lock.json
 # ---------------------------------------------------------------------------
 
-def _read_central_versions(props_abs, root, rel_path):
+def _read_central_versions(props_abs, root, rel_path, consumed=None):
     """Central versions from Directory.Packages.props.
 
     Values are ``(declared-name, exact-version, unresolved-spec)``.  First
     unconditional declaration wins when casing differs; conditional ambiguity
-    remains visible instead of being guessed.
+    remains visible instead of being guessed. A successfully read and
+    parsed sidecar is reported through `consumed` (the scan-root-relative
+    path) so discovery lists it even when it declares nothing.
     """
     guarded, warning = guarded_local_file(props_abs, root, rel_path)
     if guarded is None:
@@ -251,6 +256,8 @@ def _read_central_versions(props_abs, root, rel_path):
         guarded, rel_path, "Directory.Packages.props")
     if document is None:
         return {}, parse_warning
+    if consumed is not None:
+        consumed.add(rel_path)
     return _collect_central_versions(document), None
 
 
@@ -265,12 +272,15 @@ def _is_exact_nuget_version(version):
     return bool(version and _NUGET_EXACT_VERSION_RE.fullmatch(version))
 
 
-def _read_lock_versions(lock_abs, root, rel_path):
+def _read_lock_versions(lock_abs, root, rel_path, consumed=None):
     """{lower-name: version} from packages.lock.json.
 
     Direct entries beat Transitive ones; within a pass, target
     frameworks are visited in sorted order and the first occurrence
-    wins — deterministic regardless of JSON ordering.
+    wins — deterministic regardless of JSON ordering. A successfully
+    read and JSON-parsed lock is reported through `consumed` (the
+    scan-root-relative path) so discovery lists it even when it
+    resolves nothing.
     """
     guarded, warning = guarded_local_file(lock_abs, root, rel_path)
     if guarded is None:
@@ -281,6 +291,8 @@ def _read_lock_versions(lock_abs, root, rel_path):
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         return {}, new_warning(
             "parse_error", rel_path, f"packages.lock.json parse error: {exc}")
+    if consumed is not None:
+        consumed.add(rel_path)
     if not isinstance(data, dict):
         return {}, new_warning(
             "parse_error", rel_path,
@@ -347,8 +359,13 @@ def _read_lock_versions(lock_abs, root, rel_path):
 # Project file parser (csproj / fsproj / vbproj)
 # ---------------------------------------------------------------------------
 
-def parse_csproj_records(path, rel_path, root=None):
-    """Parse a .csproj/.fsproj/.vbproj; return (records, warnings)."""
+def parse_csproj_records(path, rel_path, root=None, consumed=None):
+    """Parse a .csproj/.fsproj/.vbproj; return (records, warnings).
+
+    consumed: optional set receiving the scan-root-relative paths of the
+    Directory.Packages.props / packages.lock.json sidecars successfully
+    read for this project (see _read_central_versions).
+    """
     document, warning = _load_xml(path, rel_path, "project file")
     if document is None:
         return [], [warning]
@@ -364,9 +381,9 @@ def parse_csproj_records(path, rel_path, root=None):
     lock_path, lock_rel = _nearest_sidecar(
         project_dir, scan_root, _LOCK_SIBLING)
     central, central_warning = _read_central_versions(
-        central_path, scan_root, central_rel)
+        central_path, scan_root, central_rel, consumed)
     lock, lock_warning = _read_lock_versions(
-        lock_path, scan_root, lock_rel)
+        lock_path, scan_root, lock_rel, consumed)
     warnings.extend(w for w in (central_warning, lock_warning) if w)
 
     for elem in document.iter():
