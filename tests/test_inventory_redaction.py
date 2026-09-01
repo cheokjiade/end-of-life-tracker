@@ -1,4 +1,4 @@
-﻿"""Secret-redaction tests for the inventory scanner.
+"""Secret-redaction tests for the inventory scanner.
 
 Covers helper_scripts/eol_inventory/redact.py and its application at
 every scanner output boundary: pip direct/editable/legacy URL
@@ -133,7 +133,7 @@ def test_redact_image_reference_matrix():
         "registry.invalid/app@sha256:abc") == "registry.invalid/sha256:abc"
     assert redact_image_reference(
         "user:pass@registry.invalid/img@sha256:abc") == \
-        "registry.invalid/img@sha256:abc"
+        "registry.invalid/sha256:abc"
     for ref in ("python:3.12", "myregistry:5000/img:1.2", "ubuntu",
                 "ghcr.io/owner/image:2.0"):
         assert redact_image_reference(ref) == ref, ref
@@ -702,6 +702,27 @@ def test_redact_image_reference_digest_shape_guard():
     assert redact_image_reference("ubuntu@sha256:abc") == "sha256:abc"
     # A second @ before the digest anchor is not a digest reference.
     assert redact_image_reference("user:pass@img@sha256:abc") == "sha256:abc"
+    # The head-authority strip feeds its remainder through the same
+    # path-segment scan, so credential segments after a slash are
+    # removed in one pass and the output is a fixed point.
+    once = redact_image_reference("user:pass@reg/a:b@c/img:1")
+    assert once == "reg/c/img:1", once
+    assert redact_image_reference(once) == once
+    multi = redact_image_reference("u1:p1@a/u2:p2@b/img")
+    assert multi == "a/b/img", multi
+    assert redact_image_reference(multi) == multi
+
+
+def test_redact_image_reference_path_scan_is_linear():
+    # The right-to-left path scan must stay linear: a hostile FROM line
+    # with thousands of @ segments is bounded work, not quadratic CPU.
+    hostile = "start/" + "a@/" * 20000
+    start = time.perf_counter()
+    out = redact_image_reference(hostile)
+    elapsed = time.perf_counter() - start
+    assert "@" not in out and "a/" not in out
+    assert redact_image_reference(out) == out
+    assert elapsed < 2.0, elapsed
 
 
 def test_redact_urls_multi_at_authority_chain():

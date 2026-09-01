@@ -16,6 +16,7 @@ unchanged. Only URL authority userinfo, query/fragment payloads, and
 credential-shaped VCS references are replaced.
 """
 
+import bisect
 import re
 
 REDACTED = "<redacted>"
@@ -217,7 +218,57 @@ def hosted_git_placeholder(spec):
 # never exempted from credential stripping.
 _DIGEST_SHAPE = (r"sha256:[0-9a-fA-F]{64}|sha1:[0-9a-fA-F]{40}"
                  r"|sha384:[0-9a-fA-F]{96}|sha512:[0-9a-fA-F]{128}")
-_DIGEST_TAIL_RE = re.compile(f"^(?:{_DIGEST_SHAPE})$")
+# No ^/$ anchors: fullmatch() supplies them, including the pos-anchored
+# call from _strip_path_credentials.
+_DIGEST_TAIL_RE = re.compile(f"(?:{_DIGEST_SHAPE})")
+_AT_RE = re.compile("@")
+_SLASH_RE = re.compile("/")
+
+
+def _strip_path_credentials(ref):
+    """Strip every @-bearing path segment from an image reference.
+
+    @ positions are scanned right to left over the original text: a
+    clean digest anchor (exact per-algorithm hex tail, no second @ in
+    its segment) is kept, an @ inside a scheme'd URL authority (no
+    slash between the scheme and the @) is left to redact_urls, and
+    every other @-bearing segment is credential material and is
+    removed. All removals are collected first and applied in one join,
+    so the pass is linear in the input size and its output is a fixed
+    point.
+    """
+    ats = [m.start() for m in _AT_RE.finditer(ref)]
+    if not ats:
+        return ref
+    slashes = [m.start() for m in _SLASH_RE.finditer(ref)]
+    schemes = [(m.start(), m.end()) for m in _URL_SCHEME_RE.finditer(ref)]
+    remove = []
+    si = len(schemes) - 1
+    cut = len(ref)
+    for p in reversed(ats):
+        if p >= cut:
+            continue
+        while si >= 0 and schemes[si][1] > p:
+            si -= 1
+        j = bisect.bisect_left(slashes, p) - 1
+        nearest_slash = slashes[j] if j >= 0 else -1
+        if si >= 0 and nearest_slash < schemes[si][1]:
+            break
+        seg_start = nearest_slash + 1
+        if _DIGEST_TAIL_RE.fullmatch(ref, p + 1) \
+                and ref.find("@", seg_start, p) < 0:
+            continue
+        remove.append((seg_start, p + 1))
+        cut = seg_start
+    if not remove:
+        return ref
+    out = []
+    pos = len(ref)
+    for start, end in remove:
+        out.append(ref[end:pos])
+        pos = start
+    out.append(ref[:pos])
+    return "".join(reversed(out))
 
 
 def redact_image_reference(ref):
@@ -248,35 +299,15 @@ def redact_image_reference(ref):
     head = ref if slash < 0 else ref[:slash]
     at = head.rfind("@")
     if at < 0:
-        # @-bearing path segments are scanned right to left: a clean
-        # digest anchor is kept and the scan continues to its left, a
-        # URL authority (an @ inside a scheme'd URL, with no slash
-        # between the scheme and the @) is left to redact_urls, and
-        # every other @-bearing segment is credential material and is
-        # stripped. Looping makes one pass a fixed point for text with
-        # several credential segments.
-        scan_end = len(ref)
-        while True:
-            last_at = ref.rfind("@", 0, scan_end)
-            if last_at < 0:
-                break
-            scheme = _URL_SCHEME_RE.search(ref, 0, last_at)
-            if scheme and "/" not in ref[scheme.end():last_at]:
-                break
-            segment_start = ref.rfind("/", 0, last_at) + 1
-            if _DIGEST_TAIL_RE.fullmatch(ref[last_at + 1:]) \
-                    and "@" not in ref[segment_start:last_at]:
-                scan_end = segment_start
-                continue
-            ref = ref[:segment_start] + ref[last_at + 1:]
-        return ref
+        return _strip_path_credentials(ref)
     rest = head[at + 1:]
     if not rest:
         return ref
     if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
             and "@" not in head[:at]:
         return ref
-    return rest + ("" if slash < 0 else ref[slash:])
+    return _strip_path_credentials(
+        rest + ("" if slash < 0 else ref[slash:]))
 
 
 def _strip_scheme_image_reference(ref, scheme_end):
@@ -324,7 +355,7 @@ def _strip_scheme_image_reference(ref, scheme_end):
 # npm:user@1.2.3 never match.
 _COMPOSED_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
-    rf"(?!{_DIGEST_SHAPE})"
+    rf"(?!{_DIGEST_SHAPE}(?![0-9a-fA-F.]))"
     r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|\d{1,4}(?:\.\d{1,4}){3}"
     r"|\d{7,10}"
