@@ -111,8 +111,15 @@ def _as_list(value, path, sink):
 
 
 def _redacted_text(value):
-    """redact_urls for strings; any other JSON value passes through."""
-    return redact_urls(value) if isinstance(value, str) else value
+    """Display text for a spec field: strings redact through
+    redact_urls and JSON scalars (numbers, booleans) pass through --
+    they have no credential capacity; any other JSON value (a hostile
+    dict or list carrying credential text) redacts through its string
+    form, which is exactly what the renderers would otherwise emit raw.
+    None stays None (absent/empty rendering)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return redact_urls(value) if isinstance(value, str) else value
+    return redact_urls(str(value))
 
 
 def _comment_text(entry):

@@ -154,6 +154,25 @@ def test_markdown_scan_date_cannot_forge_bullets():
     assert "- Scan date: 2026-01-01 - Forged bullet" in md, md
 
 
+def test_csv_redacts_hostile_non_string_version_spec():
+    # F1 at the output boundary: a hostile non-string version_spec is
+    # redacted through its string form before the CSV/Markdown cells are
+    # built; a valid string spec renders byte-identically.
+    config = {
+        "products": [],
+        "_inventory": {"warnings": [], "unmapped": [{
+            "ecosystem": "java", "name": "pkg",
+            "version_spec": {"a": "https://u:p@host.invalid/x"},
+            "reason": "hostile spec shape", "found_in": []}]},
+    }
+    rows = list(csv.reader(io.StringIO(
+        render_csv(build_inventory_view(config)))))
+    assert rows[1][4] == "{'a': 'https://<redacted>@host.invalid/x'}", \
+        rows[1][4]
+    md = render_markdown(build_inventory_view(config))
+    assert "p@host.invalid" not in md, md
+
+
 # ---------------------------------------------------------------------------
 # Tracker plain-text report: no forged structure, no terminal escapes
 # ---------------------------------------------------------------------------
@@ -255,6 +274,7 @@ TESTS = [
     test_csv_benign_multiline_cell_preserved,
     test_markdown_strips_ansi_and_controls_rows_intact,
     test_markdown_scan_date_cannot_forge_bullets,
+    test_csv_redacts_hostile_non_string_version_spec,
     test_text_label_newline_cannot_forge_sections,
     test_text_strips_ansi_escapes_from_fields,
     test_text_collapses_cr_and_mixed_newlines,

@@ -35,6 +35,7 @@ from eol_inventory import generate_config, scan_folder
 from eol_inventory.redact import (
     hosted_git_placeholder,
     redact_dependency_ref,
+    redact_display_reference,
     redact_image_reference,
     redact_urls,
     ssh_placeholder,
@@ -186,6 +187,30 @@ def test_redaction_is_idempotent():
             text
         assert redact_dependency_ref(
             redact_dependency_ref(text)) == redact_dependency_ref(text), text
+
+
+def test_redact_urls_deep_nested_anchor_chain_bounded():
+    # F2: the nested-anchor descent once recursed per level, so a
+    # hostile anchor chain crashed redaction (and the report CLI) with
+    # RecursionError; the walk is now iterative under a small cap that
+    # fails closed to the URL placeholder.
+    for chain in ("a://" * 1200, "a://" * 20000):
+        out = redact_urls(chain)
+        assert out.startswith("a://"), out
+        assert out.endswith("url:<redacted>"), out
+        assert len(out) < 200, len(out)
+        assert redact_urls(out) == out, out
+    # A credential hidden past the cap collapses together with the tail.
+    deep = "a://" * 1200 + "user:" + SECRET + "@evil.invalid/x"
+    out = redact_urls(deep)
+    assert SECRET not in out and "user:" not in out, out
+    assert "url:<redacted>" in out, out
+    assert redact_urls(out) == out, out
+    # Shallow chains keep their byte-identical pre-cap behavior.
+    assert redact_urls("a://" * 3) == "a://" * 3
+    assert redact_urls(
+        "https://host.invalid/path://nested:nested@evil.invalid/x") == \
+        "https://host.invalid/path://<redacted>@evil.invalid/x"
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +587,36 @@ def test_report_view_redacts_legacy_raw_material():
         "requirements.txt (pkg @ https://<redacted>@host.invalid/x)"
 
 
+def test_report_view_redacts_non_string_version_spec():
+    # F1: `_redacted_text` passed non-string specs through unredacted, so
+    # a hostile dict or list spec rendered its credential raw in every
+    # report; the string form is redacted instead (None stays empty).
+    url = "https://user:" + SECRET + "@registry.example/pkg?token=abc#f"
+    config = {
+        "products": [],
+        "_inventory": {
+            "warnings": [],
+            "unmapped": [
+                {"ecosystem": "python", "name": "pkg-dict",
+                 "version_spec": {"spec": url},
+                 "reason": "hostile spec shape", "found_in": []},
+                {"ecosystem": "python", "name": "pkg-list",
+                 "version_spec": [url],
+                 "reason": "hostile spec shape", "found_in": []},
+            ],
+        },
+    }
+    view = build_inventory_view(config)
+    md = render_markdown(view)
+    csv_out = render_csv(view)
+    html_out = render_html(view)
+    for rendered in (md, csv_out, html_out):
+        assert SECRET not in rendered
+        assert "registry.example" in rendered
+    assert "<redacted>@registry.example" in csv_out
+    assert "&lt;redacted&gt;" in md
+
+
 def test_report_view_and_scan_preserve_npm_alias_versions():
     # R5: "npm:user@1.2.3" is an alias, not a credential -- byte-identical
     # through the scanner, the config, and every report view.
@@ -807,6 +862,47 @@ def test_dockerfile_unresolved_template_warning_redacted():
     assert "user:pass" not in rendered
 
 
+def test_dockerfile_template_credential_backstop_shapes():
+    # F3: scheme-less template defaults with a dotless or IP-literal
+    # credential host survive the narrow global redactors; the composed
+    # display backstop collapses them at both docker.py call sites
+    # (unresolved-variable warning and FROM locator).
+    shapes = (
+        "${A:-evil/xops8:pw8x@e8/y}${B}",
+        "${A:-evil/xuser:pw9@10.0.0.1/y}${B}",
+    )
+    for shape in shapes:
+        once = redact_display_reference(shape)
+        assert "url:<redacted>" in once, shape
+        assert "pw8x" not in once and "pw9" not in once, once
+        assert redact_display_reference(once) == once, shape
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "FROM " + shapes[0] + "\nFROM " + shapes[1] + "\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "template-backstop")
+    serialized = json.dumps(config)
+    assert "pw8x" not in serialized and "pw9" not in serialized
+    unresolved = [w for w in config["_inventory"]["warnings"]
+                  if w["category"] == "unresolved_variable"]
+    assert len(unresolved) == 2
+    assert all("url:<redacted>" in w["message"] for w in unresolved)
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert "pw8x" not in rendered and "pw9" not in rendered
+    # The backstop is scoped to composed display text: redact_urls keeps
+    # its global contract, and benign shapes pass the helper unchanged.
+    assert redact_urls("npm:user@1.2.3") == "npm:user@1.2.3"
+    for ref in ("${A:-registry.invalid/team/app:1.0}${B}", "${IMG}",
+                "python:3.12", ">=1.0,<2", "registry:5000/img:1.0",
+                "name:tag@sha256:" + "a" * 64,
+                "${BASE:- https://<redacted>@registry.invalid/team/x:1}"):
+        assert redact_display_reference(ref) == ref, ref
+
+
 # ---------------------------------------------------------------------------
 # Leak class (f): audit F3 -- GitLab local include targets
 # ---------------------------------------------------------------------------
@@ -1011,6 +1107,7 @@ TESTS = [
     test_redact_image_reference_matrix,
     test_hosted_git_and_ssh_placeholders,
     test_redaction_is_idempotent,
+    test_redact_urls_deep_nested_anchor_chain_bounded,
     test_python_direct_url_requirements_redacted,
     test_python_requirements_file_and_editable_redacted,
     test_python_unresolved_spec_and_malformed_raw_redacted,
@@ -1024,6 +1121,7 @@ TESTS = [
     test_node_safe_spec_preserves_usable_specs,
     test_scan_to_config_and_reports_carry_no_secrets,
     test_report_view_redacts_legacy_raw_material,
+    test_report_view_redacts_non_string_version_spec,
     test_redact_image_reference_scheme_prefix_fail_closed,
     test_redact_image_reference_padded_scheme_fail_closed,
     test_redact_image_reference_digest_shape_guard,
@@ -1032,6 +1130,7 @@ TESTS = [
     test_dockerfile_slashless_credential_repro_redacted,
     test_dockerfile_padded_arg_credentials_redacted,
     test_dockerfile_unresolved_template_warning_redacted,
+    test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,
     test_go_module_directive_credentials_redacted,

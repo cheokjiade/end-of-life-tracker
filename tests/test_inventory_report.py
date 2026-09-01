@@ -39,6 +39,8 @@ from eol_inventory.report_writer import (
     render_markdown,
 )
 
+SECRET = "sup3rsecret"
+
 
 def _new_model_config():
     """Synthetic config carrying the new `_inventory` model."""
@@ -259,6 +261,81 @@ def test_format_found_in():
         "b.json; a.json:2"
     assert format_found_in([]) == ""
     assert format_found_in(None) == ""
+
+
+def _spec_view(spec):
+    """View with one unmapped row carrying the given version_spec."""
+    return build_inventory_view({
+        "products": [],
+        "_inventory": {"warnings": [], "unmapped": [
+            {"ecosystem": "java", "name": "pkg",
+             "version_spec": spec, "reason": "r", "found_in": []}]},
+    })
+
+
+def test_view_non_string_version_spec_benign_and_absent():
+    # F1: non-string specs redact through their string form; benign
+    # values render byte-identically to the old passthrough and
+    # None/absent stays empty.
+    absent = _spec_view(None)
+    assert absent["unmapped"][0]["version_spec"] is None
+    assert list(csv.reader(io.StringIO(
+        render_csv(absent))))[1][4] == ""
+    assert _spec_view("^1.2.3")["unmapped"][0]["version_spec"] == "^1.2.3"
+    assert _spec_view("npm:user@1.2.3")["unmapped"][0][
+        "version_spec"] == "npm:user@1.2.3"
+    for spec, cell in ((3, "3"), (3.11, "3.11"), (True, "True"),
+                       (["^1.2.3"], "['^1.2.3']"),
+                       ({"v": "1.2.3"}, "{'v': '1.2.3'}")):
+        rows = list(csv.reader(io.StringIO(render_csv(_spec_view(spec)))))
+        assert rows[1][4] == cell, (spec, rows[1][4])
+
+
+def test_view_non_string_reason_locator_details_redacted():
+    # F1 verification pin: the other report redaction call sites
+    # (details, reason, locators) already string-coerce, so hostile
+    # non-string values there render redacted too.
+    url = "https://user:" + SECRET + "@registry.example/x"
+    config = {
+        "products": [{
+            "source": "maven_central", "group": "g", "artifact": "a",
+            "version": "1.0", "label": "lib",
+            "note": {"v": url},
+            "_found_in": [{"path": "pom.xml", "manifest": "maven",
+                           "locator": {"raw": url}}],
+        }],
+        "_inventory": {"warnings": [], "unmapped": [{
+            "ecosystem": "java", "name": "pkg",
+            "reason": {"why": url},
+            "found_in": [{"path": "pom.xml", "manifest": "maven",
+                          "locator": {"raw": url}}]}]},
+    }
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "registry.example" in rendered
+
+
+def test_view_deep_nested_version_spec_renders_bounded():
+    # F2 via the report path: a hostile "a://" * 1200 spec once raised
+    # RecursionError inside redact_urls during view construction; it now
+    # renders as a bounded, redacted cell.
+    config = _new_model_config()
+    config["_inventory"]["unmapped"].append({
+        "ecosystem": "java", "name": "hostile:spec",
+        "version_spec": "a://" * 1200,
+        "reason": "chain of nested scheme anchors", "found_in": []})
+    view = build_inventory_view(config)
+    hostile = [row for row in csv.reader(io.StringIO(render_csv(view)))
+               if row[0] == "unmapped" and row[3] == "hostile:spec"]
+    assert len(hostile) == 1
+    cell = hostile[0][4]
+    assert cell.startswith("a://") and cell.endswith("url:<redacted>"), cell
+    assert len(cell) < 200, len(cell)
+    for rendered in (render_markdown(view), render_html(view)):
+        assert "url:<redacted>" in rendered.replace("&lt;", "<").replace(
+            "&gt;", ">")
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +630,9 @@ TESTS = [
     test_view_legacy_config,
     test_skipped_npm_not_duplicated,
     test_format_found_in,
+    test_view_non_string_version_spec_benign_and_absent,
+    test_view_non_string_reason_locator_details_redacted,
+    test_view_deep_nested_version_spec_renders_bounded,
     test_markdown_new_model,
     test_markdown_container_separation,
     test_markdown_pipe_escaping,

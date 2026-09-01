@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 
 from ..models import add_location, new_record, new_warning
-from ..redact import redact_image_reference, redact_urls
+from ..redact import redact_display_reference, redact_image_reference
 
 # Registry hosts stripped during name normalization; the remaining
 # repository path is the stable identity used for lifecycle mapping.
@@ -144,7 +144,7 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
             warnings.append(new_warning(
                 "unresolved_variable", rel_path,
                 f"line {line}: image "
-                f"{redact_urls(redact_image_reference(ref))!r} "
+                f"{redact_display_reference(ref)!r} "
                 f"references variables with no resolvable value"))
             return
     stripped = redact_image_reference(resolved)
@@ -285,10 +285,12 @@ def _parse_dockerfile_text(text, rel_path):
             continue
         emit_image_record(
             rest, rel_path, "dockerfile", start_line,
-            # redact_urls is a fail-closed backstop: redact_image_reference
-            # cannot see credentials hidden inside an unresolved
-            # ${VAR:- https://user:pass@host/...} template.
-            f"FROM {redact_urls(redact_image_reference(rest))}",
+            # redact_display_reference is a fail-closed backstop:
+            # redact_image_reference cannot see credentials hidden inside
+            # an unresolved ${VAR:-...} template, and redact_urls' narrow
+            # credential-host rule leaves dotless and IP-literal hosts
+            # intact in composed display text.
+            f"FROM {redact_display_reference(rest)}",
             records, warnings, values=args)
         if alias:
             aliases.add(alias.lower())

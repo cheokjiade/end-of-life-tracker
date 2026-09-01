@@ -103,9 +103,19 @@ def _url_token_end(text, from_pos):
     return end
 
 
+# Nested scheme anchors inside one URL token (``https://h/p://u:p@e/x``)
+# are walked iteratively, not recursively, under a small depth cap: past
+# the cap the remaining tail collapses to ``url:<redacted>`` instead of
+# recursing, so a hostile anchor chain (``"a://" * 1200``, once a
+# RecursionError in the report CLI) is bounded work and fails closed.
+_MAX_NESTED_URL_DEPTH = 8
+
+
 def _redact_one_url(url):
     """One whitespace-bounded URL token with authority, query, and
-    fragment material redacted (recursing into nested scheme anchors)."""
+    fragment material redacted (nested scheme anchors walked iteratively
+    up to _MAX_NESTED_URL_DEPTH; a deeper tail collapses to the URL
+    placeholder)."""
     match = _URL_SCHEME_RE.search(url)
     if not match:
         return url
@@ -113,20 +123,33 @@ def _redact_one_url(url):
     body = url[scheme_end:]
     body, _, fragment = body.partition("#")
     body, _, query = body.partition("?")
-    slash = body.find("/")
-    authority = body if slash < 0 else body[:slash]
-    tail = "" if slash < 0 else body[slash:]
-    at = authority.rfind("@")
-    if at > 0:
-        authority = f"{REDACTED}@{authority[at + 1:]}"
-    if "://" in tail:
-        tail = redact_urls(tail)
-    out = url[:scheme_end] + authority + tail
+    out = [url[:scheme_end]]
+    rest = body
+    depth = 0
+    while True:
+        slash = rest.find("/")
+        authority = rest if slash < 0 else rest[:slash]
+        tail = "" if slash < 0 else rest[slash:]
+        at = authority.rfind("@")
+        if at > 0:
+            authority = f"{REDACTED}@{authority[at + 1:]}"
+        out.append(authority)
+        nested = _URL_SCHEME_RE.search(tail)
+        if not nested:
+            out.append(tail)
+            break
+        depth += 1
+        if depth > _MAX_NESTED_URL_DEPTH:
+            out.append(URL_PLACEHOLDER)
+            break
+        out.append(tail[:nested.end()])
+        rest = tail[nested.end():]
+    result = "".join(out)
     if query:
-        out += f"?{REDACTED}"
+        result += f"?{REDACTED}"
     if fragment:
-        out += f"#{REDACTED}"
-    return out
+        result += f"#{REDACTED}"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +212,8 @@ def hosted_git_placeholder(spec):
 # algorithm is restricted to the algorithms registries actually serve,
 # so a tag colon ("user:pass@img:1.0") is never mistaken for a digest
 # anchor and its userinfo is stripped instead of passed through.
-_DIGEST_TAIL_RE = re.compile(r"^(?:sha256|sha384|sha512|sha1):[0-9a-fA-F]+$")
+_DIGEST_ALGORITHMS = "sha256|sha384|sha512|sha1"
+_DIGEST_TAIL_RE = re.compile(f"^(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F]+$")
 
 
 def redact_image_reference(ref):
@@ -250,3 +274,46 @@ def _strip_scheme_image_reference(ref, scheme_end):
             or any(ch.isspace() for ch in stripped):
         return URL_PLACEHOLDER
     return stripped
+
+
+# ---------------------------------------------------------------------------
+# Composed display text backstop (docker.py warning/locator sites only)
+# ---------------------------------------------------------------------------
+
+# Fail-closed backstop for COMPOSED display text only. redact_urls is
+# deliberately narrow -- its credential host must be a dotted hostname
+# or localhost, so versions, ranges, and alias specs (npm:user@1.2.3,
+# name:tag@sha256:...) pass through unchanged everywhere -- but inside
+# an unresolved ${VAR:-...} template that narrowness can leave a
+# surviving ``user:pass@`` fragment with a dotless or IP-literal host
+# (``.../xuser:pw9@10.0.0.1/y``). Composed display text therefore
+# collapses any such fragment to ``url:<redacted>``: the host must
+# contain a letter or be an IPv4 literal; digest tails
+# (``@sha256:<hex>``) stay exempt, matching redact_image_reference's
+# digest guard; "<>" is excluded so the pattern never matches the
+# markers' output or its own (idempotent), and colon-then-@-less tails
+# such as npm:user@1.2.3 never match.
+_COMPOSED_CREDENTIAL_RE = re.compile(
+    r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s/<>]*@)+"
+    rf"(?!(?:{_DIGEST_ALGORITHMS}):[0-9a-fA-F])"
+    r"(?P<host>(?=[^\s/<>@]*[A-Za-z])[^\s/<>@]*"
+    r"|\d{1,3}(?:\.\d{1,3}){3})")
+
+
+def redact_display_reference(ref):
+    """Composed docker display text: an unresolved-variable warning
+    message or a FROM locator built from a raw (possibly templated)
+    image reference.
+
+    Applies the standard ``redact_urls(redact_image_reference(ref))``
+    composition, then a fail-closed backstop that collapses any
+    surviving credential-shaped ``user:pass@`` fragment (dotless or
+    IP-literal host) to ``url:<redacted>``.
+
+    Scoped to composed display text ONLY: the global helpers keep their
+    narrow contracts (redact_urls never collapses these fragments), so
+    alias specs, digest references, versions, and ranges pass through
+    byte-identically wherever they legitimately appear.
+    """
+    redacted = redact_urls(redact_image_reference(ref))
+    return _COMPOSED_CREDENTIAL_RE.sub(URL_PLACEHOLDER, redacted)
