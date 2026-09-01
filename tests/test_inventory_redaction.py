@@ -782,6 +782,31 @@ def test_dockerfile_padded_arg_credentials_redacted():
     assert "user:pass" not in rendered
 
 
+def test_dockerfile_unresolved_template_warning_redacted():
+    # Round-3 audit: an unresolved sibling variable keeps the raw template
+    # in the unresolved_variable warning; the credential inside the
+    # template must not reach config JSON, _inventory, or reports.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "ARG B\n"
+            "FROM ${A:-https://user:" + SECRET +
+            "@evil.invalid/x:1}${B}\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "unresolved-template")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert "user:pass" not in serialized
+    assert "<redacted>@evil.invalid" in serialized
+    assert not config["_inventory"]["unmapped"]
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "user:pass" not in rendered
+
+
 # ---------------------------------------------------------------------------
 # Leak class (f): audit F3 -- GitLab local include targets
 # ---------------------------------------------------------------------------
@@ -1006,6 +1031,7 @@ TESTS = [
     test_dockerfile_scheme_image_ref_repro_redacted,
     test_dockerfile_slashless_credential_repro_redacted,
     test_dockerfile_padded_arg_credentials_redacted,
+    test_dockerfile_unresolved_template_warning_redacted,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,
     test_go_module_directive_credentials_redacted,

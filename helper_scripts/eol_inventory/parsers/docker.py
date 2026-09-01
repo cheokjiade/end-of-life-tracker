@@ -143,7 +143,8 @@ def emit_image_record(ref, rel_path, manifest, line, locator,
         if missing or "$" in resolved:
             warnings.append(new_warning(
                 "unresolved_variable", rel_path,
-                f"line {line}: image {redact_image_reference(ref)!r} "
+                f"line {line}: image "
+                f"{redact_urls(redact_image_reference(ref))!r} "
                 f"references variables with no resolvable value"))
             return
     stripped = redact_image_reference(resolved)
