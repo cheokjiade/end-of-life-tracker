@@ -31,6 +31,10 @@ def _read_bounded(stream, max_bytes, label):
     total = 0
     while total <= max_bytes:
         chunk = stream.read(max_bytes + 1 - total)
+        if chunk is None:
+            raise ValueError(
+                f"{label} stream read() returned None; "
+                "non-compliant stream")
         if not chunk:
             break
         chunks.append(chunk)

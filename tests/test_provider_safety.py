@@ -120,6 +120,28 @@ def test_short_read_streams_are_read_to_limit():
         raise AssertionError("limit boundary was not exact")
 
 
+def test_none_reading_stream_fails_loud():
+    # A stream whose read() returns None is non-compliant; the loop must
+    # fail loudly instead of treating None as EOF (which would silently
+    # return a truncated or empty body).
+    class NoneStream:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self, size=-1):
+            self.reads += 1
+            return None
+
+    stream = NoneStream()
+    try:
+        read_response_bytes(stream, max_bytes=8)
+    except ValueError as exc:
+        assert "None" in str(exc)
+        assert stream.reads == 1
+    else:
+        raise AssertionError("None-reading stream was not rejected")
+
+
 def test_dispatch_isolates_provider_failures():
     source = "test_exploding_provider"
     PROVIDERS[source] = lambda entry, today: 1 / 0
@@ -247,6 +269,7 @@ def test_provider_url_failures_do_not_break_html_reports():
 TESTS = [
     test_bounded_response_and_gzip_helpers,
     test_short_read_streams_are_read_to_limit,
+    test_none_reading_stream_fails_loud,
     test_dispatch_isolates_provider_failures,
     test_malformed_provider_documents_return_error_rows,
     test_endoflife_urls_escape_config_values,
