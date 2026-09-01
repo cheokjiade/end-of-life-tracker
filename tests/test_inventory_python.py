@@ -27,6 +27,7 @@ if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 
 import eol_inventory.parsers.python as python_parser
+from eol_inventory.discovery import scan_folder
 
 
 def _parse_req(*parts):
@@ -165,6 +166,9 @@ def test_requirements_included_files_carry_their_own_provenance():
         "line": 1, "locator": "base-dep"}]
     assert not _has_warning(warnings, "include_cycle", "")
     assert not _has_warning(warnings, "include_escape", "")
+
+    scan = scan_folder(FIX / "requirements" / "app")
+    assert "base/base.txt" in scan["files"]
 
 
 def test_requirements_warnings_instead_of_guessed_versions():
@@ -600,6 +604,14 @@ def test_runtime_txt_file():
             garbage, "runtime.txt")
     assert records == []
     assert _has_warning(warnings, "unresolved_version", "ruby-3.2.0")
+
+    with tempfile.TemporaryDirectory() as td:
+        malformed = Path(td) / "runtime.txt"
+        malformed.write_text("python-3.x", encoding="utf-8")
+        records, warnings = python_parser.parse_runtime_txt_records(
+            malformed, "runtime.txt")
+    assert records == []
+    assert _has_warning(warnings, "unresolved_version", "python-3.x")
 
 
 # ---------------------------------------------------------------------------

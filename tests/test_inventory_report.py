@@ -166,13 +166,15 @@ def _section(md, heading):
 # ---------------------------------------------------------------------------
 
 def test_build_view_new_model():
-    view = build_inventory_view(_new_model_config(), project_name="demo")
+    config = _new_model_config()
+    config["_inventory"]["scan_date"] = "2026-08-28"
+    view = build_inventory_view(config, project_name="demo")
     meta = view["meta"]
     assert meta["project"] == "demo"
     assert meta["generator_version"] == "1.0.0"
     assert meta["files_scanned"] == 2
     assert meta["warning_count"] == 1
-    assert meta["scan_date"] == date.today().isoformat()
+    assert meta["scan_date"] == "2026-08-28"
     assert len(view["products"]) == 3 and view["containers"] == []
     netty, commons, security = view["products"]
     assert netty["ecosystem"] == "java"

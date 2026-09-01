@@ -69,7 +69,7 @@ def _parse_python_manifest(path, rel_path, root, scan_state=None):
     if name == "runtime.txt":
         return parse_runtime_txt_records(path, rel_path)
     state = None if scan_state is None else scan_state.setdefault(
-        "requirements", {"visited": set()})
+        "requirements", {"visited": set(), "manifests": set()})
     return parse_requirements_records(
         path, rel_path, root=root, include_state=state)
 
@@ -259,7 +259,8 @@ def scan_folder(folder, exclude=None):
         warnings.extend(file_warnings)
         files.append(rel)
 
-    files.sort()
+    requirements_state = scan_state.get("requirements", {})
+    files = sorted(set(files) | set(requirements_state.get("manifests", ())))
     return {
         "root": str(root.resolve()),
         "root_name": root.resolve().name or root.name,

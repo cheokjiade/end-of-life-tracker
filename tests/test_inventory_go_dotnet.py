@@ -275,6 +275,18 @@ def test_go_require_rejects_extra_tokens():
     assert not _records_named(records, "example.test/pkg")
     assert _has_warning(warnings, "parse_error", "malformed require")
 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "go.mod"
+        path.write_text(
+            "module example.test/app\n"
+            "require example.test/old v1.2.3\n"
+            "replace example.test/old => example.test/new v2.0.0 unexpected\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(path, "go.mod")
+    assert _one(records, "example.test/old")["version"] == "1.2.3"
+    assert not _records_named(records, "example.test/new")
+    assert _has_warning(warnings, "parse_error", "malformed replace")
+
 
 def test_go_invalid_version_tokens_remain_untracked():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -351,6 +363,8 @@ def test_dotnet_tfm_version():
     assert f("netcoreapp3.1") == "3.1"
     assert f("netstandard2.1") == "2.1"
     assert f("net") is None
+    assert f("net8.0evil") is None
+    assert f("something8.0") is None
 
 
 def test_dotnet_requested_lower_bound():
@@ -436,6 +450,26 @@ def test_dotnet_target_frameworks_as_runtime_records():
 
     vb_records, _ = _parse_csproj("dotnet", "project", "Lib.vbproj")
     assert _one(vb_records, "Humanizer")["version"] == "2.14.1"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project = Path(tmpdir) / "Lower.csproj"
+        project.write_text(
+            '<project><propertygroup><targetframework>net8.0</targetframework>'
+            '</propertygroup><itemgroup><packagereference include="Lower.Pkg" '
+            'version="1.2.3" /></itemgroup></project>', encoding="utf-8")
+        lower_records, lower_warnings = dotnet_parser.parse_csproj_records(
+            project, "Lower.csproj", root=tmpdir)
+        project.write_text(
+            '<Project><PropertyGroup><TargetFramework>net8.0evil</TargetFramework>'
+            '</PropertyGroup></Project>', encoding="utf-8")
+        invalid_records, invalid_warnings = dotnet_parser.parse_csproj_records(
+            project, "Lower.csproj", root=tmpdir)
+    assert _one(lower_records, "dotnet")["version"] == "8.0"
+    assert _one(lower_records, "Lower.Pkg")["version"] == "1.2.3"
+    assert lower_warnings == []
+    assert not [r for r in invalid_records if r["name"] == "dotnet"]
+    assert _has_warning(
+        invalid_warnings, "unresolved_version", "net8.0evil")
 
 
 def test_dotnet_props_only_parse_first_wins_on_casing():

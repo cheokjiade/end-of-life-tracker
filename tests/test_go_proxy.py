@@ -303,7 +303,7 @@ esc = use_proxy(listed="v0.43.0\nv0.44.0\n", latest=LATEST_NET,
                 infos={"v0.99.0": None, V: INFO_V044},
                 mods={V: "module golang.org/x/net\n"})
 r = gp._provider_go_proxy({"source": "go_proxy", "module": MOD, "version": "v0.99.0"}, TODAY)
-assert r["status"] == "ok", r
+assert r["status"] == "unknown", r
 assert r["in_use_release_date"] is None
 assert r["message"] == ("Version v0.99.0 not found on Go module proxy (private build?); "
                         "latest stable is v0.44.0 (2025-08-19)"), r["message"]

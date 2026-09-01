@@ -239,7 +239,7 @@ def build_inventory_view(config, project_name=None):
 
     return {
         "meta": {
-            "scan_date": date.today().isoformat(),
+            "scan_date": inventory.get("scan_date") or date.today().isoformat(),
             "generator_version": inventory.get("generator_version")
             or "unknown",
             "files_scanned": files_scanned,

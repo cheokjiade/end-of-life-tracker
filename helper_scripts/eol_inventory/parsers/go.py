@@ -84,7 +84,7 @@ def _is_local_path(token):
 def _parse_replace_side(side):
     """'<old> [vX]' / '<new> [vY]' -> (path_or_dir, raw-version)."""
     tokens = side.split()
-    if not tokens:
+    if not tokens or len(tokens) > 2:
         return None, None
     target = tokens[0]
     version = tokens[1] if len(tokens) > 1 else None

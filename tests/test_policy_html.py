@@ -49,4 +49,11 @@ r_err = check_product({"source": "nope", "policy_note": "should not show"}, TODA
 out_err, _ = format_report_html([r_err], TH, TODAY)
 assert "&#9432;" not in out_err, "policy_note leaked into an error row"
 
+unknown = dict(r2, status="unknown", message="Lifecycle cannot be established")
+unknown_html, unknown_alert = format_report_html([unknown], TH, TODAY)
+assert unknown_alert is True
+assert "UNKNOWN" in unknown_html
+assert "require lifecycle review" in unknown_html
+assert "All products are within support" not in unknown_html
+
 print("OK test_policy_html")

@@ -450,6 +450,7 @@ def generate_config(scan, project_name, include_transitive=False):
     config["_inventory"] = {
         "schema_version": SCHEMA_VERSION,
         "generator_version": GENERATOR_VERSION,
+        "scan_date": date.today().isoformat(),
         "scan_root": scan["root_name"],
         "manifests": list(scan["files"]),
         "include_transitive": bool(include_transitive),

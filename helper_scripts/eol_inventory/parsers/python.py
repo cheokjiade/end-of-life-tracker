@@ -195,10 +195,12 @@ def parse_requirements_records(path, rel_path, root=None, include_state=None):
     """Parse a requirements file (following includes); (records, warnings)."""
     root_abs = Path(root).resolve() if root is not None else _root_of(path, rel_path)
     if include_state is None:
-        include_state = {"visited": set()}
+        include_state = {"visited": set(), "manifests": set()}
     visited = include_state.setdefault("visited", set())
+    manifests = include_state.setdefault("manifests", set())
     return _parse_requirements_file(
-        path, rel_path, root_abs, active=set(), visited=visited, depth=0)
+        path, rel_path, root_abs, active=set(), visited=visited,
+        manifests=manifests, depth=0)
 
 
 def _root_of(path, rel_path):
@@ -211,7 +213,8 @@ def _sibling_rel(rel_path, filename):
     return f"{directory}/{filename}" if directory else filename
 
 
-def _parse_requirements_file(path, rel_path, root_abs, active, visited, depth):
+def _parse_requirements_file(
+        path, rel_path, root_abs, active, visited, manifests, depth):
     if depth > MAX_PARSE_DEPTH:
         return [], [new_warning(
             "include_depth", rel_path,
@@ -248,6 +251,7 @@ def _parse_requirements_file(path, rel_path, root_abs, active, visited, depth):
         return [], [new_warning(
             "unreadable_file", rel_path,
             f"could not read requirements file: {exc}")]
+    manifests.add(rel_path)
 
     records = []
     warnings = []
@@ -258,7 +262,7 @@ def _parse_requirements_file(path, rel_path, root_abs, active, visited, depth):
         if line.startswith("-"):
             _handle_option_line(
                 line, abs_path, rel_path, root_abs, next_active, visited,
-                depth, records, warnings)
+                manifests, depth, records, warnings)
             continue
         # pip-tools appends integrity hashes to otherwise exact requirements.
         # Hashes describe artifacts; they are not part of the version spec.
@@ -305,8 +309,9 @@ def _strip_comment(line):
     return line
 
 
-def _handle_option_line(line, abs_path, rel_path, root_abs, active, visited,
-                        depth, records, warnings):
+def _handle_option_line(
+        line, abs_path, rel_path, root_abs, active, visited, manifests,
+        depth, records, warnings):
     tokens = line.split()
     option = tokens[0]
     attached = None
@@ -335,7 +340,7 @@ def _handle_option_line(line, abs_path, rel_path, root_abs, active, visited,
                 f"not followed"))
             return
         sub_records, sub_warnings = _parse_requirements_file(
-            inc_abs, inc_rel, root_abs, active, visited, depth + 1)
+            inc_abs, inc_rel, root_abs, active, visited, manifests, depth + 1)
         records.extend(sub_records)
         warnings.extend(sub_warnings)
     elif option in ("-e", "--editable"):
@@ -1048,7 +1053,7 @@ def parse_runtime_txt_records(path, rel_path):
             f"could not read runtime.txt: {exc}")]
 
     content = text.strip()
-    m = re.match(r"^[Pp]ython-([0-9][\w.]*)$", content)
+    m = re.fullmatch(r"[Pp]ython-([0-9]+(?:\.[0-9]+)*)", content)
     if not m:
         return [], [new_warning(
             "unresolved_version", rel_path,

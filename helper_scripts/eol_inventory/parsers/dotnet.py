@@ -216,16 +216,14 @@ def _collect_central_versions(root):
 
 def _tfm_version(tfm):
     """'net8.0-windows' -> '8.0'; 'net48' -> '4.8'; None when empty."""
-    base = tfm.split("-", 1)[0]
-    for prefix in ("netcoreapp", "netstandard", "net"):
-        if base.startswith(prefix):
-            rest = base[len(prefix):]
-            break
-    else:
-        rest = base
+    base = tfm.split("-", 1)[0].lower()
+    match = re.fullmatch(r"(netcoreapp|netstandard|net)([0-9]+(?:\.[0-9]+){0,2})", base)
+    if not match:
+        return None
+    prefix, rest = match.groups()
     if not rest:
         return None
-    if "." not in rest and rest.isdigit():
+    if prefix == "net" and "." not in rest:
         if len(rest) == 2:
             return rest[0] + "." + rest[1]
         if len(rest) >= 3:
@@ -371,8 +369,9 @@ def parse_csproj_records(path, rel_path, root=None):
 
     for elem in document.iter():
         tag = _local(elem.tag)
+        tag_ci = tag.lower()
 
-        if tag in ("TargetFramework", "TargetFrameworks"):
+        if tag_ci in ("targetframework", "targetframeworks"):
             text = (elem.text or "").strip()
             if _has_msbuild_expression(text):
                 warnings.append(new_warning(
@@ -384,6 +383,9 @@ def parse_csproj_records(path, rel_path, root=None):
                     continue
                 version = _tfm_version(tfm)
                 if not version:
+                    warnings.append(new_warning(
+                        "unresolved_version", rel_path,
+                        f"unrecognized target framework {tfm!r}"))
                     continue
                 record = new_record("dotnet", "dotnet", version=version,
                                     kind="runtime")
@@ -391,7 +393,7 @@ def parse_csproj_records(path, rel_path, root=None):
                 records.append(record)
             continue
 
-        if tag != "PackageReference":
+        if tag_ci != "packagereference":
             continue
 
         attrs = _attrs_ci(elem)

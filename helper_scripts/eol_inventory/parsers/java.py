@@ -198,6 +198,47 @@ def parse_gradle_records(path, rel_path):
         return [], [new_warning(
             "unreadable_file", rel_path, f"could not read Gradle file: {exc}")]
 
+    masked = list(text)
+    quote = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        pair = text[i:i + 2]
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+            else:
+                masked[i] = " "
+        elif block_comment:
+            if pair == "*/":
+                masked[i:i + 2] = "  "
+                block_comment = False
+                i += 1
+            elif char not in "\r\n":
+                masked[i] = " "
+        elif quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif pair == "//":
+            masked[i:i + 2] = "  "
+            line_comment = True
+            i += 1
+        elif pair == "/*":
+            masked[i:i + 2] = "  "
+            block_comment = True
+            i += 1
+        i += 1
+    scan_text = "".join(masked)
+
     records = []
     warnings = []
 
@@ -225,11 +266,11 @@ def parse_gradle_records(path, rel_path):
                      line=line, locator=f"dependency:{group}:{artifact}")
         records.append(record)
 
-    for m in _GRADLE_PATTERN_QUOTED.finditer(text):
-        line = text.count("\n", 0, m.start()) + 1
+    for m in _GRADLE_PATTERN_QUOTED.finditer(scan_text):
+        line = scan_text.count("\n", 0, m.start()) + 1
         emit(m.group("group"), m.group("artifact"), m.group("version"),
              line, interpolates=m.group("quote") == '"')
-    for m in _GRADLE_PATTERN_NAMED.finditer(text):
-        line = text.count("\n", 0, m.start()) + 1
+    for m in _GRADLE_PATTERN_NAMED.finditer(scan_text):
+        line = scan_text.count("\n", 0, m.start()) + 1
         emit(m.group(1), m.group(2), m.group(3), line)
     return records, warnings

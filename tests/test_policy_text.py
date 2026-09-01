@@ -25,4 +25,20 @@ r3["support_message"] = "Active support until 2026-08-01 (8 days remaining)"
 text3, _ = format_report_text([r3], TH, TODAY)
 assert "Active support until 2026-08-01" in text3, text3
 
+# Unknown/error tracker health is explicit and alerts instead of appearing OK.
+unknown = dict(r2, status="unknown", message="Lifecycle cannot be established")
+unknown_text, unknown_alert = format_report_text([unknown], TH, TODAY)
+assert unknown_alert is True
+assert "UNKNOWN (lifecycle status unavailable)" in unknown_text
+assert "No Immediate Concerns" not in unknown_text
+
+error_text, error_alert = format_report_text([
+    dict(r2, status="error", message="source unavailable")], TH, TODAY)
+assert error_alert is True and "?? Errors" in error_text
+
+undated = dict(r2, status="approaching", days_remaining=None,
+               message="maintenance phase")
+undated_text, undated_alert = format_report_text([undated], TH, TODAY)
+assert undated_alert is True and "APPROACHING END OF LIFE" in undated_text
+
 print("OK test_policy_text")

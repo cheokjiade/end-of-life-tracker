@@ -31,6 +31,7 @@ Examples:
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -65,9 +66,35 @@ def _provenance_keys(entry):
     for location in entry.get("_found_in") or []:
         if not isinstance(location, dict) or not location.get("path"):
             continue
-        keys.add(tuple(location.get(key) for key in (
-            "path", "manifest", "line", "locator")))
+        manifest = location.get("manifest")
+        locator = location.get("locator")
+        if manifest == "dockerfile" and isinstance(locator, str) \
+                and locator.upper().startswith("FROM "):
+            alias = re.search(r"\s+AS\s+(\S+)\s*$", locator, re.IGNORECASE)
+            locator = "FROM" + (f" AS {alias.group(1)}" if alias else "")
+        keys.add((location.get("path"), manifest, locator))
     return keys
+
+
+def _generated_unmapped_defaults(existing, entry):
+    """Generator-owned note/comment values for one old unmapped row."""
+    old_keys = _provenance_keys(entry)
+    if not old_keys:
+        return {}
+    inventory = existing.get("_inventory")
+    if not isinstance(inventory, dict):
+        return {}
+    for item in inventory.get("unmapped") or []:
+        if not isinstance(item, dict):
+            continue
+        item_keys = _provenance_keys({"_found_in": item.get("found_in")})
+        if old_keys.isdisjoint(item_keys):
+            continue
+        return {
+            "note": item.get("reason"),
+            "_comment": f"Untracked {item.get('ecosystem')} inventory item",
+        }
+    return {}
 
 
 def _merge_existing_config(existing, generated):
@@ -125,8 +152,13 @@ def _merge_existing_config(existing, generated):
             merged_entry.update(new)
         curated_keys = [
             "policy_note", "reference_url", "eol_date", "latest"]
-        if old.get("_inventory_generated") != "unmapped":
-            curated_keys.extend(("note", "_comment"))
+        generated_defaults = _generated_unmapped_defaults(existing, old) \
+            if old.get("_inventory_generated") == "unmapped" else {}
+        for key in ("note", "_comment"):
+            if key in old and (
+                    key not in generated_defaults
+                    or old[key] != generated_defaults[key]):
+                curated_keys.append(key)
         for key in curated_keys:
             if key in old:
                 merged_entry[key] = old[key]

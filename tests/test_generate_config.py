@@ -336,6 +336,19 @@ def test_parse_gradle_records():
     assert missing_warn[0]["category"] == "unreadable_file"
 
     with tempfile.TemporaryDirectory() as td:
+        commented = Path(td) / "comments.gradle"
+        commented.write_text(
+            '// implementation("org.example:line-comment:9.9.9")\n'
+            '/* api group: "org.example", name: "block-comment", '
+            'version: "9.9.9" */\n'
+            'implementation("org.example:live:1.2.3")\n',
+            encoding="utf-8")
+        comment_records, comment_warnings = gc.parse_gradle_records(
+            commented, "comments.gradle")
+        assert comment_warnings == []
+        assert [(r["artifact"], r["version"]) for r in comment_records] == [
+            ("live", "1.2.3")]
+
         dynamic = Path(td) / "build.gradle.kts"
         dynamic.write_text(
             'dependencies {\n'
@@ -1267,7 +1280,14 @@ def test_update_replaces_stale_scanner_mapping_by_provenance():
             "_comment": "From package.json (node@18)",
             "_found_in": [location],
         }],
-        "_inventory": {"generator_version": "old"},
+        "_inventory": {
+            "generator_version": "old",
+            "unmapped": [{
+                "ecosystem": "node", "name": "node",
+                "reason": "no exact version (>=18 <21)",
+                "found_in": [location],
+            }],
+        },
     }
     generated = {
         "products": [{
@@ -1296,6 +1316,49 @@ def test_update_replaces_stale_scanner_mapping_by_provenance():
         "retained_not_observed": 0}
 
 
+def test_update_uses_stable_provenance_and_preserves_unmapped_edits():
+    old_location = {
+        "path": "Dockerfile", "manifest": "dockerfile", "line": 1,
+        "locator": "FROM nginx:latest"}
+    new_location = {
+        "path": "Dockerfile", "manifest": "dockerfile", "line": 4,
+        "locator": "FROM nginx:1.26"}
+    existing = {
+        "products": [{
+            "source": "manual", "label": "nginx", "version": "latest",
+            "note": "Curated deployment exception",
+            "_comment": "Reviewed by platform team",
+            "_found_in": [old_location],
+            "_inventory_generated": "unmapped",
+        }],
+        "_inventory": {"unmapped": [{
+            "ecosystem": "container", "name": "nginx",
+            "reason": "image has no exact release tag",
+            "found_in": [old_location],
+        }]},
+    }
+    generated = {
+        "products": [{
+            "product": "nginx", "version": "1.26", "label": "nginx 1.26",
+            "_comment": "From Dockerfile (nginx:1.26)",
+            "_found_in": [new_location],
+        }],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 1
+    nginx = products[0]
+    assert nginx["product"] == "nginx" and nginx["version"] == "1.26"
+    assert nginx["note"] == "Curated deployment exception"
+    assert nginx["_comment"] == "Reviewed by platform team"
+    assert nginx["_found_in"] == [new_location]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
 def test_update_replaces_generated_manual_row_when_now_tracked():
     location = {
         "path": "package.json", "manifest": "npm",
@@ -1309,7 +1372,14 @@ def test_update_replaces_generated_manual_row_when_now_tracked():
             "_found_in": [location],
             "_inventory_generated": "unmapped",
         }],
-        "_inventory": {"generator_version": "old"},
+        "_inventory": {
+            "generator_version": "old",
+            "unmapped": [{
+                "ecosystem": "node", "name": "node",
+                "reason": "no exact version (>=18 <21)",
+                "found_in": [location],
+            }],
+        },
     }
     generated = {
         "products": [{
@@ -1443,6 +1513,7 @@ TESTS = [
     test_update_merge_preserves_multiple_versions_and_default_source,
     test_update_replaces_stale_scanner_mapping_by_provenance,
     test_update_replaces_generated_manual_row_when_now_tracked,
+    test_update_uses_stable_provenance_and_preserves_unmapped_edits,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,

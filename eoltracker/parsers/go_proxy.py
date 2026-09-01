@@ -429,6 +429,7 @@ def _compose_go_result(entry, data, today):
     result["on_latest_cycle"] = on_latest
 
     if pinned_doc is None:
+        result["status"] = "unknown"
         message = f"Version {version} not found on Go module proxy (private build?)"
         if latest_bits:
             message += f"; {latest_bits}"
