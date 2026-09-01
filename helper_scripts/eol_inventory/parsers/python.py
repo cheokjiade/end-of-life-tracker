@@ -749,7 +749,8 @@ def _extract_pep621(project, records, warnings, rel_path):
     if requires_python is not None:
         if isinstance(requires_python, str) and requires_python.strip():
             record = new_record("python", "python", version=None,
-                                version_spec=requires_python.strip(),
+                                version_spec=redact_urls(
+                                    requires_python.strip()),
                                 kind="runtime")
             add_location(record, rel_path, "pyproject",
                          locator="requires-python")
@@ -854,7 +855,8 @@ def _extract_poetry(poetry, records, warnings, rel_path):
             if name == "python" and prefix == "tool.poetry.dependencies":
                 if isinstance(value, str) and value.strip():
                     record = new_record("python", "python", version=None,
-                                        version_spec=value.strip(),
+                                        version_spec=redact_urls(
+                                            value.strip()),
                                         kind="runtime")
                     add_location(record, rel_path, "pyproject",
                                  locator=locator)

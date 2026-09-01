@@ -122,16 +122,17 @@ def parse_go_mod_records(path, rel_path):
                 f"go.mod line {line}: malformed require: "
                 f"{redact_urls(code)!r}"))
             return
+        module = redact_urls(tokens[0])
         raw_version = redact_urls(tokens[1])
         version = _module_version(raw_version)
         if version is None:
             warnings.append(new_warning(
                 "unresolved_version", rel_path,
-                f"go.mod line {line}: require {tokens[0]} has non-canonical "
+                f"go.mod line {line}: require {module} has non-canonical "
                 f"module version {raw_version!r}; not guessed"))
         emit_dependency(
-            tokens[0], version, raw_version if version is None else None,
-            not indirect, line, f"require:{tokens[0]}")
+            module, version, raw_version if version is None else None,
+            not indirect, line, f"require:{module}")
 
     def parse_replace(code, line):
         if "=>" not in code:
@@ -143,6 +144,8 @@ def parse_go_mod_records(path, rel_path):
         old, old_version_raw = _parse_replace_side(code.split("=>", 1)[0])
         target, target_version_raw = _parse_replace_side(
             code.split("=>", 1)[1])
+        old = redact_urls(old)
+        target = redact_urls(target)
         old_version_raw = redact_urls(old_version_raw)
         target_version_raw = redact_urls(target_version_raw)
         if not old or not target:

@@ -28,6 +28,7 @@ if str(_HELPER_DIR) not in sys.path:
 
 import eol_inventory.parsers.docker as docker_parser
 import eol_inventory.parsers.gitlab_ci as gitlab_parser
+import eol_inventory.parsers.go as go_parser
 import eol_inventory.parsers.node as node_parser
 import eol_inventory.parsers.python as python_parser
 from eol_inventory import generate_config, scan_folder
@@ -545,6 +546,300 @@ def test_report_view_redacts_legacy_raw_material():
 
 
 # ---------------------------------------------------------------------------
+# Leak class (e): audit F1/F2 -- scheme-prefixed and slash-less image refs
+# ---------------------------------------------------------------------------
+
+def test_redact_image_reference_scheme_prefix_fail_closed():
+    stripped = redact_image_reference(
+        "https://user:" + SECRET + "@registry.invalid/team/app:1.0")
+    assert stripped == "registry.invalid/team/app:1.0"
+    assert redact_image_reference(stripped) == stripped
+    assert redact_image_reference(
+        "HTTPS://user:" + SECRET + "@registry.invalid/team/app:1.0") == \
+        "registry.invalid/team/app:1.0"
+    # Credential-shaped material that survives the strip fails closed.
+    assert redact_image_reference(
+        "https://host.invalid/path://nested:nested@evil.invalid/x") == \
+        "url:<redacted>"
+    assert redact_image_reference(
+        "https://user:pass@host.invalid/img:1.0?token=abc#f") == \
+        "url:<redacted>"
+    assert redact_image_reference("url:<redacted>") == "url:<redacted>"
+    for ref in ("python:3.12", "ghcr.io/owner/image:2.0",
+                "registry.invalid/team/app:1.0"):
+        assert redact_image_reference(ref) == ref, ref
+
+
+def test_redact_image_reference_digest_shape_guard():
+    stripped = redact_image_reference("user:" + SECRET + "@img:1.0")
+    assert stripped == "img:1.0"
+    assert redact_image_reference(stripped) == stripped
+    assert redact_image_reference("user:pass@localhost:5000") == \
+        "localhost:5000"
+    # A real digest anchor still passes through byte-identical.
+    for ref in ("img@sha256:" + "a" * 64,
+                "golang:1.23@sha256:0123456789abcdef",
+                "ubuntu@sha256:abc",
+                "name:tag@sha256:" + "b" * 64):
+        assert redact_image_reference(ref) == ref, ref
+    # A second @ before the digest anchor is not a digest reference.
+    assert redact_image_reference("user:pass@img@sha256:abc") == "sha256:abc"
+
+
+def test_redact_urls_multi_at_authority_chain():
+    assert redact_urls(
+        "../outside user:pass@" + SECRET + "@evil.invalid/x.yml") == \
+        "../outside <redacted>@evil.invalid/x.yml"
+    assert redact_urls(
+        "user:pass@extra@" + SECRET + "@host.invalid") == \
+        "<redacted>@host.invalid"
+    once = redact_urls("user:pass@" + SECRET + "@evil.invalid/x")
+    assert once == "<redacted>@evil.invalid/x"
+    assert redact_urls(once) == once
+    for text in ("npm:@scope/real@^1.2.3", "img@sha256:" + "a" * 64,
+                 "name:tag@sha256:0123456789abcdef",
+                 "github.com/org/repo", "golang.org/x/net",
+                 "example.com/mod"):
+        assert redact_urls(text) == text, text
+
+
+def test_dockerfile_scheme_image_ref_repro_redacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "FROM https://user:" + SECRET +
+            "@registry.invalid/team/app:1.0\n"
+            "FROM registry.invalid/team/app:2.0\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "scheme-image")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert "https:" not in serialized
+    redactions = [w for w in config["_inventory"]["warnings"]
+                  if w["category"] == "credential_redacted"]
+    assert len(redactions) == 1
+    assert "registry.invalid/team/app:1.0" in redactions[0]["message"]
+    items = {item["image_reference"]: item
+             for item in config["_inventory"]["unmapped"]
+             if item.get("image_reference")}
+    # Redacted repro and clean fixture produce identical record shapes.
+    assert items["registry.invalid/team/app:1.0"]["tag"] == "1.0"
+    assert items["registry.invalid/team/app:2.0"]["tag"] == "2.0"
+    for item in items.values():
+        assert item["name"] == "registry.invalid/team/app"
+        assert item["registry"] == "registry.invalid"
+        assert item["repository"] == "team/app"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "https:" not in rendered
+
+
+def test_dockerfile_slashless_credential_repro_redacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "Dockerfile").write_text(
+            "FROM user:" + SECRET + "@img:1.0\n"
+            "FROM img:2.0\n",
+            encoding="utf-8")
+        scan = scan_folder(root)
+        config = generate_config(scan, "slashless-image")
+    serialized = json.dumps(config)
+    assert SECRET not in serialized
+    assert _has_warning(config["_inventory"]["warnings"],
+                        "credential_redacted", "redacted to 'img:1.0'")
+    by_tag = {item["tag"]: item
+              for item in config["_inventory"]["unmapped"]
+              if item.get("tag") in ("1.0", "2.0")}
+    # Redacted repro and clean fixture produce identical record shapes.
+    assert by_tag["1.0"]["name"] == "img"
+    assert by_tag["1.0"]["image_reference"] == "img:1.0"
+    assert by_tag["2.0"]["image_reference"] == "img:2.0"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Leak class (f): audit F3 -- GitLab local include targets
+# ---------------------------------------------------------------------------
+
+def test_gitlab_local_include_targets_redacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "included.yml").write_text("image: alpine:3.20\n",
+                                           encoding="utf-8")
+        ci = root / ".gitlab-ci.yml"
+        ci.write_text(
+            "include:\n"
+            "  - local: \"../outside user:pass@" + SECRET +
+            "@evil.invalid/x.yml\"\n"
+            "  - local: \"missing user:pass@" + SECRET +
+            "@evil.invalid/x.yml\"\n"
+            "  - local: \"included.yml\"\n",
+            encoding="utf-8")
+        records, warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml", root=root)
+        _, skipped_warnings = gitlab_parser.parse_gitlab_ci_records(
+            ci, ".gitlab-ci.yml")
+        scan = scan_folder(root)
+        config = generate_config(scan, "local-includes")
+    serialized = json.dumps({"records": records, "warnings": warnings,
+                             "skipped": skipped_warnings,
+                             "config": config})
+    assert SECRET not in serialized
+    assert "user:pass" not in serialized
+    assert _has_warning(warnings, "ci_include_escape",
+                        "../outside <redacted>@evil.invalid/x.yml")
+    assert _has_warning(warnings, "ci_include_missing",
+                        "missing <redacted>@evil.invalid/x.yml")
+    assert _has_warning(skipped_warnings, "ci_include_skipped",
+                        "<redacted>@evil.invalid/x.yml")
+    # A legitimate in-root local include is still followed and parsed.
+    assert any(r["name"] == "alpine" and r["version"] == "3.20"
+               for r in records)
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Leak class (g): audit F4 -- go.mod module paths
+# ---------------------------------------------------------------------------
+
+def test_go_module_paths_redacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "go.mod").write_text(
+            "module example.com/app\n"
+            "\n"
+            "require example.com/old v1.0.0\n"
+            "\n"
+            "require user:pass@" + SECRET + "@evil.invalid/weird "
+            "notaversion\n"
+            "\n"
+            "replace example.com/old => user:pass@" + SECRET +
+            "@evil.invalid/mod v1.2.3\n"
+            "\n"
+            "replace example.com/local => ../user:pass@" + SECRET +
+            "@evil.invalid/path\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(
+            root / "go.mod", "go.mod")
+        scan = scan_folder(root)
+        config = generate_config(scan, "go-paths")
+    serialized = json.dumps({"records": records, "warnings": warnings,
+                             "config": config})
+    assert SECRET not in serialized
+    assert "user:pass" not in serialized
+    assert _has_warning(warnings, "go_replace",
+                        "replace example.com/old => "
+                        "<redacted>@evil.invalid/mod v1.2.3")
+    assert _has_warning(warnings, "go_local_replace",
+                        "replace example.com/local => "
+                        "../<redacted>@evil.invalid/path is a local path")
+    assert _has_warning(warnings, "unresolved_version",
+                        "require <redacted>@evil.invalid/weird has "
+                        "non-canonical module version 'notaversion'")
+    by_name = {r["name"]: r for r in records if r["kind"] == "dependency"}
+    assert by_name["<redacted>@evil.invalid/mod"]["version"] == "1.2.3"
+    assert by_name["<redacted>@evil.invalid/weird"]["version_spec"] == \
+        "notaversion"
+    assert "example.com/old" not in by_name
+    entries = {p["module"]: p for p in config["products"]
+               if p.get("module")}
+    assert entries["<redacted>@evil.invalid/mod"]["version"] == "v1.2.3"
+    assert entries["<redacted>@evil.invalid/mod"]["label"] == \
+        "<redacted>@evil.invalid/mod v1.2.3"
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+    # Legitimate module paths pass through byte-identical.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "go.mod").write_text(
+            "module example.com/app\n"
+            "\n"
+            "require example.com/old v1.0.0\n"
+            "\n"
+            "replace example.com/old => github.com/fork/repo v1.2.3\n",
+            encoding="utf-8")
+        records, warnings = go_parser.parse_go_mod_records(
+            root / "go.mod", "go.mod")
+    by_name = {r["name"]: r for r in records if r["kind"] == "dependency"}
+    assert by_name["github.com/fork/repo"]["version"] == "1.2.3"
+    assert _has_warning(warnings, "go_replace",
+                        "replace example.com/old => "
+                        "github.com/fork/repo v1.2.3")
+
+
+# ---------------------------------------------------------------------------
+# Leak class (h): audit F5 -- python runtime version specs
+# ---------------------------------------------------------------------------
+
+def test_python_runtime_constraints_redacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "pyproject.toml").write_text(
+            "[project]\n"
+            "name = \"sample\"\n"
+            "requires-python = \">=3.8, <https://user:pass@" + SECRET +
+            "@evil.invalid/x\"\n"
+            "\n"
+            "[tool.poetry.dependencies]\n"
+            "python = \"^3.8,<https://user:pass@" + SECRET +
+            "@evil.invalid/y\"\n",
+            encoding="utf-8")
+        records, warnings = python_parser.parse_pyproject_records(
+            root / "pyproject.toml", "pyproject.toml")
+        scan = scan_folder(root)
+        config = generate_config(scan, "runtime-specs")
+    serialized = json.dumps({"records": records, "warnings": warnings,
+                             "config": config})
+    assert SECRET not in serialized
+    assert "user:pass" not in serialized
+    specs = sorted(r["version_spec"] for r in records
+                   if r["name"] == "python" and r["kind"] == "runtime")
+    assert specs == [">=3.8, <https://<redacted>@evil.invalid/x",
+                     "^3.8,<https://<redacted>@evil.invalid/y"]
+    unmapped = [item for item in config["_inventory"]["unmapped"]
+                if item["name"] == "python"]
+    assert len(unmapped) == 2
+    for item in unmapped:
+        assert SECRET not in item["reason"]
+        assert "<redacted>@evil.invalid" in item["version_spec"]
+    assert warnings == [] or all(
+        SECRET not in w["message"] for w in warnings)
+    view = build_inventory_view(config)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+
+    # Legitimate constraints pass through byte-identical.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "pyproject.toml").write_text(
+            "[project]\n"
+            "name = \"sample\"\n"
+            "requires-python = \">=3.8,<3.13\"\n"
+            "\n"
+            "[tool.poetry.dependencies]\n"
+            "python = \"^3.8\"\n",
+            encoding="utf-8")
+        records, _ = python_parser.parse_pyproject_records(
+            root / "pyproject.toml", "pyproject.toml")
+    specs = sorted(r["version_spec"] for r in records
+                   if r["name"] == "python" and r["kind"] == "runtime")
+    assert specs == [">=3.8,<3.13", "^3.8"]
+
+
+# ---------------------------------------------------------------------------
 
 TESTS = [
     test_redact_urls_userinfo_query_fragment_matrix,
@@ -565,6 +860,14 @@ TESTS = [
     test_node_safe_spec_preserves_usable_specs,
     test_scan_to_config_and_reports_carry_no_secrets,
     test_report_view_redacts_legacy_raw_material,
+    test_redact_image_reference_scheme_prefix_fail_closed,
+    test_redact_image_reference_digest_shape_guard,
+    test_redact_urls_multi_at_authority_chain,
+    test_dockerfile_scheme_image_ref_repro_redacted,
+    test_dockerfile_slashless_credential_repro_redacted,
+    test_gitlab_local_include_targets_redacted,
+    test_go_module_paths_redacted,
+    test_python_runtime_constraints_redacted,
 ]
 
 

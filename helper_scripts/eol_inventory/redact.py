@@ -32,9 +32,11 @@ _URL_TRAILING = ")]};,\"'"
 # colon and a dotted host tail so ranges, aliases, package names, and
 # ``name:tag@sha256:`` digest references never match; "<>" is excluded
 # from the password so the regex never matches its own output
-# (idempotency).
+# (idempotency). The ``(segment@)+`` form also matches multi-@ userinfo
+# chains (``user:pass@extra@host``) that appear in mangled include
+# targets and module paths.
 _CREDENTIAL_AUTHORITY_RE = re.compile(
-    r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:[^@\s:/<>]+@"
+    r"(?<![A-Za-z0-9.\-])[A-Za-z0-9._~%-]+:(?:[^@\s:/<>]+@)+"
     r"(?P<host>(?:[A-Za-z0-9\-]+\.)+[A-Za-z0-9\-]+|localhost)")
 
 _HOSTED_GIT_HOSTS = ("github", "gitlab", "bitbucket", "gist", "sourcehut")
@@ -178,6 +180,13 @@ def hosted_git_placeholder(spec):
 # Container image reference redaction
 # ---------------------------------------------------------------------------
 
+# Digest tail of a slash-less reference ("@<algorithm>:<hex>"). The
+# algorithm is restricted to the algorithms registries actually serve,
+# so a tag colon ("user:pass@img:1.0") is never mistaken for a digest
+# anchor and its userinfo is stripped instead of passed through.
+_DIGEST_TAIL_RE = re.compile(r"^(?:sha256|sha384|sha512|sha1):[0-9a-fA-F]+$")
+
+
 def redact_image_reference(ref):
     """Image reference with any registry-authority userinfo removed.
 
@@ -185,9 +194,17 @@ def redact_image_reference(ref):
     ``registry.example.com/img:1.0`` (stripped, not placeholder-marked,
     so downstream reference parsing stays valid). Digest references
     (``img@sha256:...``) and clean references pass through unchanged.
+    Scheme-prefixed text (``https://user:pass@host/img:1.0``) is not a
+    valid image reference and fails closed: scheme and authority
+    userinfo are stripped down to a parseable registry/repository form,
+    or the whole ref collapses to ``url:<redacted>`` when anything
+    credential-shaped survives.
     """
     if not isinstance(ref, str) or "@" not in ref:
         return ref
+    scheme = _URL_SCHEME_RE.match(ref)
+    if scheme:
+        return _strip_scheme_image_reference(ref, scheme.end())
     slash = ref.find("/")
     head = ref if slash < 0 else ref[:slash]
     at = head.rfind("@")
@@ -196,6 +213,31 @@ def redact_image_reference(ref):
     rest = head[at + 1:]
     if not rest:
         return ref
-    if slash < 0 and ":" in rest:
+    if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
+            and "@" not in head[:at]:
         return ref
     return rest + ("" if slash < 0 else ref[slash:])
+
+
+def _strip_scheme_image_reference(ref, scheme_end):
+    """Fail-closed redaction of a scheme-prefixed image reference.
+
+    Strips the scheme and any authority userinfo down to a parseable
+    registry/repository form; collapses to ``url:<redacted>`` when the
+    remainder is not one (empty authority, surviving @ anchors, query,
+    fragment, or whitespace payloads).
+    """
+    body = ref[scheme_end:]
+    slash = body.find("/")
+    authority = body if slash < 0 else body[:slash]
+    tail = "" if slash < 0 else body[slash:]
+    at = authority.rfind("@")
+    if at >= 0:
+        authority = authority[at + 1:]
+    if not authority:
+        return URL_PLACEHOLDER
+    stripped = authority + tail
+    if "@" in stripped or "?" in stripped or "#" in stripped \
+            or any(ch.isspace() for ch in stripped):
+        return URL_PLACEHOLDER
+    return stripped

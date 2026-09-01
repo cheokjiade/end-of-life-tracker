@@ -232,8 +232,8 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             return
         if root is None:
             warn("ci_include_skipped",
-                 f"line {line}: local include {target!r} not followed "
-                 f"(scan root unavailable)")
+                 f"line {line}: local include {redact_urls(target)!r} not "
+                 f"followed (scan root unavailable)")
             return
         base = Path(root)
         rel = target.lstrip("/")
@@ -242,23 +242,24 @@ def _parse_ci_text(text, rel_path, root, depth=0, active=frozenset(),
             resolved.relative_to(base.resolve())
         except (OSError, ValueError):
             warn("ci_include_escape",
-                 f"line {line}: local include {target!r} escapes the "
-                 f"scan root; not followed")
+                 f"line {line}: local include {redact_urls(target)!r} "
+                 f"escapes the scan root; not followed")
             return
         if any(ch in target for ch in "*?["):
             matches = sorted(
                 p for p in _glob.glob(str(resolved)) if Path(p).is_file())
             if not matches:
                 warn("ci_include_missing",
-                     f"line {line}: local include pattern {target!r} "
-                     f"matches no files")
+                     f"line {line}: local include pattern "
+                     f"{redact_urls(target)!r} matches no files")
                 return
             for match in matches:
                 follow_resolved(match, line)
             return
         if not resolved.is_file():
             warn("ci_include_missing",
-                 f"line {line}: local include {target!r} does not exist")
+                 f"line {line}: local include {redact_urls(target)!r} does "
+                 f"not exist")
             return
         follow_resolved(resolved, line)
 
