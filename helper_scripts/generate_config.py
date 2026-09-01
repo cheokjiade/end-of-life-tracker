@@ -37,6 +37,7 @@ import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
+from eol_inventory.config_io import ConfigLoadError, load_bounded_config
 from eol_inventory.parsers.docker import split_image_reference
 from eol_inventory.redact import redact_image_reference, redact_urls
 
@@ -298,17 +299,14 @@ def main(argv=None):
                              include_transitive=args.include_transitive)
     if args.update and os.path.exists(output):
         try:
-            with open(output, encoding="utf-8") as existing_file:
-                existing = json.load(existing_file)
-            if not isinstance(existing, dict):
-                raise ValueError("top-level JSON value is not an object")
+            existing = load_bounded_config(output)
             existing_products = existing.get("products")
             if not isinstance(existing_products, list):
                 raise ValueError("products value is not an array")
             if any(not isinstance(item, dict) for item in existing_products):
                 raise ValueError("products entries must be objects")
             config = _merge_existing_config(existing, config)
-        except (OSError, TypeError, ValueError) as exc:
+        except (ConfigLoadError, OSError, TypeError, ValueError) as exc:
             print(f"Could not update existing config: {exc}", file=sys.stderr)
             return 2
     inventory = config["_inventory"]

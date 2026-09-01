@@ -7,8 +7,11 @@ records, warnings, and summary counts. `render_markdown` and
 `render_csv` turn that view into deterministic reports. Legacy configs
 without `_inventory` render with "not recorded" placeholders instead of
 failing, and legacy `_skipped_npm_packages` are surfaced as unmapped
-rows. Standard-library only; no network; output is ASCII for ASCII
-inputs.
+rows. Malformed structures (non-object `_inventory`, non-array
+containers, junk provenance, unhashable names) never raise: they render
+as empty or absent parts plus a structured `malformed_config` warning,
+while valid configs keep rendering byte-identically. Standard-library
+only; no network; output is ASCII for ASCII inputs.
 """
 
 import csv
@@ -17,7 +20,7 @@ import io
 import re
 from datetime import date
 
-from .models import sort_locations
+from .models import new_warning, sort_locations
 from .redact import redact_urls
 
 
@@ -77,6 +80,41 @@ def _infer_ecosystem(entry, provenance):
 # View construction
 # ---------------------------------------------------------------------------
 
+def _scalar_text(value, default=""):
+    """Display text for a scalar field: strings pass through, junk is
+    stringified so sorting and rendering never compare exotic types."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _hashable(value):
+    """`value` when hashable, else its string form (set keys never raise)."""
+    try:
+        hash(value)
+    except TypeError:
+        return str(value)
+    return value
+
+
+def _as_list(value, path, sink):
+    """The value as a JSON array: absent stays empty, junk warns once."""
+    if isinstance(value, list):
+        return value
+    if value is not None:
+        sink.append(new_warning(
+            "malformed_config", path,
+            "expected a JSON array; value ignored"))
+    return []
+
+
+def _redacted_text(value):
+    """redact_urls for strings; any other JSON value passes through."""
+    return redact_urls(value) if isinstance(value, str) else value
+
+
 def _comment_text(entry):
     """The entry's `_comment` as one lowercase string (string or list)."""
     comment = entry.get("_comment")
@@ -108,23 +146,44 @@ def _product_label(entry):
 
 
 def _norm_location(loc):
-    """One provenance location with the keys the sort/format helpers need."""
-    norm = {"path": loc.get("path", ""), "manifest": loc.get("manifest", "")}
-    if loc.get("line") is not None:
-        norm["line"] = loc["line"]
+    """One provenance location with the keys the sort/format helpers need.
+
+    Non-string paths/manifests are stringified and non-integer lines are
+    dropped, so deterministic sorting never compares exotic types.
+    """
+    norm: dict[str, object] = {
+        "path": _scalar_text(loc.get("path")),
+        "manifest": _scalar_text(loc.get("manifest"))}
+    line = loc.get("line")
+    if isinstance(line, int) and not isinstance(line, bool):
+        norm["line"] = line
     if loc.get("locator"):
         norm["locator"] = redact_urls(str(loc["locator"]))
     return norm
 
 
-def _norm_locations(locations):
-    return sort_locations([_norm_location(loc) for loc in locations or []])
+def _norm_locations(locations, sink, path):
+    """Sorted normalized provenance; junk shapes become empty with a
+    structured `malformed_config` warning (never raises)."""
+    norm = []
+    for loc in _as_list(locations, path, sink):
+        if not isinstance(loc, dict):
+            sink.append(new_warning(
+                "malformed_config", path,
+                "expected a JSON object for each provenance location; "
+                "entry ignored"))
+            continue
+        norm.append(_norm_location(loc))
+    return sort_locations(norm)
 
 
-def _product_row(entry):
+def _product_row(entry, sink):
     """One normalized tracked/container row from a product entry."""
-    provenance = _norm_locations(entry.get("_found_in"))
+    provenance = _norm_locations(entry.get("_found_in"), sink, "_found_in")
     ecosystem = _infer_ecosystem(entry, provenance)
+    provider = entry.get("source") or "endoflife_date"
+    if not isinstance(provider, str):
+        provider = str(provider)
     details = []
     for key in ("policy_note", "note", "image_reference", "registry",
                 "repository", "tag", "digest", "reference_url"):
@@ -133,7 +192,7 @@ def _product_row(entry):
     return {
         "label": _product_label(entry),
         "version": entry.get("version"),
-        "provider": entry.get("source") or "endoflife_date",
+        "provider": provider,
         "inferred": "auto-derived" in _comment_text(entry),
         "ecosystem": ecosystem,
         "container": ecosystem == "container",
@@ -142,34 +201,38 @@ def _product_row(entry):
     }
 
 
-def _unmapped_row(item):
+def _unmapped_row(item, sink):
     """One normalized unmapped row from an `_inventory.unmapped` item."""
     details = []
     for key in ("image_reference", "registry", "repository", "tag", "digest"):
         if item.get(key) not in (None, ""):
             details.append(f"{key}={item[key]}")
+    ecosystem = item.get("ecosystem") or "other"
+    if not isinstance(ecosystem, str):
+        ecosystem = str(ecosystem)
     return {
-        "ecosystem": item.get("ecosystem", "other"),
+        "ecosystem": ecosystem,
         "name": str(item.get("name", "")),
         "version": item.get("version"),
-        "version_spec": redact_urls(item.get("version_spec")),
+        "version_spec": _redacted_text(item.get("version_spec")),
         "reason": redact_urls(str(item.get("reason", ""))),
-        "found_in": _norm_locations(item.get("found_in")),
+        "found_in": _norm_locations(item.get("found_in"), sink, "found_in"),
         "details": redact_urls("; ".join(details)),
     }
 
 
-def _legacy_unmapped_rows(config, known_names):
+def _legacy_unmapped_rows(config, known_names, sink):
     """Rows for legacy `_skipped_npm_packages` with no structured
     counterpart (matched by package name)."""
     rows = []
-    for skipped in config.get("_skipped_npm_packages") or []:
+    for skipped in _as_list(config.get("_skipped_npm_packages"),
+                            "_skipped_npm_packages", sink):
         if not isinstance(skipped, dict):
             continue
         name = skipped.get("name")
-        if not name or name in known_names:
+        if not name or _hashable(name) in known_names:
             continue
-        known_names.add(name)
+        known_names.add(_hashable(name))
         rows.append({
             "ecosystem": "node",
             "name": str(name),
@@ -185,18 +248,33 @@ def _legacy_unmapped_rows(config, known_names):
 
 
 def build_inventory_view(config, project_name=None):
-    """Normalize a config (new `_inventory` model or legacy) into a view."""
+    """Normalize a config (new `_inventory` model or legacy) into a view.
+
+    Malformed structures never raise: junk containers and provenance are
+    treated as empty or absent and surface as structured
+    `malformed_config` warnings, so a hand-mangled config still renders a
+    sane report.
+    """
+    malformed = []
     inventory = config.get("_inventory")
-    if not isinstance(inventory, dict):
+    if inventory is None:
+        inventory = {}
+    elif not isinstance(inventory, dict):
+        malformed.append(new_warning(
+            "malformed_config", "_inventory",
+            "expected a JSON object; value ignored"))
         inventory = {}
     summary = inventory.get("summary")
     if not isinstance(summary, dict):
         summary = {}
-    manifests = inventory.get("manifests") or []
+    manifests = _as_list(inventory.get("manifests"),
+                         "_inventory.manifests", malformed)
     warnings = [
         {"category": w.get("category", ""), "path": w.get("path", ""),
          "message": redact_urls(str(w.get("message", "")))}
-        for w in (inventory.get("warnings") or []) if isinstance(w, dict)
+        for w in _as_list(inventory.get("warnings"),
+                          "_inventory.warnings", malformed)
+        if isinstance(w, dict)
     ]
 
     files_scanned = summary.get("files")
@@ -205,22 +283,26 @@ def build_inventory_view(config, project_name=None):
 
     products = []
     containers = []
-    for entry in config.get("products") or []:
+    for entry in _as_list(config.get("products"), "products", malformed):
         if not isinstance(entry, dict) or entry.get("_section"):
             continue
         if entry.get("_inventory_generated") == "unmapped" and inventory:
             continue
-        row = _product_row(entry)
+        row = _product_row(entry, malformed)
         (containers if row["container"] else products).append(row)
 
-    structured = [item for item in (inventory.get("unmapped") or [])
-                  if isinstance(item, dict)]
-    known_names = {item.get("name") for item in structured}
-    unmapped = [_unmapped_row(item) for item in structured]
-    unmapped.extend(_legacy_unmapped_rows(config, known_names))
+    structured = [
+        item for item in _as_list(inventory.get("unmapped"),
+                                  "_inventory.unmapped", malformed)
+        if isinstance(item, dict)
+    ]
+    known_names = {_hashable(item.get("name")) for item in structured}
+    unmapped = [_unmapped_row(item, malformed) for item in structured]
+    unmapped.extend(_legacy_unmapped_rows(config, known_names, malformed))
     unmapped.sort(key=lambda r: (r["ecosystem"], r["name"],
                                  str(r["version"] or ""),
                                  str(r["version_spec"] or "")))
+    warnings.extend(malformed)
 
     by_ecosystem = {}
     by_provider = {}
@@ -279,6 +361,8 @@ def format_found_in(locations):
     """
     parts = []
     for loc in locations or []:
+        if not isinstance(loc, dict):
+            continue
         path = str(loc.get("path", ""))
         line = loc.get("line")
         locator = loc.get("locator")

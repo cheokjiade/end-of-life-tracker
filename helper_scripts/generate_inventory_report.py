@@ -18,12 +18,12 @@ Examples:
 """
 
 import argparse
-import json
 import os
 import sys
 import tempfile
 
 from eol_inventory import report_writer
+from eol_inventory.config_io import ConfigLoadError, load_bounded_config
 
 _CSV_UNSET = object()
 _HTML_UNSET = object()
@@ -105,15 +105,10 @@ def main(argv=None):
 
     print(f"Reading {config_path!r}...")
     try:
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-    except (OSError, ValueError) as exc:
-        print(f"Could not read config file: {config_path}", file=sys.stderr)
-        print(f"  {exc}", file=sys.stderr)
-        return 2
-    if not isinstance(config, dict):
-        print(f"Could not read config file: {config_path}", file=sys.stderr)
-        print("  top-level JSON value is not an object", file=sys.stderr)
+        config = load_bounded_config(config_path)
+    except ConfigLoadError as exc:
+        print(f"Could not read config file: {config_path}: {exc}",
+              file=sys.stderr)
         return 2
 
     view = report_writer.build_inventory_view(config, project_name=slug)
