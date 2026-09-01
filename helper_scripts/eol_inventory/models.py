@@ -28,7 +28,9 @@ Rules enforced here:
 
 import codecs
 import fnmatch
+import os
 import re
+import stat
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -189,22 +191,78 @@ def _xml_declaration_status(raw):
 # Exclusion matching (gitignore-lite, documented conservatively)
 # ---------------------------------------------------------------------------
 
+def _is_link_or_reparse(candidate):
+    """True for symlinks and Windows junctions/reparse points."""
+    if candidate.is_symlink():
+        return True
+    try:
+        st = candidate.lstat()
+    except OSError:
+        return False
+    if getattr(st, "st_reparse_tag", 0):
+        return True
+    attributes = getattr(st, "st_file_attributes", 0)
+    if attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        return True
+    return _resolves_away_from_parent(candidate)
+
+
+def _resolves_away_from_parent(candidate):
+    """True when realpath(candidate) is not realpath(parent) + basename.
+
+    Catches links that is_symlink()/lstat() cannot report (junctions on
+    some Python versions). Anchored on the resolved parent so a link in
+    the scan root path itself does not cause false rejections.
+    """
+    try:
+        pre_resolve = os.path.abspath(candidate)
+        expected = os.path.join(
+            os.path.realpath(os.path.dirname(pre_resolve)),
+            os.path.basename(pre_resolve))
+        return os.path.normcase(
+            os.path.realpath(pre_resolve)) != os.path.normcase(expected)
+    except (OSError, ValueError):
+        return False
+
+
 def load_ignore_patterns(root, warnings):
     """Read .eolignore from the scan root, if present.
 
     Returns a list of patterns. One pattern per line; blank lines and
-    #-comments are skipped. An unreadable .eolignore yields a warning,
-    never a crash.
+    #-comments are skipped. The entry must be a plain file inside the
+    scan root: a symlink/junction/reparse point named .eolignore is
+    rejected, the read is bounded by MAX_FILE_BYTES, and every
+    rejection or read failure yields a warning, never a crash.
     """
     ignore_path = root / ".eolignore"
+    if _is_link_or_reparse(ignore_path):
+        warnings.append(new_warning(
+            "escaped_symlink", ".eolignore",
+            ".eolignore is a symlink/junction/reparse point; not followed"))
+        return []
     if not ignore_path.is_file():
         return []
     try:
-        text = ignore_path.read_text(encoding="utf-8", errors="replace")
+        resolved = ignore_path.resolve()
+        resolved.relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        warnings.append(new_warning(
+            "escaped_symlink", ".eolignore",
+            ".eolignore resolves outside the scan root; skipped"))
+        return []
+    try:
+        with open(resolved, "rb") as stream:
+            payload = stream.read(MAX_FILE_BYTES + 1)
     except OSError as exc:
         warnings.append(new_warning(
             "unreadable_ignore", ".eolignore", f"could not read .eolignore: {exc}"))
         return []
+    if len(payload) > MAX_FILE_BYTES:
+        warnings.append(new_warning(
+            "oversize_input", ".eolignore",
+            f"file exceeds {MAX_FILE_BYTES} byte limit; skipped"))
+        return []
+    text = payload.decode("utf-8", errors="replace")
     patterns = []
     for raw in text.splitlines():
         line = raw.strip()
