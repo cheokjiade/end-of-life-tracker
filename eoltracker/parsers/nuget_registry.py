@@ -51,7 +51,13 @@ _NUGET_BODY_BYTES = MAX_HTTP_BODY_BYTES
 _NUGET_MAX_PAGES = 256
 _NUGET_MAX_LEAVES = 100_000
 _NUGET_MAX_REQUESTS = 256
+# Wire bytes (compressed, as sent) and decoded bytes (post gzip
+# expansion) are budgeted separately: as many as 256 individually legal
+# gzip responses could otherwise aggregate gigabytes of decompression
+# and JSON-parsing work in one lookup. The decoded cap keeps 4x headroom
+# over the per-response expansion limit.
 _NUGET_MAX_TOTAL_BYTES = MAX_HTTP_BODY_BYTES
+_NUGET_MAX_TOTAL_DECODED_BYTES = 4 * MAX_HTTP_BODY_BYTES
 
 # Per-invocation fetch budget, consulted by _http_get_json. Thread-local so a
 # budget belongs to exactly one provider call even if checks ever run
@@ -63,13 +69,16 @@ class _NugetBudget:
     """Cumulative per-lookup fetch budgets; raises ValueError on exhaustion
     so the lookup stops fetching and surfaces a loud error result."""
 
-    __slots__ = ("max_requests", "max_bytes", "requests", "bytes")
+    __slots__ = ("max_requests", "max_bytes", "max_decoded", "requests",
+                 "bytes", "decoded")
 
     def __init__(self):
         self.max_requests = _NUGET_MAX_REQUESTS
         self.max_bytes = _NUGET_MAX_TOTAL_BYTES
+        self.max_decoded = _NUGET_MAX_TOTAL_DECODED_BYTES
         self.requests = 0
         self.bytes = 0
+        self.decoded = 0
 
     def begin_request(self):
         self.requests += 1
@@ -84,6 +93,14 @@ class _NugetBudget:
             raise ValueError(
                 f"NuGet budget exceeded: downloaded more than "
                 f"{self.max_bytes} bytes in one lookup "
+                f"across {self.requests} requests")
+
+    def add_decoded(self, count):
+        self.decoded += count
+        if self.decoded > self.max_decoded:
+            raise ValueError(
+                f"NuGet budget exceeded: decoded more than "
+                f"{self.max_decoded} bytes in one lookup "
                 f"across {self.requests} requests")
 
 # Registration resource types, best first (3.6.0+ supports SemVer 2.0.0).
@@ -109,8 +126,11 @@ def _http_get_json(url):
     """GET *url* and parse the JSON body, or raise. Handles gzip responses.
 
     Counts against the per-invocation fetch budget (see _NugetBudget) when
-    one is installed, so one lookup cannot issue unbounded requests or
-    download unbounded bytes across many individually bounded responses.
+    one is installed: compressed wire bytes are charged on read, and
+    decoded bytes (post gzip expansion, or the plain body itself) are
+    charged after decompression and before UTF-8 decoding and JSON
+    parsing — so one lookup cannot aggregate unbounded decompression work
+    across many individually bounded responses.
     """
     budget = getattr(_FETCH_BUDGET, "budget", None)
     if budget is not None:
@@ -127,6 +147,8 @@ def _http_get_json(url):
         budget.add_bytes(len(raw))
     if encoding == "gzip":
         raw = decompress_gzip_bytes(raw, max_bytes=_NUGET_BODY_BYTES)
+    if budget is not None:
+        budget.add_decoded(len(raw))
     return json.loads(raw.decode("utf-8", "replace"))
 
 

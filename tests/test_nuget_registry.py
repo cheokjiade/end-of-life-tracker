@@ -537,7 +537,8 @@ def t_gzip_end_to_end():
 
 
 # ---------------------------------------------------------------------------
-# Per-lookup cumulative budgets (requests / bytes / retained entries)
+# Per-lookup cumulative budgets (requests / wire bytes / decoded bytes /
+# retained entries)
 # ---------------------------------------------------------------------------
 
 def paged_docs(pkg, n_pages):
@@ -601,6 +602,69 @@ def t_budget_bytes_exhausted():
     assert "budget exceeded" in r["message"], r["message"]
     assert "bytes" in r["message"], r["message"]
     assert ("pkg", "newtonsoft.json") not in nuget._NUGET_CACHE
+
+
+@test
+def t_budget_decoded_exhausted():
+    # Cumulative DECODED bytes are bounded: many individually legal gzip
+    # responses cannot aggregate unbounded decompression and parsing
+    # work in one lookup. The cap here allows the first response and
+    # rejects the second; no later fetch may occur, the thread-local
+    # budget must be cleared, and no partial package cache entry may be
+    # installed.
+    docs = newtonsoft_docs()
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        seen.append(url)
+        return FakeResponse(
+            gzip.compress(json.dumps(docs[url]).encode("utf-8")),
+            {"Content-Encoding": "gzip"})
+
+    urllib.request.urlopen = fake_urlopen
+    original = nuget._NUGET_MAX_TOTAL_DECODED_BYTES
+    first_decoded = len(json.dumps(docs[SERVICE_INDEX_URL]).encode("utf-8"))
+    try:
+        nuget._NUGET_MAX_TOTAL_DECODED_BYTES = first_decoded + 1
+        r = nuget._provider_nuget_registry(
+            {"source": "nuget_registry", "package": "Newtonsoft.Json",
+             "version": "13.0.3"}, TODAY)
+    finally:
+        nuget._NUGET_MAX_TOTAL_DECODED_BYTES = original
+    assert r["status"] == "error", r
+    assert "budget exceeded" in r["message"], r["message"]
+    assert "decoded" in r["message"], r["message"]
+    assert len(seen) == 2, seen  # fetching stopped at the cap
+    assert ("pkg", "newtonsoft.json") not in nuget._NUGET_CACHE
+    assert getattr(nuget._FETCH_BUDGET, "budget", None) is None
+
+
+@test
+def t_budget_decoded_counts_plain_responses():
+    # Non-gzip bodies count toward the decoded budget too (identity
+    # encoding: wire bytes and decoded bytes are the same).
+    docs = newtonsoft_docs()
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        seen.append(url)
+        return FakeResponse(json.dumps(docs[url]).encode("utf-8"), {})
+
+    urllib.request.urlopen = fake_urlopen
+    original = nuget._NUGET_MAX_TOTAL_DECODED_BYTES
+    first_decoded = len(json.dumps(docs[SERVICE_INDEX_URL]).encode("utf-8"))
+    try:
+        nuget._NUGET_MAX_TOTAL_DECODED_BYTES = first_decoded + 1
+        r = nuget._provider_nuget_registry(
+            {"source": "nuget_registry", "package": "Newtonsoft.Json",
+             "version": "13.0.3"}, TODAY)
+    finally:
+        nuget._NUGET_MAX_TOTAL_DECODED_BYTES = original
+    assert r["status"] == "error", r
+    assert "decoded" in r["message"], r["message"]
+    assert len(seen) == 2, seen
 
 
 @test
