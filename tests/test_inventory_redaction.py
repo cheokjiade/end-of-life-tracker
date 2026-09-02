@@ -226,6 +226,8 @@ def test_python_scp_direct_reference_redacted():
         reqs = root / "requirements.txt"
         lines = ["widget @ git@github.com:private/repo.git#token-" + SECRET,
                  "-e git@github.com:private/edit.git#egg=edit",
+                 "git@192.0.2.1:private/secret-repo.git",
+                 "github.com:credential/private.git#token-" + SECRET,
                  "vspec == https://user:" + SECRET
                  + "@host.invalid/x\u000by?q=" + SECRET]
         for ws in ("\u2028", "\u2029", "\x0b", "\x0c", "\x1c", "\x1d",
@@ -243,11 +245,16 @@ def test_python_scp_direct_reference_redacted():
     assert SECRET not in serialized
     assert "private/repo" not in serialized and "private/edit" not in \
         serialized
+    assert "secret-repo" not in serialized
+    assert "credential/private" not in serialized
     assert "<ssh:github.com>" in serialized
+    assert "<ssh:192.0.2.1>" in serialized
     view = build_inventory_view(config)
     rendered = "\n".join((
         render_markdown(view), render_csv(view), render_html(view)))
     assert SECRET not in rendered
+    assert "secret-repo" not in rendered and "credential/private" not in \
+        rendered
 
 
 def test_ssh_scheme_case_and_ipv4_scp_collapse():
@@ -278,7 +285,8 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
     assert redact_dependency_ref(
         "img@sha256:" + "a" * 64) == "img@sha256:" + "a" * 64
     # Display sanitizer: the same material embedded in prose collapses
-    # while surrounding text survives.
+    # while surrounding text survives; digest anchors with trailing
+    # punctuation are pinned references, not SCP shapes.
     prose = "see SSH://git@host.invalid/private/repo.git#fragment " \
             "and git@192.0.2.1:private/secret-repo.git for details"
     out = redact_display_text(prose)
@@ -286,6 +294,14 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
     assert "<ssh:host.invalid>" in out and "<ssh:192.0.2.1>" in out, out
     assert "see " in out and " for details" in out, out
     assert redact_display_text(out) == out
+    assert redact_display_text(
+        "see img@sha256:" + "a" * 64 + " for reproducibility") == \
+        "see img@sha256:" + "a" * 64 + " for reproducibility"
+    assert redact_display_text(
+        "pinned img@sha512:" + "b" * 128 + ".") == \
+        "pinned img@sha512:" + "b" * 128 + "."
+    assert redact_display_text("use git@:private/repo.git now") == \
+        "use <ssh> now"
     # Long hostile input stays bounded and linear.
     hostile = ("x " + "SSH://git@host.invalid/p" + SECRET + " ") * 2000
     out = redact_display_text(hostile)

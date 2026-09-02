@@ -60,7 +60,8 @@ _DISPLAY_SSH_RE = re.compile(
     r"|[A-Za-z0-9._~%-]+@"
     r"(?P<scp_host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*"
-    r"|[0-9.]+)"
+    r"|[0-9.]+"
+    r"|)"
     r":\S*)",
     re.IGNORECASE)
 _SCP_NO_COLLAPSE_HOSTS = ("npm", "workspace")
@@ -222,6 +223,13 @@ def redact_dependency_ref(ref):
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
+    if "@" not in residue and "://" not in residue \
+            and ":" in residue and "/" in residue and "#" in residue:
+        # A scheme-less token mixing a colon, a path, and a fragment
+        # without any @ is a bare host:path#fragment reference
+        # (github.com:credential/private.git#token) or mangled junk:
+        # no supported manifest grammar produces it, so fail closed.
+        return URL_PLACEHOLDER
     if "@" in redacted and ":" in redacted:
         last_at = redacted.rfind("@")
         # The digest exemption covers only a single-@ token. Any other
@@ -303,7 +311,11 @@ def redact_display_text(text):
             placeholder = _ssh_token_placeholder(token)
         else:
             host = match.group("scp_host") or ""
-            if _DIGEST_ANCHOR_RE.fullmatch(redacted, match.start()):
+            anchor = _DIGEST_ANCHOR_RE.match(redacted, match.start())
+            if anchor and not redacted[anchor.end():match.end()].strip(
+                    "_.,;:!?)]}\"'-"):
+                # The token is a digest anchor plus optional trailing
+                # punctuation: a pinned reference, not an SCP shape.
                 continue
             if host in _SCP_NO_COLLAPSE_HOSTS:
                 continue

@@ -161,13 +161,13 @@ def _norm_location(loc):
     dropped, so deterministic sorting never compares exotic types.
     """
     norm: dict[str, object] = {
-        "path": redact_urls(_scalar_text(loc.get("path"))),
-        "manifest": redact_urls(_scalar_text(loc.get("manifest")))}
+        "path": redact_display_text(_scalar_text(loc.get("path"))),
+        "manifest": redact_display_text(_scalar_text(loc.get("manifest")))}
     line = loc.get("line")
     if isinstance(line, int) and not isinstance(line, bool):
         norm["line"] = line
     if loc.get("locator"):
-        norm["locator"] = redact_urls(str(loc["locator"]))
+        norm["locator"] = redact_display_text(str(loc["locator"]))
     return norm
 
 
@@ -221,13 +221,13 @@ def _unmapped_row(item, sink):
     if not isinstance(ecosystem, str):
         ecosystem = str(ecosystem)
     return {
-        "ecosystem": redact_urls(ecosystem),
-        "name": redact_urls(str(item.get("name", ""))),
+        "ecosystem": redact_display_text(ecosystem),
+        "name": redact_display_text(str(item.get("name", ""))),
         "version": _redacted_text(item.get("version")),
         "version_spec": _redacted_text(item.get("version_spec")),
-        "reason": redact_urls(str(item.get("reason", ""))),
+        "reason": redact_display_text(str(item.get("reason", ""))),
         "found_in": _norm_locations(item.get("found_in"), sink, "found_in"),
-        "details": redact_urls("; ".join(details)),
+        "details": redact_display_text("; ".join(details)),
     }
 
 
@@ -250,7 +250,7 @@ def _legacy_unmapped_rows(config, known_names, sink):
             "version_spec": None,
             "reason": "legacy: skipped npm package (no mapping at "
                       "generation time)",
-            "found_in": [{"path": redact_urls(
+            "found_in": [{"path": redact_display_text(
                               str(skipped.get("source", ""))),
                           "manifest": "npm"}],
             "details": "",

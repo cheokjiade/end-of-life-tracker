@@ -39,7 +39,7 @@ from ..models import (
     new_warning,
     scan_root_for,
 )
-from ..redact import redact_dependency_ref, redact_urls
+from ..redact import redact_dependency_ref, redact_display_text, redact_urls
 
 # ---------------------------------------------------------------------------
 # Requirement-line parsing (shared by requirements files and pyproject)
@@ -80,9 +80,16 @@ def _parse_requirement(spec_line):
 
     m = _DIRECT_REF_RE.match(line)
     if m:
-        ref = redact_dependency_ref(m.group(4).strip())
+        name = m.group(1)
+        ref = m.group(4).strip()
+        if "//" not in ref and "@" not in ref:
+            # A bare-line direct reference consumed the user portion as
+            # the name (git@host:path): re-join so the SCP shape reaches
+            # the redaction boundary.
+            ref = f"{name}@{ref}"
+        ref = redact_dependency_ref(ref)
         problem = "local" if _is_local_path(ref) else "url"
-        return {"name": m.group(1), "extras": m.group(3), "version": None,
+        return {"name": name, "extras": m.group(3), "version": None,
                 "version_spec": None, "problem": problem, "ref": ref,
                 "raw": raw}
 
@@ -160,7 +167,7 @@ def _emit_requirement(parsed, scope, manifest, rel_path, locator_prefix="",
                 f"not a registry package")
         return None, new_warning(
             "parse_error", rel_path,
-            f"malformed requirement ({redact_urls(parsed['raw'])})")
+            f"malformed requirement ({redact_display_text(parsed['raw'])})")
 
     locator = f"{locator_prefix}{name}"
     if parsed["extras"]:
