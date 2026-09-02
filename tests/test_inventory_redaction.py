@@ -330,12 +330,19 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
         out = redact_display_text(field)
         assert SECRET not in out and "cred/private" not in out, (field, out)
     # Marker-bearing authorities are not user content: a token whose @
-    # was introduced by redact_urls still collapses on its path tail.
+    # was introduced by redact_urls still collapses on its path tail,
+    # including a leading structural @ from malformed lines.
     for field in ("user:pass@github.com:cred/private.git#tok-" + SECRET,
                   "user:pass@localhost:cred/private.git#tok-" + SECRET,
                   "user:pass@user2:x@github.com:cred/private.git#tok-"
-                  + SECRET):
+                  + SECRET,
+                  "@user:pass@github.com:cred/private.git#tok-" + SECRET):
         assert redact_display_text(field) == "url:<redacted>", field
+    # Benign marker-bearing URLs keep their scheme and survive.
+    for field in ("https://<redacted>@host.invalid/pkg.whl",
+                  "file://<redacted>@host.invalid/path",
+                  "git+https://<redacted>@github.com/org/repo"):
+        assert redact_display_text(field) == field, field
     # Four-segment digit hosts with noncanonical octets are junk hosts.
     for ref in ("git@1.2.3.999:z9z9z9" + SECRET,
                 "git@0177.0.0.1:z9z9z9" + SECRET):

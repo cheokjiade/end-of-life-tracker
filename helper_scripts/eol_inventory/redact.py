@@ -330,12 +330,18 @@ def redact_display_text(text):
     redacted = redact_urls(text)
     def _collapse_token(match):
         token = match.group(0)
-        # The @ test runs on the marker-stripped form: a URL whose
-        # authority redact_urls already collapsed to <redacted>@host is
-        # marker-bearing, not user-controlled.
         probe = token.replace(f"{REDACTED}@", "")
-        if "@" not in probe and "://" not in probe \
-                and ":" in probe and "/" in probe and "#" in probe:
+        if "://" in probe:
+            return token
+        if token != probe:
+            # A redact_urls marker means the token carried a URL
+            # authority: the scheme is gone from the probe, and any
+            # surviving path/fragment tail is host-reachable material —
+            # collapse regardless of marker-structural @ characters
+            # (a leading @ is what makes malformed lines malformed).
+            return URL_PLACEHOLDER
+        if "@" not in probe and ":" in probe and "/" in probe \
+                and "#" in probe:
             # A scheme-less token mixing a colon, a path, and a fragment
             # without any @ is a bare host:path#fragment reference or
             # mangled junk; @-bearing tokens are the SSH scan's job.
