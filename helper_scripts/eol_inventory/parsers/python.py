@@ -285,17 +285,27 @@ def _parse_requirements_file(
 
 
 def _logical_requirement_lines(text):
-    """Yield ``(physical_start_line, logical_line)`` with continuations joined."""
+    """Yield ``(physical_start_line, logical_line)`` with continuations joined.
+
+    Lines split on CR/LF only: exotic whitespace separators must survive
+    into the logical line so the redaction boundary sees them.
+    """
     parts = []
     start = None
-    for lineno, raw in enumerate(text.splitlines(keepends=True), 1):
+    pieces = re.split(r"(\r\n|\r|\n)", text)
+    lineno = 0
+    for i in range(0, len(pieces), 2):
+        content = pieces[i]
+        ending = pieces[i + 1] if i + 1 < len(pieces) else ""
+        if content == "" and not ending and i + 1 >= len(pieces):
+            break
+        lineno += 1
         if start is None:
             start = lineno
-        line = raw.rstrip("\r\n")
-        if raw.endswith(("\n", "\r")) and line.endswith("\\"):
-            parts.append(line[:-1])
+        if ending and content.endswith("\\"):
+            parts.append(content[:-1])
             continue
-        parts.append(line)
+        parts.append(content)
         yield start, " ".join(parts)
         parts = []
         start = None

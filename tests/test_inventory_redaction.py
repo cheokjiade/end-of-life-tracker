@@ -200,7 +200,9 @@ def test_python_scp_direct_reference_redacted():
         reqs = root / "requirements.txt"
         reqs.write_text(
             "widget @ git@github.com:private/repo.git#token-" + SECRET +
-            "\n-e git@github.com:private/edit.git#egg=edit\n",
+            "\n-e git@github.com:private/edit.git#egg=edit\n"
+            "split @ user:" + SECRET + "@host\u2028:path\n"
+            "half @ user:p\u000bss:" + SECRET + "@host.invalid/x\n",
             encoding="utf-8")
         records, warnings = python_parser.parse_requirements_records(
             reqs, "requirements.txt", root=root)

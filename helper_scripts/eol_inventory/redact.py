@@ -183,8 +183,8 @@ def redact_dependency_ref(ref):
     survive. A clean digest-pinned tail after the @ keeps the digest
     doctrine. When credential-shaped ``@`` material survives inside a
     URL-shaped token (for example whitespace split an authority), or a
-    non-scheme token mixes @, colon, and path/fragment material without
-    a clean digest anchor, the whole token collapses to
+    non-scheme token mixes @, colon, and whitespace or fragment material
+    without a clean digest anchor, the whole token collapses to
     ``url:<redacted>`` so nothing raw is emitted. Plain versions,
     ranges, and paths pass through unchanged.
     """
@@ -200,16 +200,10 @@ def redact_dependency_ref(ref):
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" in residue and ":" in residue:
+    if "@" in residue and ":" in residue and _WHITESPACE_RE.search(residue):
         last_at = residue.rfind("@")
-        tail = residue[last_at + 1:]
-        # A fragment after the @, or any whitespace inside the host/path
-        # tail, means the token is mangled credential material rather
-        # than a version spec; fail closed unless the tail is a clean
-        # digest anchor.
-        if "#" in residue or _WHITESPACE_RE.search(tail):
-            if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
-                return URL_PLACEHOLDER
+        if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
+            return URL_PLACEHOLDER
     return redact_urls(redacted)
 
 
