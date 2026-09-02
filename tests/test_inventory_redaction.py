@@ -329,6 +329,13 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
                   "user@1.2.3:x github.com:cred/private.git#tok-" + SECRET):
         out = redact_display_text(field)
         assert SECRET not in out and "cred/private" not in out, (field, out)
+    # Marker-bearing authorities are not user content: a token whose @
+    # was introduced by redact_urls still collapses on its path tail.
+    for field in ("user:pass@github.com:cred/private.git#tok-" + SECRET,
+                  "user:pass@localhost:cred/private.git#tok-" + SECRET,
+                  "user:pass@user2:x@github.com:cred/private.git#tok-"
+                  + SECRET):
+        assert redact_display_text(field) == "url:<redacted>", field
     # Four-segment digit hosts with noncanonical octets are junk hosts.
     for ref in ("git@1.2.3.999:z9z9z9" + SECRET,
                 "git@0177.0.0.1:z9z9z9" + SECRET):
