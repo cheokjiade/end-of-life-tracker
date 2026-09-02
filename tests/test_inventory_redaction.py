@@ -174,6 +174,12 @@ def test_scp_style_git_refs_collapse():
     # A digest tail followed by path material is not a clean digest
     # anchor: fail closed (over-redaction, never a leak).
     assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
+    # The digest exemption covers only single-@ tokens: a credential
+    # segment between an earlier @ and the anchor fails closed.
+    assert redact_dependency_ref(
+        "host/x\u000by:" + SECRET + "@img@" + digest) == "url:<redacted>"
+    assert redact_dependency_ref(
+        "host/path#u:" + SECRET + "@img@" + digest) == "url:<redacted>"
     assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
     # Benign specs and aliases are byte-identical: no over-broad match.
     for benign in ("1.2.3", "^1.2.3", ">=1.0,<2.0", "npm:user@1.2.3",
@@ -199,7 +205,9 @@ def test_python_scp_direct_reference_redacted():
         root = Path(tmpdir)
         reqs = root / "requirements.txt"
         lines = ["widget @ git@github.com:private/repo.git#token-" + SECRET,
-                 "-e git@github.com:private/edit.git#egg=edit"]
+                 "-e git@github.com:private/edit.git#egg=edit",
+                 "vspec == https://user:" + SECRET
+                 + "@host.invalid/x\u000by?q=" + SECRET]
         for ws in ("\u2028", "\u2029", "\x0b", "\x0c", "\x1c", "\x1d",
                    "\x1e", "\x85"):
             lines.append("split @ user:" + SECRET + "@host" + ws + ":path")

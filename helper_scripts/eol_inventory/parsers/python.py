@@ -140,7 +140,7 @@ def _parse_requirement(spec_line):
         else:
             version_spec = rest or None
         if version_spec is not None:
-            version_spec = redact_urls(version_spec)
+            version_spec = redact_dependency_ref(version_spec)
 
     return {"name": name, "extras": extras, "version": version,
             "version_spec": version_spec, "problem": problem, "ref": None,
