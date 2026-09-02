@@ -1666,6 +1666,102 @@ def test_update_legacy_bare_from_key_never_clobbers_when_ambiguous():
         "retained_not_observed": 1}
 
 
+def test_update_matches_both_changed_rows_of_one_identity_by_provenance():
+    # Sol round-two: two tracked rows sharing one merge identity, both
+    # versions changed at distinct provenance sites — each old row must
+    # match its own site's fresh row instead of retaining stale
+    # duplicates beside fresh additions.
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 1.0.0", "version": "1.0.0",
+             "policy_note": "keep me",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 2.0.0", "version": "2.0.0",
+             "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 1.1.0", "version": "1.1.0",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 2.1.0", "version": "2.1.0",
+             "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert sorted(p["version"] for p in products) == ["1.1.0", "2.1.0"]
+    assert not any(p.get("source") == "manual" for p in products)
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 2, "unchanged": 0,
+        "retained_not_observed": 0}
+    kept = next(p for p in products if p["version"] == "1.1.0")
+    assert kept["policy_note"] == "keep me"
+    assert kept["_found_in"][0]["path"] == "a/pom.xml"
+
+
+def test_update_retains_ambiguous_same_identity_rows():
+    # Same identity and identical provenance on both sides: the
+    # intersection is ambiguous, so both old rows are retained verbatim
+    # and both fresh rows are added — never a guess.
+    loc = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+           "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 1.0.0", "version": "1.0.0",
+             "note": "curated one",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc)]},
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 2.0.0", "version": "2.0.0",
+             "note": "curated two",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 1.1.0", "version": "1.1.0",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc)]},
+            {"source": "maven_central", "product": "shared",
+             "label": "shared 2.1.0", "version": "2.1.0",
+             "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    versions = sorted(str(p.get("version")) for p in products)
+    assert versions == ["1.0.0", "1.1.0", "2.0.0", "2.1.0"]
+    retained = [p for p in products if p.get("version") in
+                ("1.0.0", "2.0.0")]
+    assert [p["note"] for p in retained] == ["curated one", "curated two"]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 2, "changed": 0, "unchanged": 0,
+        "retained_not_observed": 2}
+
+
 def test_cli_update_rejects_non_object_json():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1782,6 +1878,8 @@ TESTS = [
     test_update_unmapped_defaults_match_the_right_sibling,
     test_update_legacy_bare_from_key_still_merges_conservatively,
     test_update_legacy_bare_from_key_never_clobbers_when_ambiguous,
+    test_update_matches_both_changed_rows_of_one_identity_by_provenance,
+    test_update_retains_ambiguous_same_identity_rows,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,
