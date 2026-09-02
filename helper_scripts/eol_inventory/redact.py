@@ -65,6 +65,12 @@ _DISPLAY_SSH_RE = re.compile(
     r":\S*)",
     re.IGNORECASE)
 _SCP_NO_COLLAPSE_HOSTS = ("npm", "workspace")
+# A real scheme anchors the token (or, for marker-bearing tokens,
+# precedes the redaction marker); a planted :// after the secret is
+# attacker material, not a scheme.
+_SCHEME_START_RE = re.compile(r"^(?:git\+)?[A-Za-z][A-Za-z0-9+.\-]*://")
+_SCHEME_ANYWHERE_RE = re.compile(
+    r"(?<![A-Za-z0-9+.\-#@/])(?:git\+)?[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +226,7 @@ def redact_dependency_ref(ref):
         return ref
     if _SSH_PREFIX_RE.match(ref):
         return ssh_placeholder(ref)
-    if "://" not in ref:
+    if not _SCHEME_START_RE.match(ref):
         if not _NPM_ALIAS_RE.fullmatch(ref):
             scp = _SCP_REF_RE.search(ref)
             if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()) \
@@ -230,9 +236,20 @@ def redact_dependency_ref(ref):
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
+    scheme_match = _SCHEME_ANYWHERE_RE.search(redacted)
+    if scheme_match and not _SCHEME_START_RE.match(redacted):
+        # Operator-prefixed URL specs (e.g. '== https://...'): URL
+        # doctrine applies — unless mangled query/fragment material
+        # follows the URL token, which is the planted-tail leak shape.
+        ws = _WHITESPACE_RE.search(redacted, scheme_match.start())
+        if ws and ("?" in redacted[ws.start():]
+                   or "#" in redacted[ws.start():]):
+            return URL_PLACEHOLDER
+        return redact_urls(redacted)
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" not in residue and "://" not in residue \
-            and ":" in residue and "/" in residue and "#" in residue:
+    if "@" not in residue and ":" in residue and "/" in residue \
+            and "#" in residue \
+            and not _SCHEME_ANYWHERE_RE.search(residue):
         # A scheme-less token mixing a colon, a path, and a fragment
         # without any @ is a bare host:path#fragment reference
         # (github.com:credential/private.git#token) or mangled junk:
@@ -254,7 +271,8 @@ def redact_dependency_ref(ref):
         if not single_anchor and not alias and (
                 redacted.find("@") != last_at
                 or _WHITESPACE_RE.search(redacted)
-                or ("#" in residue and "@" in residue)):
+                or ("#" in residue and "@" in residue)) \
+                and not _SCHEME_ANYWHERE_RE.search(redacted):
             return URL_PLACEHOLDER
     return redact_urls(redacted)
 
@@ -330,18 +348,20 @@ def redact_display_text(text):
     redacted = redact_urls(text)
     def _collapse_token(match):
         token = match.group(0)
-        probe = token.replace(f"{REDACTED}@", "")
-        if "://" in probe:
+        marker_at = token.find(f"{REDACTED}@")
+        scheme_at = token.find("://")
+        if scheme_at >= 0 and (marker_at < 0 or scheme_at < marker_at):
+            # A scheme preceding any redaction marker is a real URL:
+            # userinfo/query/fragment redaction is the contract; path
+            # material survives.
             return token
-        if token != probe:
-            # A redact_urls marker means the token carried a URL
-            # authority: the scheme is gone from the probe, and any
-            # surviving path/fragment tail is host-reachable material —
-            # collapse regardless of marker-structural @ characters
-            # (a leading @ is what makes malformed lines malformed).
+        if marker_at >= 0:
+            # Marker-bearing without a preceding scheme: the URL
+            # authority collapsed and any surviving tail is
+            # host-reachable material — collapse.
             return URL_PLACEHOLDER
-        if "@" not in probe and ":" in probe and "/" in probe \
-                and "#" in probe:
+        if "@" not in token and ":" in token and "/" in token \
+                and "#" in token:
             # A scheme-less token mixing a colon, a path, and a fragment
             # without any @ is a bare host:path#fragment reference or
             # mangled junk; @-bearing tokens are the SSH scan's job.
