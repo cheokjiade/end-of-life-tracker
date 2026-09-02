@@ -302,6 +302,33 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
         "pinned img@sha512:" + "b" * 128 + "."
     assert redact_display_text("use git@:private/repo.git now") == \
         "use <ssh> now"
+    # The no-@ colon+path+fragment gate is per-token: one benign URL in
+    # the same field does not immunize a sibling payload, and benign
+    # free-text with colons, slashes, or hash marks survives.
+    mixed = "see https://ok.example/x and " \
+            "github.com:cred/private.git#tok-" + SECRET
+    out = redact_display_text(mixed)
+    assert SECRET not in out and "cred/private" not in out, out
+    assert "https://ok.example/x" in out and "url:<redacted>" in out, out
+    assert redact_display_text(out) == out
+    assert redact_display_text("x git@1.2.3:x/y y git@1.2.3:x/y") == \
+        "x <ssh:1.2.3> y <ssh:1.2.3>"
+    assert redact_display_text(
+        "Track Java LTS: adopt 17/21; see #lts-policy") == \
+        "Track Java LTS: adopt 17/21; see #lts-policy"
+    assert redact_display_text("release 10:30 at /docs#intro") == \
+        "release 10:30 at /docs#intro"
+    # Junk-host bare lines (five-octet digits, unbracketed IPv6,
+    # backslash separators) fail closed to host-only placeholders.
+    for ref in ("git@1.2.3.4.5:private/secret-repo.git",
+                "git@1.2.3.4.5:z9z9z9" + SECRET,
+                "git@2001:db8::1:z9z9z9" + SECRET,
+                "git@1.2.3.4.5:z9z9z9" + SECRET + "\\x"):
+        out = redact_dependency_ref(ref)
+        assert out.startswith("<ssh") or out == "url:<redacted>", (ref, out)
+        assert SECRET not in out and "private" not in out and \
+            "secret-repo" not in out and "z9z9z9" not in out, (ref, out)
+        assert redact_dependency_ref(out) == out, (ref, out)
     # Long hostile input stays bounded and linear.
     hostile = ("x " + "SSH://git@host.invalid/p" + SECRET + " ") * 2000
     out = redact_display_text(hostile)

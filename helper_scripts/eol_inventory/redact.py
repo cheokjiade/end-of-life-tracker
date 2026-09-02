@@ -286,14 +286,18 @@ def _is_valid_ipv4(host):
 def _scp_collapse_host(host, tail):
     """True when an SCP match at *host* with *tail* after the colon must
     collapse: lettered, bracketed, or empty hosts are SCP shapes; digit
-    junk (user@1.2.3:x) survives unless the tail carries a path."""
+    junk (user@1.2.3:x) survives unless the tail carries a path
+    separator, the host has four or more dot-separated segments, or the
+    tail itself is colon-bearing (version tails never are)."""
     if not host or host.startswith("["):
         return True
     if _HOST_LETTER_RE.search(host):
         return True
     if _is_valid_ipv4(host):
         return True
-    return "/" in tail
+    if "/" in tail or "\\" in tail or ":" in tail:
+        return True
+    return host.count(".") >= 4
 
 
 def _ssh_token_placeholder(token):
@@ -325,13 +329,20 @@ def redact_display_text(text):
         return text
     redacted = redact_urls(text)
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" not in residue and "://" not in residue \
-            and ":" in residue and "/" in residue and "#" in residue:
-        # A scheme-less display value mixing a colon, a path, and a
-        # fragment without any @ is a bare host:path#fragment reference
-        # or mangled junk: no supported manifest grammar produces it in
-        # a report field, so fail closed.
-        return URL_PLACEHOLDER
+    if "@" not in residue:
+        # Per-token fail-closed check: a single scheme-less token mixing
+        # a colon, a path, and a fragment without any @ is a bare
+        # host:path#fragment reference or mangled junk; one benign URL
+        # in the same field must not immunize a sibling payload, and the
+        # benign tokens around it stay intact.
+        def _collapse_token(match):
+            token = match.group(0)
+            if "://" not in token and ":" in token and "/" in token \
+                    and "#" in token:
+                return URL_PLACEHOLDER
+            return token
+
+        redacted = re.sub(r"\S+", _collapse_token, redacted)
     out = []
     pos = 0
     for match in _DISPLAY_SSH_RE.finditer(redacted):
@@ -348,8 +359,8 @@ def redact_display_text(text):
                 continue
             if host in _SCP_NO_COLLAPSE_HOSTS:
                 continue
-            tail = token[match.start("scp_host")
-                         + len(match.group("scp_host")) + 1:]
+            host_start = match.start("scp_host") - match.start()
+            tail = token[len(host) + host_start + 1:]
             if not _scp_collapse_host(host, tail):
                 continue
             placeholder = ssh_placeholder("ssh://" + host)
