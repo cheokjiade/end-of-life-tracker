@@ -297,7 +297,7 @@ def _scp_collapse_host(host, tail):
         return True
     if "/" in tail or "\\" in tail or ":" in tail:
         return True
-    return host.count(".") >= 4
+    return host.count(".") >= 3
 
 
 def _ssh_token_placeholder(token):
@@ -329,20 +329,18 @@ def redact_display_text(text):
         return text
     redacted = redact_urls(text)
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" not in residue:
-        # Per-token fail-closed check: a single scheme-less token mixing
-        # a colon, a path, and a fragment without any @ is a bare
-        # host:path#fragment reference or mangled junk; one benign URL
-        # in the same field must not immunize a sibling payload, and the
-        # benign tokens around it stay intact.
-        def _collapse_token(match):
-            token = match.group(0)
-            if "://" not in token and ":" in token and "/" in token \
-                    and "#" in token:
-                return URL_PLACEHOLDER
-            return token
 
-        redacted = re.sub(r"\S+", _collapse_token, redacted)
+    def _collapse_token(match):
+        token = match.group(0)
+        if "@" not in token and "://" not in token \
+                and ":" in token and "/" in token and "#" in token:
+            # A scheme-less token mixing a colon, a path, and a fragment
+            # without any @ is a bare host:path#fragment reference or
+            # mangled junk; @-bearing tokens are the SSH scan's job.
+            return URL_PLACEHOLDER
+        return token
+
+    redacted = re.sub(r"\S+", _collapse_token, redacted)
     out = []
     pos = 0
     for match in _DISPLAY_SSH_RE.finditer(redacted):

@@ -318,6 +318,25 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
         "Track Java LTS: adopt 17/21; see #lts-policy"
     assert redact_display_text("release 10:30 at /docs#intro") == \
         "release 10:30 at /docs#intro"
+    # The per-token gate is unconditional: an @-bearing sibling never
+    # immunizes a hostile @-less token.
+    for field in ("ping admin@example.com now github.com:cred/private.git"
+                  "#tok-" + SECRET,
+                  "user@github.com:x/y github.com:cred/private.git#tok-"
+                  + SECRET,
+                  "pkg@workspace:* github.com:cred/private.git#tok-"
+                  + SECRET,
+                  "user@1.2.3:x github.com:cred/private.git#tok-" + SECRET):
+        out = redact_display_text(field)
+        assert SECRET not in out and "cred/private" not in out, (field, out)
+    # Four-segment digit hosts with noncanonical octets are junk hosts.
+    for ref in ("git@1.2.3.999:z9z9z9" + SECRET,
+                "git@0177.0.0.1:z9z9z9" + SECRET):
+        out = redact_dependency_ref(ref)
+        assert out.startswith("<ssh") or out == "url:<redacted>", \
+            (ref, out)
+        assert SECRET not in out, (ref, out)
+    assert redact_dependency_ref("user@1.2.3:x") == "user@1.2.3:x"
     # Junk-host bare lines (five-octet digits, unbracketed IPv6,
     # backslash separators) fail closed to host-only placeholders.
     for ref in ("git@1.2.3.4.5:private/secret-repo.git",
