@@ -723,6 +723,8 @@ def test_view_hostile_metadata_and_warning_fields_render_clean():
     credential = "https://user:" + SECRET + "@registry.example/x"
     config = {
         "products": [],
+        "_skipped_npm_packages": [{"name": "legacy-pkg",
+                                   "source": credential}],
         "_inventory": {
             "scan_date": credential,
             "scan_timestamp": credential,
@@ -732,6 +734,10 @@ def test_view_hostile_metadata_and_warning_fields_render_clean():
             "summary": {"files": {"f": credential}},
             "warnings": [{"category": credential, "path": credential,
                           "message": credential}],
+            "unmapped": [{"ecosystem": "python", "name": "pkg",
+                          "version": None, "reason": "",
+                          "found_in": [{"path": credential,
+                                        "manifest": credential}]}],
         },
     }
     view = build_inventory_view(config, project_name=credential)

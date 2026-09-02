@@ -159,8 +159,8 @@ def _norm_location(loc):
     dropped, so deterministic sorting never compares exotic types.
     """
     norm: dict[str, object] = {
-        "path": _scalar_text(loc.get("path")),
-        "manifest": _scalar_text(loc.get("manifest"))}
+        "path": redact_urls(_scalar_text(loc.get("path"))),
+        "manifest": redact_urls(_scalar_text(loc.get("manifest")))}
     line = loc.get("line")
     if isinstance(line, int) and not isinstance(line, bool):
         norm["line"] = line
@@ -248,7 +248,8 @@ def _legacy_unmapped_rows(config, known_names, sink):
             "version_spec": None,
             "reason": "legacy: skipped npm package (no mapping at "
                       "generation time)",
-            "found_in": [{"path": str(skipped.get("source", "")),
+            "found_in": [{"path": redact_urls(
+                              str(skipped.get("source", ""))),
                           "manifest": "npm"}],
             "details": "",
         })

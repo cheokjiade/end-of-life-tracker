@@ -159,36 +159,51 @@ def _redact_one_url(url):
 # Dependency reference redaction (pip-style URL/path refs)
 # ---------------------------------------------------------------------------
 
-# SCP-style Git/SSH reference: user@host:path with a lettered host and a
-# non-empty path. The colon after the host excludes version specs
-# (npm:user@1.2.3 has no colon; 1.2.3@1.2.3:x has a digit-only host), and
-# the leading anchor excludes aliases such as npm:user@1.2.3.
+# SCP-style Git/SSH reference scan: user@host:path with a lettered
+# host, a bracketed IPv6 literal, or an empty host before the colon,
+# and a non-empty path. The search form with a boundary lookbehind also
+# catches mid-string shapes that reach multi-token call sites; digest
+# doctrine is applied to the tail after the match before collapsing.
 _SCP_REF_RE = re.compile(
-    r"^[A-Za-z0-9._~%-]+@(?P<host>[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*):\S")
+    r"(?<![A-Za-z0-9._~%\-@])"
+    r"[A-Za-z0-9._~%-]+@"
+    r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
+    r"|[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*"
+    r"|)"
+    r":(?=\S)")
 
 
 def redact_dependency_ref(ref):
     """Redacted form of one dependency reference token (URL or path).
 
     Scheme URLs get userinfo/query/fragment redaction. ssh URLs and
-    SCP-style Git references (``git@host:path``, ``user@host:path``)
-    collapse to an ``<ssh:host>`` placeholder: the user, path, and
-    fragment never survive. When credential-shaped ``@`` material
-    survives inside a URL-shaped token (for example whitespace split an
-    authority), the whole token collapses to ``url:<redacted>`` so
-    nothing raw is emitted. Plain versions, ranges, and paths pass
-    through unchanged.
+    SCP-style Git references (``git@host:path``, ``user@host:path``,
+    including mid-string, bracketed-IPv6, and empty-host shapes) collapse
+    to an ``<ssh:host>`` placeholder: the user, path, and fragment never
+    survive. A clean digest-pinned tail after the @ keeps the digest
+    doctrine. When credential-shaped ``@`` material survives inside a
+    URL-shaped token (for example whitespace split an authority), or a
+    non-scheme token mixes @, colon, and path/fragment material without
+    a clean digest anchor, the whole token collapses to
+    ``url:<redacted>`` so nothing raw is emitted. Plain versions,
+    ranges, and paths pass through unchanged.
     """
     if not isinstance(ref, str) or not ref:
         return ref
     if ref.startswith(("ssh://", "git+ssh://")):
         return ssh_placeholder(ref)
-    scp = _SCP_REF_RE.match(ref)
-    if scp:
-        return ssh_placeholder("ssh://" + scp.group("host"))
+    if "://" not in ref:
+        scp = _SCP_REF_RE.search(ref)
+        if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
+            return ssh_placeholder("ssh://" + (scp.group("host") or ""))
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
+    residue = redacted.replace(f"{REDACTED}@", "")
+    if "@" in residue and ":" in residue and "#" in residue:
+        last_at = residue.rfind("@")
+        if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
+            return URL_PLACEHOLDER
     return redact_urls(redacted)
 
 
@@ -236,6 +251,11 @@ _DIGEST_SHAPE = (r"sha256:[0-9a-fA-F]{64}|sha1:[0-9a-fA-F]{40}"
 _DIGEST_TAIL_RE = re.compile(f"(?:{_DIGEST_SHAPE})")
 _AT_RE = re.compile("@")
 _SLASH_RE = re.compile("/")
+
+# user@<algorithm>:<exact-length-hex> occupying the whole tail: a
+# digest-pinned reference, not an SCP credential shape.
+_DIGEST_ANCHOR_RE = re.compile(
+    rf"[A-Za-z0-9._~%-]+@(?:(?:{_DIGEST_SHAPE}))")
 
 
 def _strip_path_credentials(ref):

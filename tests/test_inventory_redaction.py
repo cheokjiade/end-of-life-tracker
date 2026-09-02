@@ -150,7 +150,22 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref("user@host.invalid:path/to/x") == \
         "<ssh:host.invalid>"
     assert redact_dependency_ref("u@h:medium@host2:x/y") == "<ssh:h>"
-    assert redact_dependency_ref("user@:path") == "user@:path"
+    # Search-based scan: mid-string, bracketed-IPv6, empty-host, and
+    # whitespace-mangled shapes fail closed; digest tails are preserved.
+    assert redact_dependency_ref(
+        "see git@github.com:org/repo#token-" + SECRET) == \
+        "<ssh:github.com>"
+    assert redact_dependency_ref("widget @ user@[2001:db8::1]:p#x") == \
+        "<ssh>"
+    assert redact_dependency_ref("user@:path") == "<ssh>"
+    assert redact_dependency_ref("git@github.com :p#token-" + SECRET) == \
+        "url:<redacted>"
+    digest = "sha256:" + "a" * 64
+    assert redact_dependency_ref("img@" + digest) == "img@" + digest
+    # A digest tail followed by path material is not a clean digest
+    # anchor: fail closed (over-redaction, never a leak).
+    assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
+    assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
     # Benign specs and aliases are byte-identical: no over-broad match.
     for benign in ("1.2.3", "^1.2.3", ">=1.0,<2.0", "npm:user@1.2.3",
                    "npm:@scope/pkg@^1.2.3", "workspace:*",
