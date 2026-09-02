@@ -176,20 +176,29 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
     # The digest exemption covers only single-@ tokens: a credential
     # segment between an earlier @ and the anchor fails closed.
-    # A multi-@ token fails closed in every shape: whitespace, fragment,
-    # digest tails (exact, punctuation-bounded, case-variant, wrong
-    # length), or a bare trailing anchor.
+    # A multi-@ token fails closed in every shape unless the WHOLE token
+    # matches the scoped-npm-alias grammar: whitespace, fragment, digest
+    # tails (exact, punctuation-bounded, case-variant, wrong length),
+    # version tails, and bare trailing anchors.
     for shape in ("host/x\u000by:" + SECRET + "@img@" + digest,
                   "host/path#u:" + SECRET + "@img@" + digest,
                   "user:" + SECRET + "@img@" + digest,
                   "residspec==user:" + SECRET + "@img@" + digest,
                   "user:" + SECRET + "@img@" + digest + ",",
-                  "user:" + SECRET + "@img@" + digest.upper().replace(
-                      "SHA256", "SHA256"),
                   "user:" + SECRET + "@img@sha256:" + "a" * 63,
                   "user:" + SECRET + "@img@sha256:" + "a" * 65 + "x",
-                  "user:" + SECRET + "@img@"):
+                  "user:" + SECRET + "@img@",
+                  "user:" + SECRET + "@img@1.2.3",
+                  "user:" + SECRET + "@img@1.2.3#frag",
+                  "host/path#u:" + SECRET + "@1.2.3",
+                  "user:" + SECRET + "@img@1.2.3, x"):
         assert redact_dependency_ref(shape) == "url:<redacted>", shape
+    # The alias grammar exempts the benign scoped family, including
+    # dist-tag tails, in full.
+    for alias in ("npm:@scope/pkg@^1.2.3", "npm:@scope/pkg@latest",
+                  "npm:@scope/pkg@next", "@scope/pkg@1.2.3",
+                  "pkg@workspace:*", "pkg@npm:latest", "npm:user@1.2.3"):
+        assert redact_dependency_ref(alias) == alias, alias
     assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
     # Benign specs and aliases are byte-identical: no over-broad match.
     for benign in ("1.2.3", "^1.2.3", ">=1.0,<2.0", "npm:user@1.2.3",

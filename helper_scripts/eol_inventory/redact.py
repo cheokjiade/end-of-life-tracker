@@ -193,27 +193,28 @@ def redact_dependency_ref(ref):
     if ref.startswith(("ssh://", "git+ssh://")):
         return ssh_placeholder(ref)
     if "://" not in ref:
-        scp = _SCP_REF_RE.search(ref)
-        if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
-            return ssh_placeholder("ssh://" + (scp.group("host") or ""))
+        if not _NPM_ALIAS_RE.fullmatch(ref):
+            scp = _SCP_REF_RE.search(ref)
+            if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
+                return ssh_placeholder("ssh://" + (scp.group("host") or ""))
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
     if "@" in redacted and ":" in redacted:
         last_at = redacted.rfind("@")
-        tail = redacted[last_at + 1:]
         # The digest exemption covers only a single-@ token. Any other
         # multi-@ token is anomalous in every supported manifest grammar
         # and can carry credentials between the earlier @ and a
-        # digest-shaped or empty tail (user:pass@img@sha256:<64>), so it
-        # fails closed unless the tail is a version spec (the one benign
-        # multi-@ shape: scoped npm aliases).
+        # digest-shaped, empty, or junk tail, so it fails closed unless
+        # the WHOLE token matches the benign scoped-npm-alias grammar
+        # (npm:@scope/pkg@^1.2.3, pkg@workspace:*, pkg@npm:latest) — a
+        # tail-only test would re-admit user:SECRET@img@1.2.3 payloads.
         single_anchor = (redacted.find("@") == last_at
                          and _DIGEST_TAIL_RE.fullmatch(redacted,
                                                        last_at + 1))
-        version_tail = bool(_VERSION_TAIL_RE.match(tail))
-        if not single_anchor and not version_tail and (
+        alias = bool(_NPM_ALIAS_RE.fullmatch(redacted))
+        if not single_anchor and not alias and (
                 redacted.find("@") != last_at
                 or _WHITESPACE_RE.search(redacted)
                 or ("#" in residue and "@" in residue)):
@@ -273,8 +274,9 @@ _DIGEST_ANCHOR_RE = re.compile(
 _WHITESPACE_RE = re.compile(r"\s")
 # Version-spec tail of a scoped npm alias (npm:@scope/pkg@^1.2.3,
 # pkg@workspace:*): the one benign multi-@ shape.
-_VERSION_TAIL_RE = re.compile(
-    r"^(?:workspace:[*\w.-]+|[\^~*<>=]*[vV]?\d[\w.+!~-]*|\*)")
+_NPM_ALIAS_RE = re.compile(
+    r"^(?:npm:)?(?:@[A-Za-z0-9._~%-]+/)?[A-Za-z0-9._~%-]+"
+    r"@(?:npm:|workspace:)?[\^~*<>=]?[vV]?[\w.+!~-]*$")
 
 
 def _strip_path_credentials(ref):
