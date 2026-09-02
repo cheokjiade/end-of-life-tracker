@@ -200,10 +200,16 @@ def redact_dependency_ref(ref):
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" in residue and ":" in residue and "#" in residue:
+    if "@" in residue and ":" in residue:
         last_at = residue.rfind("@")
-        if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
-            return URL_PLACEHOLDER
+        tail = residue[last_at + 1:]
+        # A fragment after the @, or whitespace inside the host/path
+        # tail, means the token is mangled credential material rather
+        # than a version spec; fail closed unless the tail is a clean
+        # digest anchor.
+        if "#" in residue or " " in tail or "\t" in tail:
+            if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
+                return URL_PLACEHOLDER
     return redact_urls(redacted)
 
 

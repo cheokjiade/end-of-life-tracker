@@ -160,6 +160,11 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref("user@:path") == "<ssh>"
     assert redact_dependency_ref("git@github.com :p#token-" + SECRET) == \
         "url:<redacted>"
+    # Whitespace inside the host/path tail fails closed even without a
+    # fragment; whitespace without a colon is not credential material.
+    assert redact_dependency_ref("user:pass@host :path") == "url:<redacted>"
+    assert redact_dependency_ref("user@host\t:p") == "url:<redacted>"
+    assert redact_dependency_ref("user@host path") == "user@host path"
     digest = "sha256:" + "a" * 64
     assert redact_dependency_ref("img@" + digest) == "img@" + digest
     # A digest tail followed by path material is not a clean digest
