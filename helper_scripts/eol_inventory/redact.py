@@ -202,17 +202,21 @@ def redact_dependency_ref(ref):
     residue = redacted.replace(f"{REDACTED}@", "")
     if "@" in redacted and ":" in redacted:
         last_at = redacted.rfind("@")
-        # The digest exemption covers only a single-@ token: with two or
-        # more @s the segment between the earlier one and the anchor can
-        # carry credentials (user:pass@img@sha256:<64>), even without
-        # whitespace or a fragment.
+        tail = redacted[last_at + 1:]
+        # The digest exemption covers only a single-@ token. Any other
+        # multi-@ token is anomalous in every supported manifest grammar
+        # and can carry credentials between the earlier @ and a
+        # digest-shaped or empty tail (user:pass@img@sha256:<64>), so it
+        # fails closed unless the tail is a version spec (the one benign
+        # multi-@ shape: scoped npm aliases).
         single_anchor = (redacted.find("@") == last_at
                          and _DIGEST_TAIL_RE.fullmatch(redacted,
                                                        last_at + 1))
-        if not single_anchor and (
-                _WHITESPACE_RE.search(redacted)
-                or ("#" in residue and "@" in residue)
-                or _DIGEST_TAIL_RE.fullmatch(redacted, last_at + 1)):
+        version_tail = bool(_VERSION_TAIL_RE.match(tail))
+        if not single_anchor and not version_tail and (
+                redacted.find("@") != last_at
+                or _WHITESPACE_RE.search(redacted)
+                or ("#" in residue and "@" in residue)):
             return URL_PLACEHOLDER
     return redact_urls(redacted)
 
@@ -267,6 +271,10 @@ _SLASH_RE = re.compile("/")
 _DIGEST_ANCHOR_RE = re.compile(
     rf"[A-Za-z0-9._~%-]+@(?:(?:{_DIGEST_SHAPE}))")
 _WHITESPACE_RE = re.compile(r"\s")
+# Version-spec tail of a scoped npm alias (npm:@scope/pkg@^1.2.3,
+# pkg@workspace:*): the one benign multi-@ shape.
+_VERSION_TAIL_RE = re.compile(
+    r"^(?:workspace:[*\w.-]+|[\^~*<>=]*[vV]?\d[\w.+!~-]*|\*)")
 
 
 def _strip_path_credentials(ref):

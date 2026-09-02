@@ -176,17 +176,20 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
     # The digest exemption covers only single-@ tokens: a credential
     # segment between an earlier @ and the anchor fails closed.
-    assert redact_dependency_ref(
-        "host/x\u000by:" + SECRET + "@img@" + digest) == "url:<redacted>"
-    assert redact_dependency_ref(
-        "host/path#u:" + SECRET + "@img@" + digest) == "url:<redacted>"
-    # A multi-@ digest tail collapses even without whitespace or a
-    # fragment: the segment before the anchor can carry credentials.
-    assert redact_dependency_ref(
-        "user:" + SECRET + "@img@" + digest) == "url:<redacted>"
-    assert redact_dependency_ref(
-        "residspec==user:" + SECRET + "@img@" + digest) == \
-        "url:<redacted>"
+    # A multi-@ token fails closed in every shape: whitespace, fragment,
+    # digest tails (exact, punctuation-bounded, case-variant, wrong
+    # length), or a bare trailing anchor.
+    for shape in ("host/x\u000by:" + SECRET + "@img@" + digest,
+                  "host/path#u:" + SECRET + "@img@" + digest,
+                  "user:" + SECRET + "@img@" + digest,
+                  "residspec==user:" + SECRET + "@img@" + digest,
+                  "user:" + SECRET + "@img@" + digest + ",",
+                  "user:" + SECRET + "@img@" + digest.upper().replace(
+                      "SHA256", "SHA256"),
+                  "user:" + SECRET + "@img@sha256:" + "a" * 63,
+                  "user:" + SECRET + "@img@sha256:" + "a" * 65 + "x",
+                  "user:" + SECRET + "@img@"):
+        assert redact_dependency_ref(shape) == "url:<redacted>", shape
     assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
     # Benign specs and aliases are byte-identical: no over-broad match.
     for benign in ("1.2.3", "^1.2.3", ">=1.0,<2.0", "npm:user@1.2.3",
