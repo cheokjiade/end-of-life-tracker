@@ -198,12 +198,14 @@ def test_python_scp_direct_reference_redacted():
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         reqs = root / "requirements.txt"
-        reqs.write_text(
-            "widget @ git@github.com:private/repo.git#token-" + SECRET +
-            "\n-e git@github.com:private/edit.git#egg=edit\n"
-            "split @ user:" + SECRET + "@host\u2028:path\n"
-            "half @ user:p\u000bss:" + SECRET + "@host.invalid/x\n",
-            encoding="utf-8")
+        lines = ["widget @ git@github.com:private/repo.git#token-" + SECRET,
+                 "-e git@github.com:private/edit.git#egg=edit"]
+        for ws in ("\u2028", "\u2029", "\x0b", "\x0c", "\x1c", "\x1d",
+                   "\x1e", "\x85"):
+            lines.append("split @ user:" + SECRET + "@host" + ws + ":path")
+            lines.append("half @ user:p" + ws + "ss:" + SECRET
+                         + "@host.invalid/x")
+        reqs.write_text("\n".join(lines) + "\n", encoding="utf-8")
         records, warnings = python_parser.parse_requirements_records(
             reqs, "requirements.txt", root=root)
         scan = scan_folder(root)

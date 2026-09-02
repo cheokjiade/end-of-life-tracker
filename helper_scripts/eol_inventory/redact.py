@@ -200,9 +200,11 @@ def redact_dependency_ref(ref):
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" in residue and ":" in residue and _WHITESPACE_RE.search(residue):
-        last_at = residue.rfind("@")
-        if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
+    if "@" in redacted and ":" in redacted and (
+            _WHITESPACE_RE.search(redacted)
+            or ("#" in residue and "@" in residue)):
+        last_at = redacted.rfind("@")
+        if not _DIGEST_TAIL_RE.fullmatch(redacted, last_at + 1):
             return URL_PLACEHOLDER
     return redact_urls(redacted)
 
