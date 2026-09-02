@@ -203,11 +203,11 @@ def redact_dependency_ref(ref):
     if "@" in residue and ":" in residue:
         last_at = residue.rfind("@")
         tail = residue[last_at + 1:]
-        # A fragment after the @, or whitespace inside the host/path
+        # A fragment after the @, or any whitespace inside the host/path
         # tail, means the token is mangled credential material rather
         # than a version spec; fail closed unless the tail is a clean
         # digest anchor.
-        if "#" in residue or " " in tail or "\t" in tail:
+        if "#" in residue or _WHITESPACE_RE.search(tail):
             if not _DIGEST_TAIL_RE.fullmatch(residue, last_at + 1):
                 return URL_PLACEHOLDER
     return redact_urls(redacted)
@@ -262,6 +262,7 @@ _SLASH_RE = re.compile("/")
 # digest-pinned reference, not an SCP credential shape.
 _DIGEST_ANCHOR_RE = re.compile(
     rf"[A-Za-z0-9._~%-]+@(?:(?:{_DIGEST_SHAPE}))")
+_WHITESPACE_RE = re.compile(r"\s")
 
 
 def _strip_path_credentials(ref):

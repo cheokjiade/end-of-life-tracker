@@ -165,6 +165,10 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref("user:pass@host :path") == "url:<redacted>"
     assert redact_dependency_ref("user@host\t:p") == "url:<redacted>"
     assert redact_dependency_ref("user@host path") == "user@host path"
+    # Any Unicode whitespace in the tail fails closed the same way.
+    for ws in ("\u00a0", "\u2028", "\u3000", "\x0b", "\x0c"):
+        assert redact_dependency_ref(
+            "user:pass@host" + ws + ":path") == "url:<redacted>", repr(ws)
     digest = "sha256:" + "a" * 64
     assert redact_dependency_ref("img@" + digest) == "img@" + digest
     # A digest tail followed by path material is not a clean digest
