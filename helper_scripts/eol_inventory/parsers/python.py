@@ -39,7 +39,12 @@ from ..models import (
     new_warning,
     scan_root_for,
 )
-from ..redact import redact_dependency_ref, redact_display_text, redact_urls
+from ..redact import (
+    redact_dependency_ref,
+    redact_display_text,
+    redact_urls,
+    scp_ref_collapses,
+)
 
 # ---------------------------------------------------------------------------
 # Requirement-line parsing (shared by requirements files and pyproject)
@@ -82,10 +87,12 @@ def _parse_requirement(spec_line):
     if m:
         name = m.group(1)
         ref = m.group(4).strip()
-        if "//" not in ref and "@" not in ref:
+        if "//" not in ref and "@" not in ref and not _is_local_path(ref) \
+                and scp_ref_collapses(f"{name}@{ref}"):
             # A bare-line direct reference consumed the user portion as
-            # the name (git@host:path): re-join so the SCP shape reaches
-            # the redaction boundary.
+            # the name (git@host:path): re-join only when the joined
+            # token is an SCP shape that must collapse, so benign
+            # version-tail and local-path refs stay byte-identical.
             ref = f"{name}@{ref}"
         ref = redact_dependency_ref(ref)
         problem = "local" if _is_local_path(ref) else "url"

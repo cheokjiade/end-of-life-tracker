@@ -189,6 +189,18 @@ _SCP_REF_RE = re.compile(
     r":(?=\S)")
 
 
+def scp_ref_collapses(ref):
+    """True when *ref* (a scheme-less token) is an SCP-style reference
+    that must collapse to a host-only placeholder. Used to gate
+    re-joining a bare-line direct reference before redaction."""
+    if not isinstance(ref, str) or not ref or "://" in ref:
+        return False
+    scp = _SCP_REF_RE.search(ref)
+    if not scp or _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
+        return False
+    return _scp_collapse_host(scp.group("host") or "", ref[scp.end():])
+
+
 def redact_dependency_ref(ref):
     """Redacted form of one dependency reference token (URL or path).
 
@@ -211,14 +223,10 @@ def redact_dependency_ref(ref):
     if "://" not in ref:
         if not _NPM_ALIAS_RE.fullmatch(ref):
             scp = _SCP_REF_RE.search(ref)
-            if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
-                host = scp.group("host") or ""
-                # Lettered, bracketed, empty, or valid-IPv4 hosts are
-                # SCP shapes; other digit junk (user@1.2.3:x) survives.
-                if (not host or host.startswith("[")
-                        or _HOST_LETTER_RE.search(host)
-                        or _is_valid_ipv4(host)):
-                    return ssh_placeholder("ssh://" + host)
+            if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()) \
+                    and _scp_collapse_host(scp.group("host") or "",
+                                           ref[scp.end():]):
+                return ssh_placeholder("ssh://" + (scp.group("host") or ""))
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
@@ -275,6 +283,19 @@ def _is_valid_ipv4(host):
     return True
 
 
+def _scp_collapse_host(host, tail):
+    """True when an SCP match at *host* with *tail* after the colon must
+    collapse: lettered, bracketed, or empty hosts are SCP shapes; digit
+    junk (user@1.2.3:x) survives unless the tail carries a path."""
+    if not host or host.startswith("["):
+        return True
+    if _HOST_LETTER_RE.search(host):
+        return True
+    if _is_valid_ipv4(host):
+        return True
+    return "/" in tail
+
+
 def _ssh_token_placeholder(token):
     """Host-only placeholder for one ssh-scheme token (any scheme case)."""
     body = token[token.index("://") + 3:]
@@ -303,6 +324,14 @@ def redact_display_text(text):
     if not isinstance(text, str) or not text:
         return text
     redacted = redact_urls(text)
+    residue = redacted.replace(f"{REDACTED}@", "")
+    if "@" not in residue and "://" not in residue \
+            and ":" in residue and "/" in residue and "#" in residue:
+        # A scheme-less display value mixing a colon, a path, and a
+        # fragment without any @ is a bare host:path#fragment reference
+        # or mangled junk: no supported manifest grammar produces it in
+        # a report field, so fail closed.
+        return URL_PLACEHOLDER
     out = []
     pos = 0
     for match in _DISPLAY_SSH_RE.finditer(redacted):
@@ -319,9 +348,9 @@ def redact_display_text(text):
                 continue
             if host in _SCP_NO_COLLAPSE_HOSTS:
                 continue
-            if host and not host.startswith("[") \
-                    and not _HOST_LETTER_RE.search(host) \
-                    and not _is_valid_ipv4(host):
+            tail = token[match.start("scp_host")
+                         + len(match.group("scp_host")) + 1:]
+            if not _scp_collapse_host(host, tail):
                 continue
             placeholder = ssh_placeholder("ssh://" + host)
         out.append(redacted[pos:match.start()])

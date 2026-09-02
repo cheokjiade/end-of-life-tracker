@@ -193,21 +193,21 @@ def _product_row(entry, sink):
     provider = entry.get("source") or "endoflife_date"
     if not isinstance(provider, str):
         provider = str(provider)
-    provider = redact_urls(provider)
+    provider = redact_display_text(provider)
     details = []
     for key in ("policy_note", "note", "image_reference", "registry",
                 "repository", "tag", "digest", "reference_url"):
         if entry.get(key) not in (None, ""):
             details.append(f"{key}={entry[key]}")
     return {
-        "label": redact_urls(_product_label(entry)),
+        "label": redact_display_text(_product_label(entry)),
         "version": _redacted_text(entry.get("version")),
         "provider": provider,
         "inferred": "auto-derived" in _comment_text(entry),
         "ecosystem": ecosystem,
         "container": ecosystem == "container",
         "provenance": provenance,
-        "details": redact_urls("; ".join(details)),
+        "details": redact_display_text("; ".join(details)),
     }
 
 
@@ -245,7 +245,7 @@ def _legacy_unmapped_rows(config, known_names, sink):
         known_names.add(_hashable(name))
         rows.append({
             "ecosystem": "node",
-            "name": redact_urls(str(name)),
+            "name": redact_display_text(str(name)),
             "version": _redacted_text(skipped.get("version")),
             "version_spec": None,
             "reason": "legacy: skipped npm package (no mapping at "
