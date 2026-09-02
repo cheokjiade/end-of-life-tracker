@@ -200,15 +200,19 @@ def redact_dependency_ref(ref):
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
     residue = redacted.replace(f"{REDACTED}@", "")
-    if "@" in redacted and ":" in redacted and (
-            _WHITESPACE_RE.search(redacted)
-            or ("#" in residue and "@" in residue)):
+    if "@" in redacted and ":" in redacted:
         last_at = redacted.rfind("@")
         # The digest exemption covers only a single-@ token: with two or
         # more @s the segment between the earlier one and the anchor can
-        # carry credentials (user:pass@img@sha256:<64>).
-        if not (_DIGEST_TAIL_RE.fullmatch(redacted, last_at + 1)
-                and redacted.find("@") == last_at):
+        # carry credentials (user:pass@img@sha256:<64>), even without
+        # whitespace or a fragment.
+        single_anchor = (redacted.find("@") == last_at
+                         and _DIGEST_TAIL_RE.fullmatch(redacted,
+                                                       last_at + 1))
+        if not single_anchor and (
+                _WHITESPACE_RE.search(redacted)
+                or ("#" in residue and "@" in residue)
+                or _DIGEST_TAIL_RE.fullmatch(redacted, last_at + 1)):
             return URL_PLACEHOLDER
     return redact_urls(redacted)
 
