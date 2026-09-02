@@ -21,6 +21,9 @@ error results when exhausted:
   - _NUGET_MAX_TOTAL_BYTES  — total wire bytes downloaded across those
                               requests (aligned with MAX_HTTP_BODY_BYTES,
                               the per-response cap)
+  - _NUGET_MAX_TOTAL_DECODED_BYTES — total decoded bytes (post gzip
+                              expansion, or the plain body) charged
+                              before UTF-8 decoding and JSON parsing
   - _NUGET_MAX_LEAVES       — catalogEntry dicts retained while walking one
                               registration (already enforced in
                               _collect_leaves)
