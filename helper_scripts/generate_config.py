@@ -173,11 +173,23 @@ def _merge_existing_config(existing, generated):
                         provenance_candidates.update(
                             fresh_dockerfile_sites.get(key[0], ()))
                 provenance_candidates.difference_update(used)
-                # A tracked old row may match a tracked fresh row here:
-                # when several fresh rows share the merge identity, the
-                # single-candidate requirement below is what keeps the
-                # match conservative (ambiguous sites retain the old
-                # row). Unmapped remap behavior is unchanged.
+                if old.get("_inventory_generated") != "unmapped":
+                    # A tracked row may use provenance only to
+                    # disambiguate among its OWN identity's fresh rows
+                    # (several fresh rows share the merge identity); a
+                    # weak shared locator must never pull the row onto an
+                    # unrelated tracked product. With zero identity
+                    # candidates the mapping went stale: only fresh
+                    # unmapped rows (the same site now unmapped) may
+                    # claim it. Unmapped remap semantics keep their
+                    # original behavior.
+                    if candidates:
+                        provenance_candidates &= set(candidates)
+                    else:
+                        provenance_candidates = {
+                            index for index in provenance_candidates
+                            if fresh[index].get("_inventory_generated") ==
+                            "unmapped"}
             if len(provenance_candidates) == 1:
                 selected = next(iter(provenance_candidates))
                 remapped = True
