@@ -21,7 +21,7 @@ import re
 from datetime import date
 
 from .models import new_warning, sort_locations
-from .redact import redact_urls
+from .redact import redact_display_text, redact_urls
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +111,17 @@ def _as_list(value, path, sink):
 
 
 def _redacted_text(value):
-    """Display text for a spec field: strings redact through
-    redact_urls and JSON scalars (numbers, booleans) pass through --
-    they have no credential capacity; any other JSON value (a hostile
-    dict or list carrying credential text) redacts through its string
-    form, which is exactly what the renderers would otherwise emit raw.
-    None stays None (absent/empty rendering)."""
+    """Display text for a spec field: strings pass through the display
+    sanitizer (URLs plus SSH/SCP references) and JSON scalars (numbers,
+    booleans) pass through -- they have no credential capacity; any
+    other JSON value (a hostile dict or list carrying credential text)
+    redacts through its string form, which is exactly what the
+    renderers would otherwise emit raw. None stays None (absent/empty
+    rendering)."""
     if value is None or isinstance(value, (str, int, float, bool)):
-        return redact_urls(value) if isinstance(value, str) else value
-    return redact_urls(str(value))
+        return redact_display_text(value) if isinstance(value, str) \
+            else value
+    return redact_display_text(str(value))
 
 
 def _comment_text(entry):
@@ -279,9 +281,9 @@ def build_inventory_view(config, project_name=None):
     manifests = _as_list(inventory.get("manifests"),
                          "_inventory.manifests", malformed)
     warnings = [
-        {"category": redact_urls(str(w.get("category", ""))),
-         "path": redact_urls(str(w.get("path", ""))),
-         "message": redact_urls(str(w.get("message", "")))}
+        {"category": redact_display_text(str(w.get("category", ""))),
+         "path": redact_display_text(str(w.get("path", ""))),
+         "message": redact_display_text(str(w.get("message", "")))}
         for w in _as_list(inventory.get("warnings"),
                           "_inventory.warnings", malformed)
         if isinstance(w, dict)
@@ -333,18 +335,19 @@ def build_inventory_view(config, project_name=None):
     return {
         "meta": {
             # Loaded config content is untrusted: every rendered metadata
-            # value passes through redact_urls on its string form.
-            "scan_date": redact_urls(str(
+            # value passes through the display sanitizer on its string
+            # form (URLs plus SSH/SCP/VCS references).
+            "scan_date": redact_display_text(str(
                 inventory.get("scan_date") or date.today().isoformat())),
             # Additive full-timestamp field; legacy configs without it
             # render exactly as before (renderers skip the absent line).
             "scan_timestamp": _redacted_text(
                 inventory.get("scan_timestamp")),
-            "generator_version": redact_urls(str(
+            "generator_version": redact_display_text(str(
                 inventory.get("generator_version") or "unknown")),
             "files_scanned": _redacted_text(files_scanned),
             "warning_count": len(warnings),
-            "project": redact_urls(str(
+            "project": redact_display_text(str(
                 project_name if project_name is not None
                 else (inventory.get("scan_root") or ""))),
         },

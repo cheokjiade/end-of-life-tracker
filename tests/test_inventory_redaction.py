@@ -38,6 +38,7 @@ from eol_inventory.redact import (
     hosted_git_placeholder,
     redact_dependency_ref,
     redact_display_reference,
+    redact_display_text,
     redact_image_reference,
     redact_urls,
     ssh_placeholder,
@@ -247,6 +248,48 @@ def test_python_scp_direct_reference_redacted():
     rendered = "\n".join((
         render_markdown(view), render_csv(view), render_html(view)))
     assert SECRET not in rendered
+
+
+def test_ssh_scheme_case_and_ipv4_scp_collapse():
+    # Final-audit Batch 1: URI schemes are case-insensitive and valid
+    # IPv4 hosts are real SCP hosts; every variant collapses to a
+    # host-only placeholder with no path, query, or fragment.
+    for ref in (
+            "SSH://git@host.invalid/private/repo.git#fragment",
+            "Git+SSH://git@host.invalid/private/repo.git?credential=x",
+            "sSh://user@host.invalid:2222/private/repo",
+            "GIT+ssh://u:p@host.invalid/private.git",
+            "git@192.0.2.1:private/secret-repo.git",
+            "git@10.0.0.1:credential/private.git",
+            "user@192.0.2.1:path#frag",
+            "ssh://[2001:db8::1]:private/repo",
+    ):
+        out = redact_dependency_ref(ref)
+        assert out.startswith("<ssh"), (ref, out)
+        assert SECRET not in out and "private" not in out and \
+            "credential" not in out and "fragment" not in out, (ref, out)
+        assert redact_dependency_ref(out) == out, (ref, out)
+    # Host-grammar boundary: benign numeric/alias shapes survive.
+    assert redact_dependency_ref("user@1.2.3:x") == "user@1.2.3:x"
+    assert redact_dependency_ref("user@127.0.0.1") == "user@127.0.0.1"
+    assert redact_dependency_ref("npm:@scope/pkg@^1.2.3") == \
+        "npm:@scope/pkg@^1.2.3"
+    assert redact_dependency_ref("pkg@npm:latest") == "pkg@npm:latest"
+    assert redact_dependency_ref(
+        "img@sha256:" + "a" * 64) == "img@sha256:" + "a" * 64
+    # Display sanitizer: the same material embedded in prose collapses
+    # while surrounding text survives.
+    prose = "see SSH://git@host.invalid/private/repo.git#fragment " \
+            "and git@192.0.2.1:private/secret-repo.git for details"
+    out = redact_display_text(prose)
+    assert "private" not in out and SECRET not in out, out
+    assert "<ssh:host.invalid>" in out and "<ssh:192.0.2.1>" in out, out
+    assert "see " in out and " for details" in out, out
+    assert redact_display_text(out) == out
+    # Long hostile input stays bounded and linear.
+    hostile = ("x " + "SSH://git@host.invalid/p" + SECRET + " ") * 2000
+    out = redact_display_text(hostile)
+    assert SECRET not in out and len(out) < len(hostile)
 
 
 def test_hosted_git_and_ssh_placeholders():
@@ -1424,6 +1467,7 @@ TESTS = [
     test_redact_image_reference_path_scan_is_linear,
     test_scp_style_git_refs_collapse,
     test_python_scp_direct_reference_redacted,
+    test_ssh_scheme_case_and_ipv4_scp_collapse,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,

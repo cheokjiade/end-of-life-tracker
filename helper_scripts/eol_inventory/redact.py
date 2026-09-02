@@ -17,6 +17,7 @@ credential-shaped VCS references are replaced.
 """
 
 import bisect
+import ipaddress
 import re
 
 REDACTED = "<redacted>"
@@ -48,8 +49,21 @@ _CREDENTIAL_AUTHORITY_RE = re.compile(
 _HOSTED_GIT_HOSTS = ("github", "gitlab", "bitbucket", "gist", "sourcehut")
 _BARE_GIT_SHORTHAND_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._~-]+(?:#.*)?")
-_SSH_PREFIX_RE = re.compile(r"^(?:git\+)?ssh://")
+_SSH_PREFIX_RE = re.compile(r"^(?:git\+)?ssh://", re.IGNORECASE)
 _SSH_HOST_RE = re.compile(r"[A-Za-z0-9.\-]+")
+_HOST_LETTER_RE = re.compile(r"[A-Za-z]")
+# ssh-scheme tokens and SCP-style references, for display-text scanning:
+# case-insensitive schemes, bracketed IPv6 / lettered / dotted-quad hosts.
+_DISPLAY_SSH_RE = re.compile(
+    r"(?<![A-Za-z0-9._~%\-@])"
+    r"(?:(?:git\+)?ssh://\S*"
+    r"|[A-Za-z0-9._~%-]+@"
+    r"(?P<scp_host>\[[0-9A-Fa-f:.]{2,45}\]"
+    r"|[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*"
+    r"|[0-9.]+)"
+    r":\S*)",
+    re.IGNORECASE)
+_SCP_NO_COLLAPSE_HOSTS = ("npm", "workspace")
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +183,7 @@ _SCP_REF_RE = re.compile(
     r"[A-Za-z0-9._~%-]+@"
     r"(?P<host>\[[0-9A-Fa-f:.]{2,45}\]"
     r"|[A-Za-z0-9.\-]*[A-Za-z][A-Za-z0-9.\-]*"
+    r"|[0-9.]+"
     r"|)"
     r":(?=\S)")
 
@@ -190,13 +205,19 @@ def redact_dependency_ref(ref):
     """
     if not isinstance(ref, str) or not ref:
         return ref
-    if ref.startswith(("ssh://", "git+ssh://")):
+    if _SSH_PREFIX_RE.match(ref):
         return ssh_placeholder(ref)
     if "://" not in ref:
         if not _NPM_ALIAS_RE.fullmatch(ref):
             scp = _SCP_REF_RE.search(ref)
             if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
-                return ssh_placeholder("ssh://" + (scp.group("host") or ""))
+                host = scp.group("host") or ""
+                # Lettered, bracketed, empty, or valid-IPv4 hosts are
+                # SCP shapes; other digit junk (user@1.2.3:x) survives.
+                if (not host or host.startswith("[")
+                        or _HOST_LETTER_RE.search(host)
+                        or _is_valid_ipv4(host)):
+                    return ssh_placeholder("ssh://" + host)
     redacted = _redact_url_tokens(ref)
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
@@ -235,6 +256,67 @@ def ssh_placeholder(url):
     if _SSH_HOST_RE.fullmatch(authority):
         return f"<ssh:{authority}>"
     return "<ssh>"
+
+
+def _is_valid_ipv4(host):
+    """True when *host* is a valid dotted-quad IPv4 literal."""
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _ssh_token_placeholder(token):
+    """Host-only placeholder for one ssh-scheme token (any scheme case)."""
+    body = token[token.index("://") + 3:]
+    authority = re.split(r"[/?#]", body, maxsplit=1)[0]
+    if authority.startswith("["):
+        host = authority[:authority.index("]") + 1] if "]" in authority \
+            else ""
+    else:
+        host = authority.rsplit("@", 1)[-1].rsplit(":", 1)[0]
+    if _SSH_HOST_RE.fullmatch(host):
+        return f"<ssh:{host}>"
+    return "<ssh>"
+
+
+def redact_display_text(text):
+    """Display text with URL and SSH/SCP/VCS reference material redacted.
+
+    One bounded sanitizer for untrusted report fields: URL userinfo,
+    query, and fragment redaction first, then case-insensitive
+    ssh-scheme tokens and SCP-style references collapse to host-only
+    placeholders wherever they appear, including embedded in prose.
+    Dates, counts, names, paths, package aliases, digest anchors, and
+    already-redacted placeholders pass through unchanged; the scan is
+    linear and idempotent.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    redacted = redact_urls(text)
+    out = []
+    pos = 0
+    for match in _DISPLAY_SSH_RE.finditer(redacted):
+        token = match.group(0)
+        if token.lower().startswith(("ssh://", "git+ssh://")):
+            placeholder = _ssh_token_placeholder(token)
+        else:
+            host = match.group("scp_host") or ""
+            if _DIGEST_ANCHOR_RE.fullmatch(redacted, match.start()):
+                continue
+            if host in _SCP_NO_COLLAPSE_HOSTS:
+                continue
+            if host and not host.startswith("[") \
+                    and not _HOST_LETTER_RE.search(host) \
+                    and not _is_valid_ipv4(host):
+                continue
+            placeholder = ssh_placeholder("ssh://" + host)
+        out.append(redacted[pos:match.start()])
+        out.append(placeholder)
+        pos = match.end()
+    out.append(redacted[pos:])
+    return "".join(out)
 
 
 def hosted_git_placeholder(spec):

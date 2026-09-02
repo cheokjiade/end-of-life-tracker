@@ -716,6 +716,40 @@ def test_cli_missing_config():
         assert not out.exists()
 
 
+def test_view_metadata_collapse_scp_references():
+    # Final-audit Batch 1 Case 3: scheme-less SCP references in metadata
+    # and warning fields collapse through the display sanitizer, not
+    # just URL-material redaction.
+    credential = "git@github.com:credential/private.git#fragment"
+    config = {
+        "products": [],
+        "_inventory": {
+            "scan_date": credential,
+            "generator_version": credential,
+            "scan_root": credential,
+            "manifests": [],
+            "warnings": [{"category": credential, "path": credential,
+                          "message": "see " + credential + " for access"}],
+        },
+    }
+    view = build_inventory_view(config, project_name=credential)
+    assert SECRET not in json.dumps(view)
+    assert "credential/private" not in json.dumps(view)
+    rendered = "\n".join((
+        render_markdown(view), render_csv(view), render_html(view)))
+    assert SECRET not in rendered
+    assert "credential/private" not in rendered
+    # Benign metadata is byte-identical through the same sanitizer.
+    benign = {
+        "products": [],
+        "_inventory": {"scan_date": "2026-09-02", "scan_root": "proj",
+                       "manifests": [], "warnings": []},
+    }
+    view = build_inventory_view(benign, project_name="proj")
+    assert view["meta"]["scan_date"] == "2026-09-02"
+    assert view["meta"]["project"] == "proj"
+
+
 def test_view_hostile_metadata_and_warning_fields_render_clean():
     # Sol round-two 1B: loaded config content is untrusted — warning
     # category/path and every rendered metadata field pass through
