@@ -193,10 +193,6 @@ def test_config_unmapped_items_and_summary():
 def test_config_is_deterministic():
     config1 = gc.generate_config(gc.scan_folder(str(FIX)), "mixed")
     config2 = gc.generate_config(gc.scan_folder(str(FIX)), "mixed")
-    # scan_timestamp carries the wall clock; normalize it like the
-    # generation date (see the plan's determinism testing strategy).
-    for config in (config1, config2):
-        config["_inventory"].pop("scan_timestamp", None)
     dump1 = json.dumps(config1, indent=2, ensure_ascii=True)
     dump2 = json.dumps(config2, indent=2, ensure_ascii=True)
     assert dump1 == dump2

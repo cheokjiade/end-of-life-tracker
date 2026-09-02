@@ -29,7 +29,7 @@ every source used here is registered in eoltracker/parsers/.
 """
 
 import os
-from datetime import date, datetime
+from datetime import date
 
 from .mappings import (
     _POM_PROPERTY_MAPPINGS,
@@ -451,10 +451,6 @@ def generate_config(scan, project_name, include_transitive=False):
         "schema_version": SCHEMA_VERSION,
         "generator_version": GENERATOR_VERSION,
         "scan_date": date.today().isoformat(),
-        # Full local ISO-8601 wall-clock stamp with time-of-day; additive
-        # alongside the deterministic `scan_date` (report comparisons
-        # normalize this field).
-        "scan_timestamp": datetime.now().astimezone().isoformat(),
         "scan_root": scan["root_name"],
         "manifests": list(scan["files"]),
         "include_transitive": bool(include_transitive),

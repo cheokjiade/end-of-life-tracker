@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -839,23 +839,19 @@ def test_generate_config_maven_multi():
                for u in inv["unmapped"])
 
 
-def test_inventory_metadata_carries_scan_timestamp_and_consumed_manifests():
+def test_inventory_metadata_carries_scan_date_and_consumed_manifests():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "package.json").write_text(json.dumps(
             {"name": "app", "dependencies": {"left-pad": "1.3.0"}}))
         (root / "package-lock.json").write_text(json.dumps(
             {"lockfileVersion": 3, "packages": {}}))
-        before = datetime.now().astimezone()
         config = gc.generate_config(gc.scan_folder(root), "stamp")
-        after = datetime.now().astimezone()
     inv = config["_inventory"]
-    stamp = datetime.fromisoformat(inv["scan_timestamp"])
-    # Full ISO-8601 local timestamp with time-of-day, parseable, taken
-    # during this generate_config call, and consistent with scan_date.
-    assert "T" in inv["scan_timestamp"]
-    assert before <= stamp <= after
-    assert inv["scan_date"] == stamp.date().isoformat()
+    # The plan requires a deterministic scan date, not a wall-clock
+    # timestamp: identical inputs must produce identical configs.
+    assert "scan_timestamp" not in inv
+    assert inv["scan_date"] == date.today().isoformat()
     # The consumed-but-unused sibling lock joins the manifest list.
     assert inv["manifests"] == ["package-lock.json", "package.json"]
     assert inv["summary"]["files"] == 2
@@ -1103,10 +1099,6 @@ def test_generate_config_deterministic():
     scan2 = _scan("mixed")
     config1 = gc.generate_config(scan1, "mixed")
     config2 = gc.generate_config(scan2, "mixed")
-    # scan_timestamp carries the wall clock; normalize it like the
-    # generation date (see the plan's determinism testing strategy).
-    for config in (config1, config2):
-        config["_inventory"].pop("scan_timestamp", None)
     dump1 = json.dumps(config1, indent=2, ensure_ascii=True)
     dump2 = json.dumps(config2, indent=2, ensure_ascii=True)
     assert dump1 == dump2
@@ -1167,10 +1159,6 @@ def test_cli_output_is_ascii_and_deterministic():
         first = json.loads(raw.decode("ascii"))
         _run_cli([str(root), "--output", str(out), "--replace"])
         second = json.loads(out.read_bytes().decode("ascii"))
-        # scan_timestamp carries the wall clock; normalize it like the
-        # generation date before the byte-determinism comparison.
-        for config in (first, second):
-            config["_inventory"].pop("scan_timestamp", None)
         assert json.dumps(second, indent=2, ensure_ascii=True) == \
             json.dumps(first, indent=2, ensure_ascii=True)
         assert first["_inventory"]["unmapped"][0]["name"] == "café-pkg"
@@ -1860,7 +1848,7 @@ TESTS = [
     test_generate_config_no_inference_when_security_explicit,
     test_generate_config_entry_key_dedup_merges_provenance,
     test_generate_config_deterministic,
-    test_inventory_metadata_carries_scan_timestamp_and_consumed_manifests,
+    test_inventory_metadata_carries_scan_date_and_consumed_manifests,
     test_warnings_sorted_and_deduplicated,
     test_cli_refuses_overwrite_without_replace,
     test_cli_output_is_ascii_and_deterministic,
