@@ -1269,9 +1269,11 @@ def test_redact_image_reference_mid_path_credentials_stripped():
     assert redact_image_reference("registry:5000/img:1") == \
         "registry:5000/img:1"
     assert redact_image_reference("user:pass@img:1.0") == "img:1.0"
-    # An @ with nothing after it in the authority position carries only
-    # credentials: the userinfo is stripped, not returned raw.
-    assert redact_image_reference("user:pass@/img") == "/img"
+    # An @ whose authority is empty or starts with fragment/query
+    # material carries only credentials: fail closed.
+    assert redact_image_reference("user:pass@/img") == "url:<redacted>"
+    assert redact_image_reference("user:pass@#frag-" + SECRET) == \
+        "url:<redacted>"
     assert redact_image_reference("/img") == "/img"
     # An @ inside a scheme'd URL authority is URL userinfo, not path
     # material: the scheme'd handling keeps the <redacted> marker form.

@@ -49,7 +49,7 @@ _CREDENTIAL_AUTHORITY_RE = re.compile(
 _HOSTED_GIT_HOSTS = ("github", "gitlab", "bitbucket", "gist", "sourcehut")
 _BARE_GIT_SHORTHAND_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._~-]+(?:#.*)?")
-_SSH_PREFIX_RE = re.compile(r"^[++]?(?:git\+)?ssh://", re.IGNORECASE)
+_SSH_PREFIX_RE = re.compile(r"^[+]{0,2}(?:git\+)?ssh://", re.IGNORECASE)
 _SSH_HOST_RE = re.compile(r"[A-Za-z0-9.\-]+")
 _HOST_LETTER_RE = re.compile(r"[A-Za-z]")
 # ssh-scheme tokens and SCP-style references, for display-text scanning:
@@ -66,15 +66,16 @@ _DISPLAY_SSH_RE = re.compile(
     re.IGNORECASE)
 # Colon-bearing userinfo before an @ with a path, fragment, or empty
 # tail (user:pass@intranet/path, user:pass@#frag): passwords never
-# survive, whatever the host shape.
+# survive, whatever the host shape. The character classes reach past
+# ASCII so unicode passwords are caught too.
 _USERINFO_AT_RE = re.compile(
-    r"(?<![A-Za-z0-9._~%\-@])[A-Za-z0-9._~%-]+:[A-Za-z0-9._~%-]+@")
+    r"(?<![A-Za-z0-9._~%\-@])[^@\s:]+:[^@\s]+@")
 
 _SCP_NO_COLLAPSE_HOSTS = ("npm", "workspace")
 # A real scheme anchors the token (or, for marker-bearing tokens,
 # precedes the redaction marker); a planted :// after the secret is
 # attacker material, not a scheme.
-_SCHEME_START_RE = re.compile(r"^[++]?(?:git\+)?[A-Za-z][A-Za-z0-9+.\-]*://")
+_SCHEME_START_RE = re.compile(r"^[+]{0,2}(?:git\+)?[A-Za-z][A-Za-z0-9+.\-]*://")
 _SCHEME_ANYWHERE_RE = re.compile(
     r"(?<![A-Za-z0-9+.\-#@/])(?:git\+)?[A-Za-z][A-Za-z0-9+.\-]*://")
 
@@ -164,7 +165,7 @@ def _redact_one_url(url):
         if at > 0:
             authority = f"{REDACTED}@{authority[at + 1:]}"
         out.append(authority)
-        nested = _URL_SCHEME_RE.search(tail)
+        nested = _URL_SCHEME_RE.search(tail) if "://" in tail else None
         if not nested:
             out.append(tail)
             break
@@ -205,10 +206,13 @@ def scp_ref_collapses(ref):
     """True when *ref* (a scheme-less token) is an SCP-style reference
     that must collapse to a host-only placeholder. Used to gate
     re-joining a bare-line direct reference before redaction."""
-    if not isinstance(ref, str) or not ref or "://" in ref:
+    if not isinstance(ref, str) or not ref or "://" in ref \
+            or ":" not in ref:
         return False
     scp = _SCP_REF_RE.search(ref)
     if not scp or _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()):
+        return False
+    if (scp.group("host") or "") in _SCP_NO_COLLAPSE_HOSTS:
         return False
     return _scp_collapse_host(scp.group("host") or "", ref[scp.end():])
 
@@ -234,17 +238,20 @@ def redact_dependency_ref(ref):
         return ssh_placeholder(ref)
     if not _SCHEME_START_RE.match(ref):
         if not _NPM_ALIAS_RE.fullmatch(ref):
-            if _USERINFO_AT_RE.search(ref):
+            if "@" in ref and _USERINFO_AT_RE.search(ref):
                 after = ref[ref.index("@") + 1:]
                 if "/" in after or "#" in after or not after:
                     # Colon-bearing userinfo with a path, fragment, or
                     # empty tail: the password never survives.
                     return URL_PLACEHOLDER
-            scp = _SCP_REF_RE.search(ref)
-            if scp and not _DIGEST_ANCHOR_RE.fullmatch(ref, scp.start()) \
-                    and _scp_collapse_host(scp.group("host") or "",
-                                           ref[scp.end():]):
-                return ssh_placeholder("ssh://" + (scp.group("host") or ""))
+            if ":" in ref:
+                scp = _SCP_REF_RE.search(ref)
+                if scp and not _DIGEST_ANCHOR_RE.fullmatch(
+                        ref, scp.start()) \
+                        and _scp_collapse_host(scp.group("host") or "",
+                                               ref[scp.end():]):
+                    return ssh_placeholder(
+                        "ssh://" + (scp.group("host") or ""))
     redacted = _redact_url_tokens(ref) if "://" in ref else ref
     if "://" in redacted and "@" in redacted.replace(f"{REDACTED}@", ""):
         return URL_PLACEHOLDER
@@ -372,7 +379,7 @@ def redact_display_text(text):
             # authority collapsed and any surviving tail is
             # host-reachable material — collapse.
             return URL_PLACEHOLDER
-        m2 = _USERINFO_AT_RE.search(token)
+        m2 = _USERINFO_AT_RE.search(token) if "@" in token else None
         if m2 and not _DIGEST_ANCHOR_RE.fullmatch(token) \
                 and not _NPM_ALIAS_RE.fullmatch(token):
             after = token[m2.end():]
@@ -398,7 +405,8 @@ def redact_display_text(text):
             out.append(redacted[pos:match.start()])
             out.append(URL_PLACEHOLDER)
             pos = match.end()
-        prev_url_like = "://" in token or token.startswith("<ssh")
+        prev_url_like = "://" in token or token.startswith(
+            ("<ssh", "url:", "<redacted>"))
     out.append(redacted[pos:])
     redacted = "".join(out)
     out = []
@@ -547,11 +555,11 @@ def redact_image_reference(ref):
     if at < 0:
         return _strip_path_credentials(ref)
     rest = head[at + 1:]
-    if not rest:
-        # An @ with nothing after it in the authority position carries
-        # only credentials ("user:pass@/img"): strip the userinfo and
-        # keep whatever follows instead of returning the raw text.
-        return ref[at + 1:]
+    if not rest or rest[:1] in ("#", "@", "?"):
+        # An @ whose authority is empty or starts with a fragment,
+        # another @, or query material carries only credentials and no
+        # parseable registry host: fail closed.
+        return URL_PLACEHOLDER
     if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
             and "@" not in head[:at]:
         return ref
