@@ -396,25 +396,6 @@ def redact_display_text(text):
         return token
 
     redacted = re.sub(r"\S+", _collapse_token, redacted)
-    for _ in range(4):
-        out = []
-        pos = 0
-        prev_url_like = False
-        changed = False
-        for match in re.finditer(r"\S+", redacted):
-            token = match.group(0)
-            if prev_url_like and token[:1] in ("?", "#") \
-                    and token != URL_PLACEHOLDER:
-                out.append(redacted[pos:match.start()])
-                out.append(URL_PLACEHOLDER)
-                pos = match.end()
-                changed = True
-            prev_url_like = "://" in token or token.startswith(
-                ("<ssh", "url:", "<redacted>"))
-        out.append(redacted[pos:])
-        redacted = "".join(out)
-        if not changed:
-            break
     out = []
     pos = 0
     for match in _DISPLAY_SSH_RE.finditer(redacted):
@@ -440,7 +421,34 @@ def redact_display_text(text):
         out.append(placeholder)
         pos = match.end()
     out.append(redacted[pos:])
-    return "".join(out)
+    redacted = "".join(out)
+    # Context pass: query/fragment tokens following URL or SSH material
+    # are planted tails; collapse whole runs of them to a fixpoint so
+    # the output is idempotent regardless of chain length.
+    for _ in range(6):
+        out = []
+        pos = 0
+        prev_url_like = False
+        in_tail_run = False
+        changed = False
+        for match in re.finditer(r"\S+", redacted):
+            token = match.group(0)
+            tail_like = token[:1] in ("?", "#")
+            if (prev_url_like or in_tail_run) and tail_like:
+                out.append(redacted[pos:match.start()])
+                out.append(URL_PLACEHOLDER)
+                pos = match.end()
+                in_tail_run = True
+                changed = True
+            else:
+                in_tail_run = False
+            prev_url_like = "://" in token or token.startswith(
+                ("<ssh", "url:", "<redacted>"))
+        out.append(redacted[pos:])
+        redacted = "".join(out)
+        if not changed:
+            break
+    return redacted
 
 
 def hosted_git_placeholder(spec):
@@ -551,7 +559,7 @@ def redact_image_reference(ref):
     # Scheme detection must survive leading whitespace (" ARG=..."-style
     # padding), so match against the leading non-whitespace region and
     # fail closed as before.
-    leading = ref.lstrip()
+    leading = ref.lstrip().lstrip("+")
     scheme = _URL_SCHEME_RE.match(leading)
     if scheme:
         return _strip_scheme_image_reference(leading, scheme.end())
@@ -566,6 +574,12 @@ def redact_image_reference(ref):
         # another @, or query material carries only credentials and no
         # parseable registry host: fail closed.
         return URL_PLACEHOLDER
+    if slash >= 0 and ":" in rest and not rest.startswith("["):
+        # Registry-port position: every colon-separated segment after
+        # the host must be numeric; a password fragment in port
+        # position fails closed.
+        if any(not p.isdigit() for p in rest.split(":")[1:]):
+            return URL_PLACEHOLDER
     if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
             and "@" not in head[:at]:
         return ref
@@ -591,11 +605,9 @@ def _strip_scheme_image_reference(ref, scheme_end):
     if not authority:
         return URL_PLACEHOLDER
     if ":" in authority and not authority.startswith("["):
-        port = authority.rsplit(":", 1)[-1]
-        if not port.isdigit():
-            # The userinfo-stripped authority still carries a
-            # non-numeric colon (a password fragment in host position):
-            # fail closed.
+        # Every segment after the host must be a numeric port; a
+        # password fragment in port position fails closed.
+        if any(not p.isdigit() for p in authority.split(":")[1:]):
             return URL_PLACEHOLDER
     stripped = authority + tail
     if "@" in stripped or "?" in stripped or "#" in stripped \
