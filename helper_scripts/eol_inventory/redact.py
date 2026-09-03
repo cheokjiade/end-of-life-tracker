@@ -346,8 +346,12 @@ def _registry_port_ok(text):
         if bracket < 0:
             return False
         remainder = text[bracket + 1:]
-        if not remainder.startswith(":"):
+        if remainder == "":
             return True
+        if not remainder.startswith(":"):
+            # Junk between the closing bracket and the colon is not a
+            # registry grammar shape: fail closed.
+            return False
         port_text = remainder[1:].split("/", 1)[0]
     else:
         port_text = "/".join(":".join(text.split(":")[1:]).split("/",
