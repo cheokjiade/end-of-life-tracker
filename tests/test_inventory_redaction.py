@@ -1275,6 +1275,13 @@ def test_redact_image_reference_mid_path_credentials_stripped():
     assert redact_image_reference("user:pass@#frag-" + SECRET) == \
         "url:<redacted>"
     assert redact_image_reference("/img") == "/img"
+    # Bracketed-IPv6 authorities obey the same port-position rule.
+    assert redact_image_reference("user:pass@[::1]:s3cr3t/img") == \
+        "url:<redacted>"
+    assert redact_image_reference(
+        "user:pass@[2001:db8::1]:s3cr3t:5000/img") == "url:<redacted>"
+    assert redact_image_reference(
+        "user:pass@[::1]:5000/img:1.0") == "[::1]:5000/img:1.0"
     # An @ inside a scheme'd URL authority is URL userinfo, not path
     # material: the scheme'd handling keeps the <redacted> marker form.
     padded = "${BASE:- https://user:pw@registry.invalid/team/x:1}"

@@ -337,6 +337,25 @@ def _scp_collapse_host(host, tail):
     return host.count(".") >= 3
 
 
+def _registry_port_ok(text):
+    """True when every colon-separated segment after the host (the text
+    before the first slash, bracketed IPv6 handled) is a numeric port;
+    a password fragment in port position fails closed."""
+    if text.startswith("["):
+        bracket = text.find("]")
+        if bracket < 0:
+            return False
+        remainder = text[bracket + 1:]
+        if not remainder.startswith(":"):
+            return True
+        port_text = remainder[1:].split("/", 1)[0]
+    else:
+        port_text = "/".join(":".join(text.split(":")[1:]).split("/",
+                                                             1)[:1])
+    return port_text == "" or all(
+        p.isascii() and p.isdigit() for p in port_text.split(":"))
+
+
 def _ssh_token_placeholder(token):
     """Host-only placeholder for one ssh-scheme token (any scheme case)."""
     body = token[token.index("://") + 3:]
@@ -574,12 +593,11 @@ def redact_image_reference(ref):
         # another @, or query material carries only credentials and no
         # parseable registry host: fail closed.
         return URL_PLACEHOLDER
-    if slash >= 0 and ":" in rest and not rest.startswith("["):
+    if slash >= 0 and ":" in rest and not _registry_port_ok(rest):
         # Registry-port position: every colon-separated segment after
         # the host must be numeric; a password fragment in port
         # position fails closed.
-        if any(not p.isdigit() for p in rest.split(":")[1:]):
-            return URL_PLACEHOLDER
+        return URL_PLACEHOLDER
     if slash < 0 and _DIGEST_TAIL_RE.fullmatch(rest) \
             and "@" not in head[:at]:
         return ref
@@ -604,11 +622,10 @@ def _strip_scheme_image_reference(ref, scheme_end):
         authority = authority[at + 1:]
     if not authority:
         return URL_PLACEHOLDER
-    if ":" in authority and not authority.startswith("["):
+    if ":" in authority and not _registry_port_ok(authority):
         # Every segment after the host must be a numeric port; a
         # password fragment in port position fails closed.
-        if any(not p.isdigit() for p in authority.split(":")[1:]):
-            return URL_PLACEHOLDER
+        return URL_PLACEHOLDER
     stripped = authority + tail
     if "@" in stripped or "?" in stripped or "#" in stripped \
             or any(ch.isspace() for ch in stripped):
