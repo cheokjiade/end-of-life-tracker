@@ -208,6 +208,38 @@ def test_scp_style_git_refs_collapse():
                    "pkg==1.0.0"):
         assert redact_dependency_ref(benign) == benign, benign
     assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
+    # Consolidation-review pins: slash-bearing junk-host paths, mangled
+    # +schemes, colon-bearing userinfo with dotless or empty hosts, and
+    # URL/ssh-adjacent fragment tails all fail closed.
+    for ref in ("git@10.0.0.1:pr//ivate.git",
+                "git@10.0.0.1:u@2:pr.git",
+                "Git+SSH://git@host.invalid/private/repo.git"
+                "?credential=x",
+                "user:pw9z9z9z9@intranet/path/to/repo",
+                "user:pass@/path/to/repo",
+                "user:pass@#frag-" + SECRET):
+        out = redact_dependency_ref(ref)
+        assert out.startswith("<ssh") or out == "url:<redacted>", \
+            (ref, out)
+        assert SECRET not in out and "private" not in out and \
+            "credential" not in out and "pw9z9z9z9" not in out, \
+            (ref, out)
+        assert redact_dependency_ref(out) == out, (ref, out)
+    out = redact_dependency_ref("git@1.2.3.4.5:z9z9z9" + SECRET)
+    assert out == "<ssh:1.2.3.4.5>", out
+    assert redact_dependency_ref(out) == out
+    # Display: planted query/fragment tails after URL and ssh tokens
+    # collapse; benign fragment prose survives.
+    out = redact_display_text(
+        "install via == https://host.invalid/x ?q=z9z9z9" + SECRET)
+    assert "z9z9z9" not in out and "url:<redacted>" in out, out
+    out = redact_display_text(
+        "clone >= ssh://git@h.invalid/p/r.git #frag-z9z9z9" + SECRET)
+    assert "z9z9z9" not in out and "url:<redacted>" in out, out
+    assert redact_display_text("see #lts-policy for detail") == \
+        "see #lts-policy for detail"
+    assert redact_display_text(
+        "user:pw9z9z9z9@intranet/path/to/repo") == "url:<redacted>"
 
 
 def test_python_scp_direct_reference_redacted():

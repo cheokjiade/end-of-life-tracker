@@ -87,7 +87,7 @@ def _parse_requirement(spec_line):
     if m:
         name = m.group(1)
         ref = m.group(4).strip()
-        if "//" not in ref and "@" not in ref and not _is_local_path(ref) \
+        if not _is_local_path(ref) \
                 and scp_ref_collapses(f"{name}@{ref}"):
             # A bare-line direct reference consumed the user portion as
             # the name (git@host:path): re-join only when the joined
