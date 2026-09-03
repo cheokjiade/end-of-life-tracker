@@ -396,19 +396,25 @@ def redact_display_text(text):
         return token
 
     redacted = re.sub(r"\S+", _collapse_token, redacted)
-    out = []
-    pos = 0
-    prev_url_like = False
-    for match in re.finditer(r"\S+", redacted):
-        token = match.group(0)
-        if prev_url_like and token[:1] in ("?", "#"):
-            out.append(redacted[pos:match.start()])
-            out.append(URL_PLACEHOLDER)
-            pos = match.end()
-        prev_url_like = "://" in token or token.startswith(
-            ("<ssh", "url:", "<redacted>"))
-    out.append(redacted[pos:])
-    redacted = "".join(out)
+    for _ in range(4):
+        out = []
+        pos = 0
+        prev_url_like = False
+        changed = False
+        for match in re.finditer(r"\S+", redacted):
+            token = match.group(0)
+            if prev_url_like and token[:1] in ("?", "#") \
+                    and token != URL_PLACEHOLDER:
+                out.append(redacted[pos:match.start()])
+                out.append(URL_PLACEHOLDER)
+                pos = match.end()
+                changed = True
+            prev_url_like = "://" in token or token.startswith(
+                ("<ssh", "url:", "<redacted>"))
+        out.append(redacted[pos:])
+        redacted = "".join(out)
+        if not changed:
+            break
     out = []
     pos = 0
     for match in _DISPLAY_SSH_RE.finditer(redacted):
@@ -584,6 +590,13 @@ def _strip_scheme_image_reference(ref, scheme_end):
         authority = authority[at + 1:]
     if not authority:
         return URL_PLACEHOLDER
+    if ":" in authority and not authority.startswith("["):
+        port = authority.rsplit(":", 1)[-1]
+        if not port.isdigit():
+            # The userinfo-stripped authority still carries a
+            # non-numeric colon (a password fragment in host position):
+            # fail closed.
+            return URL_PLACEHOLDER
     stripped = authority + tail
     if "@" in stripped or "?" in stripped or "#" in stripped \
             or any(ch.isspace() for ch in stripped):
