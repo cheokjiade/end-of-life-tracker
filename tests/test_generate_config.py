@@ -2051,6 +2051,172 @@ def test_update_curated_manual_row_remains_product():
     assert not merged["_inventory"].get("unmapped")
 
 
+def test_update_partial_multi_version_removal_keeps_site_curation():
+    # Review finding 2: existing shared 1.0/policy A @a/pom.xml and
+    # shared 2.0/policy B @b/pom.xml; the fresh scan reports only
+    # shared 3.0 @b/pom.xml. The sole fresh candidate must not be handed
+    # to the a-row by the single-candidate fallback (that moved policy A
+    # onto site B and left a stale 2.0/policy B row): the b-row becomes
+    # 3.0 and keeps policy B; the a-row is retained unobserved with
+    # policy A intact; no row ends up with the wrong policy.
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "1.0", "policy_note": "policy A",
+             "_comment": "From a/pom.xml", "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0", "policy_note": "policy B",
+             "_comment": "From b/pom.xml", "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "3.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert sorted(p["_found_in"][0]["path"] for p in products) == [
+        "a/pom.xml", "b/pom.xml"], products
+    by_site = {p["_found_in"][0]["path"]: p for p in products}
+    assert by_site["b/pom.xml"]["version"] == "3.0"
+    assert by_site["b/pom.xml"]["policy_note"] == "policy B"
+    assert by_site["a/pom.xml"]["version"] == "1.0"
+    assert by_site["a/pom.xml"]["policy_note"] == "policy A"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 1}
+
+
+def test_update_same_name_tracked_and_retained_sites_keep_identity():
+    # Review finding 3a: the same-name generated-unmapped `dep` sits at
+    # a/ (now tracked by the fresh scan) and b/ (unobserved, retained).
+    # Only the b/ item may be carried into `_inventory.unmapped`; the
+    # report view must never render `dep 1.0` as both a product and an
+    # unmapped row.
+    from eol_inventory.report_writer import build_inventory_view
+    loc_a = {"path": "a/package.json", "manifest": "npm", "line": 5,
+             "locator": "dependencies.dep"}
+    loc_b = {"path": "b/package.json", "manifest": "npm", "line": 5,
+             "locator": "dependencies.dep"}
+    item_a = {"ecosystem": "node", "name": "dep", "version": "1.0",
+              "reason": "no mapping", "found_in": [dict(loc_a)]}
+    item_b = {"ecosystem": "node", "name": "dep", "version": "1.0",
+              "reason": "no mapping", "found_in": [dict(loc_b)]}
+    existing = {
+        "products": [
+            {"source": "manual", "label": "dep", "version": "1.0",
+             "note": "no mapping",
+             "_comment": "Untracked node inventory item",
+             "_inventory_generated": "unmapped",
+             "_found_in": [dict(loc_a)]},
+            {"source": "manual", "label": "dep", "version": "1.0",
+             "note": "no mapping",
+             "_comment": "Untracked node inventory item",
+             "_inventory_generated": "unmapped",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {"unmapped": [dict(item_a), dict(item_b)]},
+    }
+    generated = {
+        "products": [
+            {"source": "npm_registry", "package": "dep", "version": "1.0",
+             "label": "dep 1.0", "_comment": "From a/package.json",
+             "_found_in": [dict(loc_a)]},
+        ],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 1, "records": 1, "products": 1,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    tracked = [p for p in products
+               if p.get("_inventory_generated") != "unmapped"]
+    retained = [p for p in products
+                if p.get("_inventory_generated") == "unmapped"]
+    assert len(tracked) == 1 and tracked[0]["source"] == "npm_registry"
+    assert tracked[0]["_found_in"] == [loc_a]
+    assert len(retained) == 1 and retained[0]["_found_in"] == [loc_b]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 0, "unchanged": 1,
+        "retained_not_observed": 1}
+    carried = [u for u in merged["_inventory"]["unmapped"]
+               if isinstance(u, dict)]
+    assert [u["found_in"][0]["path"] for u in carried] == [
+        "b/package.json"], carried
+    assert carried[0]["reason"] == "no mapping"
+
+    view = build_inventory_view(merged)
+    assert len(view["products"]) + len(view["containers"]) == 1
+    assert len(view["unmapped"]) == 1
+    assert view["unmapped"][0]["found_in"][0]["path"] == "b/package.json"
+    assert view["summary"]["by_review_state"]["unmapped"] == 1
+
+
+def test_update_two_retained_locators_in_one_file_both_carried():
+    # Review finding 3b: two retained generated-unmapped rows share a
+    # name and a file but sit at distinct locators. Both are retained
+    # (retained_not_observed=2) and both unmapped items must be carried
+    # forward: the dedup key includes the locator, not just (name, paths).
+    from eol_inventory.report_writer import build_inventory_view
+    loc_1 = {"path": "package.json", "manifest": "npm", "line": 5,
+             "locator": "dependencies.dep"}
+    loc_2 = {"path": "package.json", "manifest": "npm", "line": 12,
+             "locator": "devDependencies.dep"}
+    item_1 = {"ecosystem": "node", "name": "dep", "version_spec": "^1.0",
+              "reason": "no lock evidence", "found_in": [dict(loc_1)]}
+    item_2 = {"ecosystem": "node", "name": "dep", "version_spec": "^2.0",
+              "reason": "no lock evidence", "found_in": [dict(loc_2)]}
+    existing = {
+        "products": [
+            {"source": "manual", "label": "dep", "version": "^1.0",
+             "note": "no lock evidence",
+             "_comment": "Untracked node inventory item",
+             "_inventory_generated": "unmapped",
+             "_found_in": [dict(loc_1)]},
+            {"source": "manual", "label": "dep", "version": "^2.0",
+             "note": "no lock evidence",
+             "_comment": "Untracked node inventory item",
+             "_inventory_generated": "unmapped",
+             "_found_in": [dict(loc_2)]},
+        ],
+        "_inventory": {"unmapped": [dict(item_1), dict(item_2)]},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 0, "unchanged": 0,
+        "retained_not_observed": 2}
+    carried = [u for u in merged["_inventory"]["unmapped"]
+               if isinstance(u, dict)]
+    assert sorted(u["found_in"][0]["locator"] for u in carried) == [
+        "dependencies.dep", "devDependencies.dep"], carried
+    assert sorted(u["version_spec"] for u in carried) == ["^1.0", "^2.0"]
+
+    view = build_inventory_view(merged)
+    assert len(view["products"]) + len(view["containers"]) == 0
+    assert len(view["unmapped"]) == 2
+    assert view["summary"]["by_review_state"]["unmapped"] == 2
+
+
 def test_update_no_mutation_of_generated_dict():
     # The merge must not mutate the caller's generated dict (aliasing):
     # two sequential merges with a shared generated dict must produce
@@ -2222,6 +2388,9 @@ TESTS = [
     test_update_same_name_distinct_sites_both_carried,
     test_update_observed_unmapped_not_duplicated,
     test_update_curated_manual_row_remains_product,
+    test_update_partial_multi_version_removal_keeps_site_curation,
+    test_update_same_name_tracked_and_retained_sites_keep_identity,
+    test_update_two_retained_locators_in_one_file_both_carried,
     test_update_no_mutation_of_generated_dict,
     test_snapshot_properties_stay_unmapped,
     test_cli_update_rejects_non_object_json,
