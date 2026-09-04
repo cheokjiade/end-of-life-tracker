@@ -115,6 +115,13 @@ For clean dependency directories, `python generate_config.py <folder> --name
 follow `docs/updating-a-config.md` and patch it from new evidence rather than
 regenerating it wholesale.
 
+Two config generators currently coexist on purpose: this root
+`generate_config.py` (extended by open PR #35) and the more thorough
+multi-ecosystem scanner under `helper_scripts/` described below (see
+[Scan your project](#scan-your-project)), backed by
+`helper_scripts/eol_inventory/`. Consolidating them into one tool is a
+follow-up decision, not yet made.
+
 ### Sample output
 
 #### Console (plain text)

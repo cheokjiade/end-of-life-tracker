@@ -30,6 +30,14 @@ a verified manifest (see `docs/packaging.md`).
 | Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
 | Run a Codex task while conserving Codex allowance | Ask Codex to follow `docs/codex-usage-efficient-workflow.md` |
 
+Two config generators currently coexist on purpose: root `generate_config.py`
+(the plain manifest extractor, being extended by open PR #35) and
+`helper_scripts/generate_config.py` backed by `helper_scripts/eol_inventory/`
+(the multi-ecosystem inventory scanner with provenance, curation-preserving
+`--update`, and container-image scanning). Consolidating them into one tool is
+a follow-up decision, not yet made — do not delete or merge either one without
+an explicit instruction to do so.
+
 Universal norms, whichever workflow you are in:
 
 - **Verify, don't fabricate.** Confirm endoflife.date slugs/cycles and
@@ -50,8 +58,11 @@ Universal norms, whichever workflow you are in:
 ```
 lambda_function.py        # shim: re-exports lambda_handler; __main__ runs run_local
 eoltracker/
-  core.py                 # logger, parse_date_field, _error_result, the two HTML table parsers
-  parsers/                # one file per provider + __init__.py (auto-registration + dispatch)
+  core.py                 # logger, parse_date_field, _error_result, the two HTML table parsers,
+                          #   plus the bounded-JSON/HTTP helpers validate_bounded_json,
+                          #   read_response_bytes, decompress_gzip_bytes
+  parsers/                # one file per provider + __init__.py (auto-registration + dispatch);
+                          #   includes go_proxy.py, nuget_registry.py, pypi_registry.py
   report.py               # _categorise + plain-text and HTML formatters
   notify.py               # notification channels
   runner.py               # run_checks: bounded-concurrency provider execution, lookup dedupe,
@@ -59,12 +70,16 @@ eoltracker/
                           #   env knobs EOL_MAX_WORKERS / EOL_TIME_RESERVE_MS /
                           #   EOL_CHECK_START_GUARD_MS
   handler.py              # config loading, lambda_handler, run_local
+  validation.py           # config JSON decode/parse + eoltracker.validation schema enforcement
 helper_scripts/
-  generate_config.py      # CLI: folder scan -> eol_config.<project>.json (+ _inventory)
+  generate_config.py      # root-alternative CLI: folder scan -> eol_config.<project>.json (+ _inventory);
+                          #   extended by open PR #35 — see the coexistence note above
   generate_inventory_report.py  # CLI: config -> Markdown/CSV/HTML inventory report
   generate_config.sh/.ps1, generate_inventory_report.sh/.ps1  # interactive wrappers
-  eol_inventory/          # importable scan package: discovery, models, mappings,
-                          #   config_writer, report_writer, parsers/ (per ecosystem)
+  eol_inventory/          # importable scan package: discovery.py, models.py, mappings.py,
+                          #   config_writer.py, report_writer.py, config_io.py (bounded config
+                          #   load, mirrors eoltracker/core.py's size/depth bounds), redact.py
+                          #   (URL/SSH/SCP secret redaction), parsers/ (per ecosystem)
 ```
 
 ## Architecture: providers (the "parsers")
@@ -167,8 +182,10 @@ drifts). In brief:
   only** by default (`--include-transitive` opts into indirect/lockfile
   records), refuses to overwrite an existing config unless `--update`
   (curation-preserving merge) or `--replace` (explicit wholesale) is given,
-  and writes atomically as ASCII. The former root-level generator script has
-  been removed.
+  and writes atomically as ASCII. Root `generate_config.py` still exists and
+  is a separate, simpler manifest extractor (see the coexistence note under
+  "Workflows index"); do not remove or modify it as part of inventory-scanner
+  work.
 - `helper_scripts/generate_inventory_report.py` renders a config locally (no
   network) as Markdown (default), CSV, and HTML under
   `reports/inventory/`, with a manual-review checklist; legacy configs and
@@ -224,11 +241,17 @@ canonical message format and detailed workflow.
   subset), UTF-8 with or without a BOM is accepted — hand-edited configs may
   contain UTF-8 characters — and any other encoding is rejected with a clear
   re-save-as-UTF-8 error, so the old cp1252 (Windows) locale hazard is gone.
-  **Every load — local or S3 — enforces the `eoltracker.validation` schema**:
-  invalid top-level or runtime shapes (`products` container,
-  `alert_thresholds_days`, `notify_when`, notification channels) are rejected
-  before any provider call. Malformed individual product entries do not abort
-  the run; they become `error` rows while valid products continue.
+  **Every load — local or S3 — also enforces a bounded size and JSON-nesting
+  depth** (`MAX_CONFIG_FILE_BYTES` / `MAX_CONFIG_DEPTH` in `eoltracker/core.py`,
+  mirrored by `helper_scripts/eol_inventory/config_io.py`), rejecting
+  oversized or over-nested input with a clear error before recursive JSON
+  parsing so a hostile or malformed config cannot raise `RecursionError` or
+  exhaust memory. **Every load — local or S3 — enforces the
+  `eoltracker.validation` schema**: invalid top-level or runtime shapes
+  (`products` container, `alert_thresholds_days`, `notify_when`, notification
+  channels) are rejected before any provider call. Malformed individual
+  product entries do not abort the run; they become `error` rows while valid
+  products continue.
   `json.dump(..., ensure_ascii=True)` (the default) keeps generated configs
   pure ASCII.
 - **`eol_config.*.json` and `reports/` are gitignored** (except
@@ -270,7 +293,7 @@ canonical message format and detailed workflow.
 | `AGENTS.md` | This file — the canonical guide for AI agents in any harness |
 | `CLAUDE.md` | Thin Claude Code discovery aliases for canonical `.agents` skills |
 | `lambda_function.py` | Shim: re-exports `lambda_handler` (the Lambda entry point) + the local CLI (`run_local`) |
-| `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers |
+| `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers, and the bounded-JSON/HTTP helpers `validate_bounded_json`, `read_response_bytes`, `decompress_gzip_bytes` |
 | `eoltracker/parsers/` | One file per provider + `eoltracker/parsers/__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
 | `eoltracker/report.py` | Categorizer + plain-text and HTML formatters |
 | `eoltracker/notify.py` | Notification channels (console / html_file / SNS / SES) |
@@ -278,7 +301,8 @@ canonical message format and detailed workflow.
 | `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |
 | `eol_config.<project>.json` | Per-project product lists (gitignored; `eol_config.sample.json` is the template) |
 | `eol_config_generation_prompt.md` | The canonical config-generation/extraction spec |
-| `helper_scripts/` | Dependency scanner + inventory report CLIs, wrappers, and the `eol_inventory` package; see `helper_scripts/README.md` |
+| `generate_config.py` | Root-level manifest extractor CLI (one of two coexisting generators — see "Workflows index"); extended by open PR #35 |
+| `helper_scripts/` | Second, multi-ecosystem dependency scanner + inventory report CLIs, wrappers, and the `eol_inventory` package (provenance, curation-preserving `--update`, container scanning, `helper_scripts/eol_inventory/redact.py`, `helper_scripts/eol_inventory/config_io.py`); see `helper_scripts/README.md` |
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
