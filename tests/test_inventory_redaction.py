@@ -459,6 +459,10 @@ def test_display_multi_anchor_scp_collapses():
         assert redact_display_text(benign) == benign, benign
     assert redact_display_text("mail user@example.com:private/x now") == \
         "mail <ssh:example.com> now"
+    # A truncated digest tail is not a stable anchor (Global Constraint 6:
+    # only complete 64-hex sha256 digests are exempted), so it fails
+    # closed to the URL placeholder rather than passing through.
+    assert redact_display_text("nginx:1.25@sha256:abc") == "url:<redacted>"
 
 
 def test_hosted_git_and_ssh_placeholders():

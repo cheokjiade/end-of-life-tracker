@@ -267,6 +267,9 @@ canonical message format and detailed workflow.
   `_section`, `_found_in` (per-entry provenance) and `_inventory` (scan
   metadata, warnings, unmapped items) are underscore-prefixed and skipped by
   the Lambda; keep them intact so inventory reports stay accurate.
+  `_inventory.scan_date` (`helper_scripts/eol_inventory/config_writer.py`) is
+  the scan's `date.today().isoformat()` at write time, read back by the
+  inventory report writer.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
