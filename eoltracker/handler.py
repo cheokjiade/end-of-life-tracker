@@ -31,9 +31,7 @@ import time
 from datetime import date
 
 from .core import (
-    MAX_CONFIG_DEPTH,
     MAX_CONFIG_FILE_BYTES,
-    _max_nesting_depth,
     logger,
     read_response_bytes,
 )
@@ -51,7 +49,11 @@ from .notify import (
     summarize_outcomes,
 )
 from .runner import run_checks
-from .validation import ConfigValidationError, load_validated_config_bytes
+from .validation import (
+    check_config_bounds,
+    config_bounds_error,
+    load_validated_config_bytes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,31 +136,6 @@ def _emit_partial_run_metrics(unfinished):
 # Config
 # ---------------------------------------------------------------------------
 
-def _config_bounds_error(origin, message):
-    """Uniform rejection for configs that exceed the shared size/depth bounds."""
-    finding = {"path": "config", "severity": "error", "message": message}
-    return ConfigValidationError(
-        f"{origin}: invalid EOL tracker config ({message})", [finding])
-
-
-def _check_config_depth(raw, origin):
-    """Reject over-deep JSON before recursive parsing (shared runtime limit).
-
-    Undecodable bytes are left for :func:`load_validated_config_bytes`, which
-    reports the encoding failure with its own diagnostics.
-    """
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return
-    depth = _max_nesting_depth(text)
-    if depth > MAX_CONFIG_DEPTH:
-        raise _config_bounds_error(
-            origin,
-            f"JSON nesting depth {depth} exceeds the {MAX_CONFIG_DEPTH} "
-            "level config limit")
-
-
 def _log_product_findings(findings, origin):
     """Warn about per-product findings that did not reject the config."""
     for f in findings:
@@ -191,8 +168,8 @@ def load_config_from_s3(key=None):
     try:
         raw = read_response_bytes(obj["Body"], max_bytes=MAX_CONFIG_FILE_BYTES)
     except ValueError as exc:
-        raise _config_bounds_error(origin, str(exc)) from exc
-    _check_config_depth(raw, origin)
+        raise config_bounds_error(origin, str(exc)) from exc
+    check_config_bounds(raw, origin)
     config, product_findings = load_validated_config_bytes(
         raw, origin=origin)
     _log_product_findings(product_findings, origin)
@@ -210,10 +187,7 @@ def load_config_from_file(path):
     """
     with open(path, "rb") as f:
         raw = f.read(MAX_CONFIG_FILE_BYTES + 1)
-    if len(raw) > MAX_CONFIG_FILE_BYTES:
-        raise _config_bounds_error(
-            path, f"config exceeds the {MAX_CONFIG_FILE_BYTES} byte limit")
-    _check_config_depth(raw, path)
+    check_config_bounds(raw, path)
 
     config, product_findings = load_validated_config_bytes(raw, origin=path)
     _log_product_findings(product_findings, path)
