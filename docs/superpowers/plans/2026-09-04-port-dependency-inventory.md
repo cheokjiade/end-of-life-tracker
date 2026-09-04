@@ -9,9 +9,9 @@ Two clones diverged from one repo. `E:\Git\end-of-life-tracker` (this repo, GitH
 standalone tests, ~70 fixtures, a plan and two remediation handoffs, developed
 2026-08-27..2026-09-04 as commits `e127dda..68e117b` (155 commits, 2 merges).
 
-All of `endoflife`'s branches have been fetched LOCALLY into this repo's object store as
-`refs/endoflife/*` (e.g. `refs/endoflife/codex/dependency-inventory-remediation` =
-`68e117b`). They exist only on this machine and must never be pushed.
+All of `endoflife`'s branches have been fetched LOCALLY into this repo's object store
+under a private ref namespace (e.g. the remediation branch = `68e117b`). They exist
+only on this machine and must never be pushed.
 
 Synthetic merge base: `endoflife` commit `e127dda` ("feat(agents): centralize EOL
 workflows under .agents", 2026-08-27) corresponds to this repo's `ab6bcf1` (same
@@ -30,8 +30,9 @@ Spec authority: the user's decisions recorded in Global Constraints. There is no
 
 1. Work only in the worktree `E:\Git\end-of-life-tracker-worktrees\dependency-inventory-port`
    on branch `feat/dependency-inventory-port` (started from `main` = `12018d5`).
-2. Never push. Never touch `main`. Never push or reference `refs/endoflife/*` in any
-   commit message, branch name, or remote operation. The controller pushes at the end.
+2. Never push. Never touch `main`. Never push or reference the source clone's
+   branches fetched locally in any commit message, branch name, or remote
+   operation (do not name their local ref paths either). The controller pushes at the end.
 3. Preserve the original commits' authorship, dates, and messages when replaying. Do not
    add trailers or attribution to replayed commits. Commits you author yourself follow
    `docs/commit-conventions.md` and end with the trailer

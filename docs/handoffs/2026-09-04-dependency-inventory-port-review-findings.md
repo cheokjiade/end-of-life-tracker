@@ -30,9 +30,15 @@ and `docs/handoffs/2026-09-02-dependency-inventory-opencode-final-audit-remediat
   `eoltracker/core.py`, `eoltracker/handler.py`, `eoltracker/report.py`,
   `eoltracker/parsers/__init__.py`, `AGENTS.md`, and `README.md`).
   `helper_scripts/eol_inventory/`, `helper_scripts/generate_config.py`,
-  `tests/test_generate_config.py`, `tests/test_inventory_report.py`, and the
-  three new provider parsers themselves were **not** hand-merged — they carried
-  over verbatim.
+  `tests/test_inventory_report.py`, and the three new provider parsers
+  themselves were **not** hand-merged — they carried over verbatim.
+  `tests/test_generate_config.py` was also not hand-merged, but it did not
+  carry over verbatim: commit `2014c5f` ("test(config): assert the packaging
+  allowlist kept by the merge") rewrote
+  `test_terraform_uses_positive_runtime_allowlist` to assert this branch's
+  `build_lambda_package.py` manifest allowlist instead of the source side's
+  Terraform `dynamic "source"` block. Every other test in that file is
+  verbatim.
 - **Every anchor below was independently re-verified against the ported tree
   at `2014c5f` on 2026-09-04** (grep for the quoted code, and for the two most
   complex findings, direct reproduction with a standalone Python snippet). File
