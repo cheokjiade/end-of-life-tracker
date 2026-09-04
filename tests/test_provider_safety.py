@@ -8,7 +8,7 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eoltracker.core import decompress_gzip_bytes, read_response_bytes
-from eoltracker.parsers import PROVIDERS, _URL_FNS, check_product
+from eoltracker.parsers import PROVIDERS, SOURCE_LABELS, _URL_FNS, check_product
 from eoltracker.parsers import endoflife_date, npm_registry
 from eoltracker.report import format_report_html
 
@@ -220,13 +220,18 @@ def test_runtime_config_bounds():
 
 def test_dispatch_isolates_provider_failures():
     source = "test_exploding_provider"
+    # check_product runs the structural gate before dispatch, and that gate
+    # resolves sources through SOURCE_LABELS; a provider injected for a test
+    # must register its label too or the entry never reaches the provider.
     PROVIDERS[source] = lambda entry, today: 1 / 0
+    SOURCE_LABELS[source] = "Exploding provider"
     try:
         result = check_product({
             "source": source, "label": "Broken", "policy_note": "Keep note",
         }, TODAY)
     finally:
         PROVIDERS.pop(source, None)
+        SOURCE_LABELS.pop(source, None)
     assert result["status"] == "error"
     assert result["source"] == source
     assert "ZeroDivisionError" in result["message"]
@@ -238,8 +243,8 @@ def test_dispatch_isolates_provider_failures():
         check_product({"source": []}, TODAY),
     ]
     assert all(item["status"] == "error" for item in malformed)
-    assert "expected object" in malformed[0]["message"]
-    assert "non-empty string" in malformed[2]["message"]
+    assert "must be an object" in malformed[0]["message"]
+    assert "unknown source" in malformed[2]["message"]
 
     invalid_results = (
         ({}, "missing required keys"),
@@ -262,6 +267,7 @@ def test_dispatch_isolates_provider_failures():
         }, "does not match dispatched source"),
     )
     source = "test_invalid_result"
+    SOURCE_LABELS[source] = "Invalid result provider"
     try:
         for provider_result, expected in invalid_results:
             PROVIDERS[source] = lambda entry, today, value=provider_result: value
@@ -271,6 +277,7 @@ def test_dispatch_isolates_provider_failures():
             assert expected in result["message"]
     finally:
         PROVIDERS.pop(source, None)
+        SOURCE_LABELS.pop(source, None)
 
 
 def test_malformed_provider_documents_return_error_rows():
