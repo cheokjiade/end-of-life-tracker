@@ -251,8 +251,12 @@ def redact_dependency_ref(ref):
                     return URL_PLACEHOLDER
             if ":" in ref:
                 scp = _SCP_REF_RE.search(ref)
-                if scp and not _DIGEST_ANCHOR_RE.fullmatch(
-                        ref, scp.start()) \
+                anchor_match = _DIGEST_ANCHOR_RE.match(ref, scp.start()) \
+                    if scp else None
+                if scp and not (
+                        anchor_match
+                        and not ref[anchor_match.end():scp.end()].strip(
+                            "_.,;:!?)]}\"'-")) \
                         and _scp_collapse_host(scp.group("host") or "",
                                                ref[scp.end():]):
                     return ssh_placeholder(

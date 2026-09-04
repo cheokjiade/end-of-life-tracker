@@ -172,9 +172,10 @@ def test_scp_style_git_refs_collapse():
             "user:pass@host" + ws + ":path") == "url:<redacted>", repr(ws)
     digest = "sha256:" + "a" * 64
     assert redact_dependency_ref("img@" + digest) == "img@" + digest
-    # A digest tail followed by path material is not a clean digest
-    # anchor: fail closed (over-redaction, never a leak).
-    assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
+    # A digest tail followed by path material keeps the digest anchor
+    # doctrine: the reference is digest-pinned, not SCP-shaped.
+    assert redact_dependency_ref("img@" + digest + "/x") == \
+        "img@" + digest + "/x"
     # The digest exemption covers only single-@ tokens: a credential
     # segment between an earlier @ and the anchor fails closed.
     # A multi-@ token fails closed in every shape unless the WHOLE token
@@ -216,6 +217,10 @@ def test_scp_style_git_refs_collapse():
     assert redact_dependency_ref(
         "registry/name:tag@sha1:" + "b" * 40) == \
         "registry/name:tag@sha1:" + "b" * 40
+    assert redact_dependency_ref(tagged + ";") == tagged + ";"
+    assert redact_display_text(tagged + ";") == tagged + ";"
+    assert redact_image_reference("user:pass@[::1]x:s3cr3t/img") == \
+        "url:<redacted>"
     # Consolidation-review pins: slash-bearing junk-host paths, mangled
     # +schemes, colon-bearing userinfo with dotless or empty hosts, and
     # URL/ssh-adjacent fragment tails all fail closed.
