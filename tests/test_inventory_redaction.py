@@ -208,6 +208,14 @@ def test_scp_style_git_refs_collapse():
                    "pkg==1.0.0"):
         assert redact_dependency_ref(benign) == benign, benign
     assert redact_dependency_ref("<ssh:github.com>") == "<ssh:github.com>"
+    # Tagged digest anchors keep the digest doctrine through the
+    # colon-tail rule; colon-password tails do not.
+    tagged = "name:tag@sha256:" + "a" * 64
+    assert redact_dependency_ref(tagged) == tagged
+    assert redact_display_text(tagged) == tagged
+    assert redact_dependency_ref(
+        "registry/name:tag@sha1:" + "b" * 40) == \
+        "registry/name:tag@sha1:" + "b" * 40
     # Consolidation-review pins: slash-bearing junk-host paths, mangled
     # +schemes, colon-bearing userinfo with dotless or empty hosts, and
     # URL/ssh-adjacent fragment tails all fail closed.
