@@ -2242,14 +2242,24 @@ def test_scan_ignores_standalone_central_package_declarations():
 
 
 def test_terraform_uses_positive_runtime_allowlist():
+    """The Lambda ZIP is built from a positive allowlist, not a directory copy.
+
+    Packaging lives outside Terraform in build_lambda_package.py; main.tf
+    verifies the produced manifest against an allowlist derived from the
+    working tree (lambda_function.py plus eoltracker/**.py). The property
+    asserted here is the same as before: no source_dir/excludes directory
+    sweep can pull unrelated repository files into the artifact.
+    """
     terraform = (ROOT / "terraform" / "main.tf").read_text(encoding="utf-8")
     assert "source_dir" not in terraform
     assert "excludes =" not in terraform
     assert '["lambda_function.py"]' in terraform
     assert 'fileset("${path.module}/../eoltracker", "**/*.py")' in terraform
-    assert '"eoltracker/${source_file}"' in terraform
-    assert 'dynamic "source"' in terraform
-    assert 'filename = source.value' in terraform
+    assert 'formatlist("eoltracker/%s"' in terraform
+    assert "expected_runtime_files" in terraform
+    assert "unexpected_runtime_files" in terraform
+    assert "build_lambda_package.py" in terraform
+    assert "local.package_manifest_inputs" in terraform
 
 
 TESTS = [
