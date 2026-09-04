@@ -2,6 +2,15 @@
 
 ## Purpose
 
+**Status (2026-09-04):** Confirmed-prior findings 1-5, New findings 1, 2, and
+4, and Standards findings 2-5 were fixed on branch
+`fix/inventory-review-findings` per
+`docs/superpowers/plans/2026-09-04-inventory-review-findings-fix.md`.
+Finding 2's provenance guarantee applies to rows carrying `_comment` per
+`docs/updating-a-config.md` (rows whose `_comment` was deleted keep the older
+fallback behaviour). Standards findings 1, 3, and 6 remain historical notes
+about the source repository.
+
 This document carries forward, unresolved, the review findings for the
 dependency-inventory subsystem (`helper_scripts/eol_inventory/`, the Go proxy /
 NuGet / PyPI providers, and their tests) as it now exists in this repository
