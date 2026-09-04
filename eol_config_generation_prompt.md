@@ -63,7 +63,7 @@ an error, not a best guess. And endoflife.date is **inconsistent about granulari
 - Major-only cycles: `postgresql` → `"16"`, `nodejs` → `"20"`, `react` → `"18"`,
   `angular` → `"17"`, `redis` (older) — a single integer.
 - Major.minor cycles: `python` → `"3.13"`, `go` → `"1.23"`, `spring-boot` → `"3.3"`,
-  `nginx` → `"1.27"`, `terraform` → `"1.11"`, `ubuntu` → `"24.04"`.
+  `nginx` → `"1.27"`, `terraform` → `"1.11"`, `ubuntu` → `"24.04"`, `vue` → `"3.5"`.
 
 You cannot reliably know which granularity a given product uses from memory. So your
 job is to produce a **best-guess cycle string AND flag it for verification** (see the
@@ -90,12 +90,22 @@ Top-level object:
   "_comment": ["free-text notes; array of strings; ignored by the tracker"],
   "alert_thresholds_days": [30, 60, 90],
   "notify_when": "always",
+  "maven_repositories": [ ... ],   (optional; see below)
   "notifications": [ ... ],
   "products": [ ... ]
 }
 ```
 
 - `alert_thresholds_days`: keep `[30, 60, 90]` unless the inputs imply otherwise.
+- `maven_repositories` (optional): a list of Maven 2 repository base URLs declared in
+  the project's manifests (pom `<repositories>`, Gradle `repositories { }` blocks in
+  build and settings files). `generate_config.py` collects and dedupes them
+  automatically. At load the runtime offers the first 8 (config order) to every
+  `maven_central` entry that has neither an explicit `repository` nor its own
+  `repositories` list, so artifacts not present on Maven Central at all still
+  resolve; a version missing on Central but present in a declared repository is
+  also resolved. Must be a list of non-empty URL strings (anything else is
+  rejected before the run starts).
 - `notify_when`: `"always"` (daily report regardless) or `"alerts_only"` (only when
   something is EOL/approaching — including undated at-risk phases — or the tracker
   reports `error`/`unknown` health failures). Default to `"always"`.
@@ -150,7 +160,8 @@ slug from the product page): `python`, `nodejs`, `go`, `php`, `ruby`, `nginx`,
 `apache-groovy`. If unsure a slug exists, **flag it** rather than invent it.
 
 > Note: `typescript` is NOT currently served at `/api/typescript.json` — track it via
-> `npm_registry` (`package: typescript`) instead.
+> `npm_registry` (`package: typescript`) instead. `generate_config.py` no longer
+> auto-maps it: a `typescript` npm dependency lands in `_skipped_npm_packages`.
 
 **2. `aws_rds_scrape`.** For AWS RDS / Aurora **PostgreSQL minor** versions (endoflife.date
 only tracks majors). `engine` must be `"aurora-postgresql"` or `"rds-postgresql"`.
@@ -170,11 +181,20 @@ only tracks majors). `engine` must be `"aurora-postgresql"` or `"rds-postgresql"
 - `sdk`: as named in the AWS matrix, e.g. `"SDK for Java"`, `"SDK for JavaScript"`,
   `"SDK for Python (Boto3)"`. `major`: e.g. `"2.x"`, `"1.x"`.
 
-**4. `jackson_lifecycle`.** For the FasterXML Jackson library, by branch.
+**4. `jackson_lifecycle`.** For the FasterXML Jackson library, by branch — one entry
+**per artifact** (carry `group` and `artifact`), never one collapsed row per branch.
 
 ```json
-{"source": "jackson_lifecycle", "version": "2.18", "label": "Jackson 2.18"}
+{"source": "jackson_lifecycle", "group": "com.fasterxml.jackson.core",
+ "artifact": "jackson-databind", "version": "2.18", "label": "Jackson Databind 2.18"}
 ```
+
+- `version`: the branch, `major.minor` (e.g. `2.18`).
+- `label`: `"Jackson <Artifact> <major.minor>"`, where `<Artifact>` is derived from
+  the artifact id (`jackson-databind` → `Databind`, `jackson-bom` → `BOM`,
+  `jackson-annotations` → `Annotations`). Two artifacts on the same branch are two
+  separate rows — `com.fasterxml.jackson.core:jackson-annotations:2.21` is
+  `Jackson Annotations 2.21`, which is separate from `Jackson BOM 2.21`.
 
 **5. `maven_central`.** For Java/Kotlin libraries that publish **no lifecycle data**
 (Apache Commons, Netty, Logback, Quartz, jsoup, OkHttp, etc.). Reports how stale the
@@ -186,6 +206,11 @@ pinned version is — no EOL is claimed.
 ```
 
 - Needs `group`, `artifact`, and the **full** version (do not truncate Maven versions).
+- The reported latest is the repository metadata's `<release>`/`<latest>` tag only
+  when it is a **stable** version listed in `<versions>`; a stale pre-release tag is
+  ignored in favour of the newest stable listed version (Netty advertised
+  `5.0.0.Alpha2` while its newest listed version was `4.2.17.Final`), and without a
+  `<versions>` list the tag is trusted as-is.
 - Optional `repository`: the absolute http(s) **base URL** of an alternative
   Maven 2 repository layout, used when the artifact is **not published to
   Maven Central**, e.g. Shibboleth-hosted artifacts (`org.opensaml`,
@@ -193,6 +218,20 @@ pinned version is — no EOL is claimed.
   `https://build.shibboleth.net/nexus/content/repositories/releases`). Base
   URL only — no credentials, query string, or fragment (scheme and host are
   lowercased). Omit the field for anything available on Maven Central.
+- Optional `repositories`: a **list** of such base URLs, tried in order when the
+  artifact is not found on Maven Central, or when Central lists the artifact but
+  the pinned **version** could not be verified there (e.g. the release lives only
+  on the project's own repository). First artifact hit wins; the rescued row is
+  labelled "Not on Maven Central; found on \<host\>:"; if nothing is found anywhere
+  the row errors with "not found on Maven Central or N declared repositories"
+  (artifact missing) or is **unknown** with "Version \<v\> could not be verified on
+  Maven Central or N declared repositories (private build, typo, or repository
+  gap); latest published is ..." (version missing). At most 8 URLs are probed per
+  row. A config-level `maven_repositories` list is stamped onto `maven_central`
+  entries lacking an explicit `repository` at load time (first 8, config order),
+  so per-entry `repositories` is only needed to override or narrow that fallback.
+  An explicit per-entry `repository` **disables the fallback chain** (explicit
+  wins — no `repositories` list is consulted).
 
 **6. `npm_registry`.** For npm / JavaScript libraries that publish no EOL dates
 (Material UI, Axios, Redux, Day.js, DOMPurify, and most webjars/frontend deps). Like
@@ -306,7 +345,9 @@ Apply this decision order per component you find:
    - Strip semver range operators and build metadata: `^18.2.0`, `>=1.4 <2`,
      `1.2.3-SNAPSHOT` → take the base release (`18` or `18.2`, `1.2`).
 2. **Java/Kotlin library with a lifecycle source?** Spring* / Tomcat / Log4j / Kotlin /
-   Scala → `endoflife_date`. Jackson (`com.fasterxml.jackson*`) → `jackson_lifecycle`.
+   Scala → `endoflife_date`. Jackson (`com.fasterxml.jackson*`) → `jackson_lifecycle`,
+   one entry **per artifact** (with `group`/`artifact` keys and a
+   `Jackson <Artifact> <major.minor>` label).
    AWS SDK (`software.amazon.awssdk` = v2, `com.amazonaws:aws-java-sdk*` = v1) →
    `aws_sdk_lifecycle`.
 3. **Any other Java/Kotlin library?** → `maven_central` with full `group`/`artifact`/`version`.
@@ -351,6 +392,155 @@ Apply this decision order per component you find:
     `eol: false`, an `aws_sdk_lifecycle` GA line, or a `manual` UNTRACKED tool)? Research and
     add an ASCII `policy_note` describing its release/support policy. Verify the claim before
     writing. Do not add notes to ordinary libraries.
+
+### Static scanner coverage (generate_config.py)
+
+For clean dependency folders, `python generate_config.py <folder> --name <project>` parses
+these manifest forms automatically; anything the manifests use outside this list must be
+extracted manually (the scanner silently misses it):
+
+- `pom.xml`: versioned `<dependency>`s at any depth, `<parent>`, and POM properties
+  (`tomcat.version`, `kotlin.version`, ...). Deps inside `<dependencyManagement>` are
+  parsed as BOM/version **declarations** (kind `managed-dep`); deps with no `<version>`
+  (parent/BOM-managed) are recorded as kind `unversioned-dep` and produce **no** tracker
+  entry — add those manually. Root-level `<repositories><repository>` URLs are
+  collected into the config-level `maven_repositories` list (whether they enable
+  releases or only snapshots — the runtime normalizes); repositories declared inside
+  `<profiles>` activate conditionally and are deliberately **ignored**.
+- `build.gradle` / `build.gradle.kts`: quoted GAV strings in single or double quotes
+  (`implementation 'g:a:v'`), Groovy map notation and kts named args for
+  `implementation`/`api`/`compileOnly`/`runtimeOnly`/`classpath` (buildscript blocks)
+  (`group: 'g', name: 'a', version: 'v'`), `platform(...)` BOM imports, plugins blocks
+  (`id("g.a") version "v"`, `kotlin("jvm") version "v"` — plugin ids are converted to
+  best-effort Maven coordinates; a small alias table pins the known exceptions whose
+  published artifact diverges from the generic group = plugin-id / artifact =
+  last-segment + `-gradle-plugin` rule, e.g. `io.spring.dependency-management` maps to
+  `io.spring.gradle:dependency-management-plugin`, and the list grows as ids are
+  verified; unknown ids remain best-effort - a wrong guess surfaces as a visible
+  not-found tracker-health error row, which the fail-loud philosophy treats as review
+  signal), `libs.*` references resolved against
+  `libs.versions.toml` (best-effort TOML subset: `[versions]`, `[libraries]`,
+  `[bundles]`; unresolvable aliases are skipped), and `url = uri("...")` /
+  `url = "..."` / `url "..."` declarations inside dependency `repositories { }`
+  blocks (including `buildscript { repositories { ... } }` — classpath deps resolve
+  from them; `publishing` and `pluginManagement` repositories are deployment/plugin
+  targets and are excluded;
+  `mavenCentral()`/`mavenLocal()`/`google()` declare no URL). Groovy `//` and `/* ... */` comments
+  are stripped first while string literals are respected — commented-out dependencies
+  are never tracked, and a `//` inside a string (e.g. a repo URL) survives. `test*`
+  configurations and `project(...)` / `files(...)` / `fileTree(...)` declarations
+  match nothing.
+- `settings.gradle` / `settings.gradle.kts`: repository collection only —
+  `dependencyResolutionManagement { repositories { ... } }` URLs are collected into
+  the config-level `maven_repositories` list (`pluginManagement { repositories }`
+  holds plugin repos and stays excluded; dotted spellings like
+  `project.repositories { }` count, `publishing.repositories { }` does not).
+  Dependency scanning is asymmetric between the two spellings: `settings.gradle.kts`
+  matches the existing `*.gradle.kts` pass and is therefore additionally
+  dep/plugin-scanned — a `pluginManagement { plugins { id(...) version ... } }`
+  block produces a gradle-plugin tracker row (deliberate: such plugins are real,
+  versioned, trackable artifacts), while the Groovy `settings.gradle` is
+  repository-only and produces no dep rows.
+- Versions that never produce entries (no public registry resolves them): `-SNAPSHOT`,
+  `${property}` placeholders and Groovy `$var` interpolations (any `$` in a version),
+  Maven ranges (`[2.0,)`) including unterminated ones
+  (`[2.16.0`), classifier variants (`1.0:test-jar` — a classifier jar duplicates the
+  base artifact; track the base coordinates instead), and Gradle dynamic versions —
+  anything containing `+` (`2.+`, `1.0+eap`; NOTE this deliberately also skips semver
+  build-metadata versions like `1.2.3+build.5`), bare `latest`, and `latest.release` /
+  `latest.integration`. An ext suffix (`1.0@jar`) is truncated to the plain version
+  (`1.0`).
+- `package.json`: `dependencies`/`devDependencies`/`engines.node`; known packages map to
+  endoflife.date entries, the rest land in `_skipped_npm_packages`. `vue` needs a pinned
+  **numeric** minor: `vue@3.5.3` maps to cycle `3.5`, and a numeric 1.x.y pin (`1.0`,
+  `1.2.3`) maps to the bare-major cycle `1` (label `Vue 1` — no 1.x minor cycles exist),
+  but a bare-major spec (`^3`, `2`), a non-numeric minor segment (`3.x`, `^3.x`, `3.X`,
+  `1.x`, `1.x.y` — no such cycle exists to map to), or a `v`-prefixed spec
+  (`v3.5.3` — the scanner does not strip a leading `v`) is skipped to
+  `_skipped_npm_packages` — endoflife.date has no vue cycles `3` or `2`, and guessing a
+  non-numeric minor fabricates a doomed row.
+
+The scanner is a heuristic regex/JSON/XML pass, not a build — after running it, diff its
+output against the inputs and hand-map whatever it missed. Do not assume silence means
+absence.
+
+### --resolve-transitive (optional full-graph scan)
+
+By default the scanner reads **declared** dependencies only. With
+`python generate_config.py <folder> --name <project> --resolve-transitive` the full
+dependency graph is merged into the scan, resolved per ecosystem from the real sources
+(never hand-rolled — only the real tools resolve scopes, BOMs, platforms, and version
+catalogs accurately):
+
+- **npm** — a `package-lock.json` in the same directory as a scanned `package.json` is
+  parsed directly (lockfileVersion 2/3 `packages` map and lockfileVersion 1
+  `dependencies` tree; the `""` root entry and `link:`/`file:` resolved entries are
+  skipped). No tool required. Record kind: `npm-lock`.
+- **Maven** — for each `pom*.xml`, the output of `mvn -B -q dependency:list` is parsed
+  (strict `group:artifact:type:version:scope(:classifier)` lines; test scope skipped,
+  classifier components stripped). Requires `mvn` on PATH. Record kind:
+  `transitive-maven`.
+- **Gradle** — one run per project root (a directory containing `build.gradle` or
+  `build.gradle.kts`, deduped by directory) with a generated `eolDumpDeps` init script
+  (`gradle -q --init-script <tmp> eolDumpDeps`) printing resolved module coordinates per
+  configuration. Requires `gradle` on PATH. Record kind: `transitive-gradle`.
+
+**Products gating:** mapped transitives may promote to `products` rows (the `_comment`
+notes the transitive provenance, e.g. `Transitive via mvn (g:a:v)`; dedupe applies and a
+direct declaration wins), but **unmapped transitives never create rows** — no
+`maven_central` fallback, no `_skipped_npm_packages` entries. They are records-only in
+`_discovered_dependencies` (outcome `unmapped-transitive (tracked in records only)`).
+This keeps `products` reviewable and protects the Lambda time budget (R-04): a full
+graph can be hundreds of artifacts and must not flood the runnable set. When the tool is
+missing from PATH, fails, or times out, that manifest's resolution is skipped with one
+stderr warning and a `skipped: transitive resolution unavailable (<tool> not on PATH or
+failed)` record — generation completes. Without the flag the scan is byte-identical to
+the direct-deps-only behavior and starts no subprocess.
+
+### _discovered_dependencies (the complete picture)
+
+A generated config carries two views: `products` is the **deduped runnable set** (first
+declaration wins), and the top-level `_discovered_dependencies` list records **every**
+parsed declaration (tracked, duplicate, skipped, or unmapped) so nothing the manifests
+contained is silently dropped (section dividers are not declarations and get no record).
+The `_comment` header includes a one-line tally, e.g. `Declarations discovered: 16
+(tracked 6, duplicates 1, skipped 8, unmapped 1)`. Review it after generation: every
+`skipped:`/`unmapped:`/`duplicate-of:` record is a potential manual entry. When building a
+config by hand (the LLM path below), keep the runnable set clean the same way and list
+non-tracked declarations for review instead of dropping them.
+
+Record shape:
+
+```json
+{"decl": "io.netty:netty-codec-http:4.1.111.Final", "file": "pom.xml",
+ "kind": "dep", "outcome": "tracked: netty-codec-http 4.1.111.Final"}
+```
+
+- `decl`: the declaration string - `g:a:v` (Maven/Gradle; empty version slot for
+  version-less deps), `name@version` (npm), `<prop-name>=<value>` (pom properties).
+- `file`: base name of the manifest the declaration came from.
+- `kind`: `parent`, `dep`, `managed-dep`, `unversioned-dep`, `test-scope-dep`,
+  `provided-scope-dep`, `system-scope-dep`, `gradle`, `gradle-plugin`, `gradle-catalog`,
+  `property`, `npm`, plus the `--resolve-transitive` kinds `transitive-maven`,
+  `transitive-gradle`, and `npm-lock`.
+- `outcome`, one of:
+  - `tracked: <label>` - a `products` row exists with that label;
+  - `duplicate-of: <label>` - same dedup key as an earlier declaration; the first one wins;
+  - `skipped: <reason>` - standardized reasons: `maven version range`, `gradle dynamic
+    version`, `SNAPSHOT version`, `unresolved property placeholder`, `internal group`,
+    `no version (parent/BOM-managed)`, `classifier variant (duplicates the base artifact)`,
+    `vue version spec with no matching published cycle`, `known-untracked test dependency`,
+    the non-runtime scope itself (`test scope`, `provided scope`, `system scope`), and
+    `transitive resolution unavailable (<tool> not on PATH or failed)` (with
+    `--resolve-transitive`, when the build tool is missing/failed/timed out for that
+    manifest);
+  - `unmapped: see _skipped_npm_packages` - npm package with no mapping; the package and
+    version are detailed in `_skipped_npm_packages` (`react-dom` is a known no-mapping
+    alias of `react` and appears only here);
+  - `unmapped-transitive (tracked in records only)` - a transitive dependency
+    (`--resolve-transitive`) that maps to no tracker entry; review it here — products
+    gating deliberately keeps it out of `products` and `_skipped_npm_packages` (see the
+    section above).
 
 ### Real-world document patterns
 

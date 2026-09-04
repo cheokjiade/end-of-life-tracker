@@ -176,6 +176,9 @@ drifts). In brief:
   order, and real-world document patterns (strikethrough = skip, "was X now Y" =
   current version, multi-version cells, reference-URL slug hints). Any agent in
   any harness can follow it directly.
+- Root `generate_config.py` is the deterministic extractor for clean dependency
+  manifests (Maven / Gradle / npm) — no LLM required. `--resolve-transitive` resolves the full graph by shelling out to mvn/gradle and parsing npm lockfiles.
+- Generated configs carry `_discovered_dependencies` (every parsed declaration with its outcome) alongside the deduped runnable `products`.
 - `helper_scripts/generate_config.py` is the deterministic scanner — no LLM
   required — for Java, Node, Python, Go, and .NET manifests plus Dockerfile and
   GitLab CI image declarations. It emits per-entry `_found_in` provenance, an
@@ -184,10 +187,10 @@ drifts). In brief:
   only** by default (`--include-transitive` opts into indirect/lockfile
   records), refuses to overwrite an existing config unless `--update`
   (curation-preserving merge) or `--replace` (explicit wholesale) is given,
-  and writes atomically as ASCII. Root `generate_config.py` still exists and
-  is a separate, simpler manifest extractor (see the coexistence note under
-  "Workflows index"); do not remove or modify it as part of inventory-scanner
-  work.
+  and writes atomically as ASCII. Root `generate_config.py` (previous bullet)
+  is a separate extractor focused on Maven / Gradle / npm (see the coexistence
+  note under "Workflows index"); do not remove or modify it as part of
+  inventory-scanner work.
 - `helper_scripts/generate_inventory_report.py` renders a config locally (no
   network) as Markdown (default), CSV, and HTML under
   `reports/inventory/`, with a manual-review checklist; legacy configs and
@@ -312,3 +315,18 @@ canonical message format and detailed workflow.
 | `build_lambda_package.py` | Builds the allowlisted Lambda artifact + manifest (`terraform/build/`, gitignored) and verifies it offline; run `python build_lambda_package.py build` after runtime changes |
 | `docs/packaging.md` | Packaging allowlist, manifest verification, and Terraform preconditions |
 | `terraform/` | Deployment (deploys the prebuilt, precondition-checked artifact from `terraform/build/`) |
+| `docs/agents/` | Per-repo config the engineering skills read: issue tracker, triage labels, domain docs |
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on `cheokjiade/end-of-life-tracker`, operated via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) with no renames. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: read CONTEXT.md (created lazily by the grill-with-docs skill) + `docs/adr/` before exploring — proceed silently if absent; `AGENTS.md` is the de facto context doc until then. See `docs/agents/domain.md`.

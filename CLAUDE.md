@@ -18,3 +18,9 @@ under `.claude/`.
 - Keep `AGENTS.md` authoritative: when architecture, conventions, or workflows
   change, update `AGENTS.md` or the canonical `.agents/skills/` content, not the
   Claude loaders.
+
+## Agent skills
+
+Issue tracker, triage labels, and domain-docs config for backlog skills
+(`to-issues`, `triage`, `to-prd`, `qa`, …) — see the `## Agent skills` section
+in `AGENTS.md` and `docs/agents/`.
