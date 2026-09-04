@@ -46,13 +46,12 @@ logs) and each affected entry later becomes a normalized error row via
 abort an otherwise valid run.
 """
 
-import json
 import math
 
 from .core import (
     MAX_CONFIG_DEPTH,
     MAX_CONFIG_FILE_BYTES,
-    _max_nesting_depth,
+    validate_bounded_json,
 )
 from .parsers import SOURCE_LABELS
 from .parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
@@ -423,31 +422,8 @@ def _check_notifications(notifications, results):
                     "overrides at runtime"))
 
 
-def load_config_json_bytes(raw):
-    """Parse raw bytes into a config dict, reporting decode/json failures.
-
-    Decoding is explicit, never locale-dependent: pure ASCII is always
-    accepted (ASCII is a UTF-8 subset), UTF-8 with or without a BOM is
-    accepted so hand-edited configs may contain Unicode, and any other
-    encoding (UTF-16, cp1252/ANSI bytes) fails with a precise error instead
-    of silently mis-decoding under a platform default open() (e.g. cp1252
-    Windows locales).
-    """
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise ValueError(
-            "config file is not valid UTF-8 (or ASCII); re-save the file as "
-            f"UTF-8 ({exc})") from exc
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON ({exc.msg}, line {exc.lineno} column "
-                         f"{exc.colno})") from exc
-
-
 def config_bounds_error(origin, message):
-    """Uniform :class:`ConfigValidationError` for a size/depth rejection."""
+    """Uniform :class:`ConfigValidationError` for a bounded-JSON rejection."""
     where = f"{origin}: " if origin else ""
     return ConfigValidationError(
         f"{where}invalid EOL tracker config ({message})",
@@ -455,41 +431,38 @@ def config_bounds_error(origin, message):
 
 
 def check_config_bounds(raw, origin=""):
-    """Reject configs past the shared size/depth bounds before parsing.
+    """Parse raw config bytes under the shared bounded-JSON contract.
 
-    Single source of truth for the two bounds the runtime loaders
-    (:mod:`eoltracker.handler`) and the ``--validate`` linter both enforce,
-    so the deploy gate and the Lambda never disagree about a config.
+    Delegates to :func:`eoltracker.core.validate_bounded_json`, the single
+    implementation of that contract: size, nesting depth, UTF-8 decoding
+    (a leading BOM is tolerated), JSON syntax, and a top-level object.
+    Every loader comes through here -- the runtime file and S3 loaders in
+    :mod:`eoltracker.handler` and the ``--validate`` linter -- so the
+    deploy gate and the Lambda can never disagree about a config, and the
+    same bad bytes always produce the same message.
 
     *raw* may be truncated at ``MAX_CONFIG_FILE_BYTES + 1`` bytes by the
     caller; anything longer than the limit is rejected on length alone.
-    Undecodable bytes are left alone for :func:`load_config_json_bytes`,
-    which reports the encoding failure with its own diagnostics.
+
+    Returns the parsed config object. Raises :class:`ConfigValidationError`
+    carrying one ``config`` error finding for every rejection; the finding
+    message never embeds *origin*, which callers prefix themselves.
     """
-    if len(raw) > MAX_CONFIG_FILE_BYTES:
-        raise config_bounds_error(
-            origin, f"config exceeds the {MAX_CONFIG_FILE_BYTES} byte limit")
     try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return
-    depth = _max_nesting_depth(text)
-    if depth > MAX_CONFIG_DEPTH:
-        raise config_bounds_error(
-            origin,
-            f"JSON nesting depth {depth} exceeds the {MAX_CONFIG_DEPTH} "
-            "level config limit")
+        return validate_bounded_json(
+            raw, MAX_CONFIG_FILE_BYTES, MAX_CONFIG_DEPTH)
+    except ValueError as exc:
+        raise config_bounds_error(origin, str(exc)) from exc
 
 
 def load_validated_config_bytes(raw, origin=""):
-    """Decode and runtime-validate config bytes with uniform diagnostics."""
-    try:
-        config = load_config_json_bytes(raw)
-    except ValueError as exc:
-        finding = _finding("config", "error", str(exc))
-        where = f"{origin}: " if origin else ""
-        raise ConfigValidationError(
-            f"{where}invalid EOL tracker config ({exc})", [finding]) from exc
+    """Decode and runtime-validate config bytes with uniform diagnostics.
+
+    :func:`check_config_bounds` enforces the bounded-JSON contract (size,
+    depth, UTF-8, JSON syntax, top-level object) and returns the parsed
+    config; :func:`enforce_valid_config` then rejects fatal runtime shapes.
+    """
+    config = check_config_bounds(raw, origin)
     findings = enforce_valid_config(config, origin=origin)
     return config, findings
 
@@ -498,10 +471,10 @@ def validate_config_file(path):
     """Load and validate a config file path; returns the findings list.
 
     Unreadable/unparsable files produce a single error finding instead of
-    raising, so CLI callers get uniform exit-code behaviour. The shared
-    size and nesting-depth bounds (:func:`check_config_bounds`) are applied
-    first, so ``--validate`` rejects exactly what the runtime loaders
-    reject rather than passing a config the Lambda would refuse.
+    raising, so CLI callers get uniform exit-code behaviour. The bounded-
+    JSON contract (:func:`check_config_bounds`) is applied first, so
+    ``--validate`` rejects exactly what the runtime loaders reject, with
+    the same message, rather than passing a config the Lambda would refuse.
     """
     try:
         with open(path, "rb") as f:
@@ -509,13 +482,9 @@ def validate_config_file(path):
     except OSError as exc:
         return [_finding("config", "error", f"cannot read {path}: {exc}")]
     try:
-        check_config_bounds(raw, origin=path)
+        config = check_config_bounds(raw, origin=path)
     except ConfigValidationError as exc:
         return list(exc.findings)
-    try:
-        config = load_config_json_bytes(raw)
-    except ValueError as exc:
-        return [_finding("config", "error", f"{path}: {exc}")]
     return validate_config(config)
 
 

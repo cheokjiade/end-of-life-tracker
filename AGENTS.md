@@ -267,6 +267,9 @@ canonical message format and detailed workflow.
   `_section`, `_found_in` (per-entry provenance) and `_inventory` (scan
   metadata, warnings, unmapped items) are underscore-prefixed and skipped by
   the Lambda; keep them intact so inventory reports stay accurate.
+  `_inventory.scan_date` (`helper_scripts/eol_inventory/config_writer.py`) is
+  the scan's `date.today().isoformat()` at write time, read back by the
+  inventory report writer.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
@@ -282,7 +285,15 @@ canonical message format and detailed workflow.
   Recipient addresses must never appear in logs or outcome details.
 - **Testing:** no framework — tests are standalone `python` assertion scripts
   that import the relevant `eoltracker` modules and inject synthetic data to
-  stay network-free.
+  stay network-free. Guard/integrity scripts (`python tests/check_*.py`) are
+  the same style but check the repository itself rather than a module:
+  `tests/check_agent_docs.py` verifies agent-facing docs and skills stay
+  consistent, and `tests/check_test_registration.py` parses every
+  `tests/test_*.py` with `ast` (never imports it) to catch a module-level
+  `def test_*` defined twice (shadowed — only the last definition runs) or,
+  in files with a `TESTS = [...]` list, never added to that list
+  (unregistered — never runs); run it with `--self-test` to exercise its own
+  detector against synthetic fixtures.
 - **Run locally:** `python lambda_function.py <config.json>`, or `./run.sh` /
   `.\run.ps1` (interactive config picker).
 - **`policy_note`** (optional, any config entry) is a short ASCII observation of

@@ -414,6 +414,57 @@ def test_ssh_scheme_case_and_ipv4_scp_collapse():
     assert SECRET not in out and len(out) < len(hostile)
 
 
+def test_display_multi_anchor_scp_collapses():
+    # Review finding 1 (High): a token carrying two @ anchors before an
+    # SCP colon-path slipped past the display sanitizer because the SSH
+    # scan's boundary lookbehind refuses to start a match after an @,
+    # while redact_dependency_ref already fails closed on the same input.
+    sentinel = "widget@git@host.invalid:private/SENTINEL-repo.git"
+    out = redact_display_text(sentinel)
+    assert "SENTINEL" not in out and "private" not in out, out
+    assert redact_display_text(out) == out, out
+    assert redact_dependency_ref(sentinel) == "url:<redacted>"
+    prose = "see " + sentinel + " for details"
+    out = redact_display_text(prose)
+    assert "SENTINEL" not in out and "private" not in out, out
+    assert out.startswith("see ") and out.endswith(" for details"), out
+    assert redact_display_text(out) == out, out
+    # Punctuation-wrapped, planted-scheme, credential-first, and
+    # digit-host variants of the multi-anchor shape fail closed too.
+    for shape in ("(" + sentinel + ")",
+                  sentinel + ",",
+                  sentinel + "://",
+                  sentinel + "://u:p@h.invalid/",
+                  SECRET + "@git@host.invalid:private/x",
+                  SECRET + "@host@1.2.3:x",
+                  "u@v@w:p",
+                  "user@img@sha256:" + "a" * 64,
+                  "widget@git@[2001:db8::1]:private/x",
+                  "widget@git@:private/x"):
+        out = redact_display_text(shape)
+        assert SECRET not in out and "private" not in out \
+            and "SENTINEL" not in out and "u@v@w" not in out, (shape, out)
+        assert redact_display_text(out) == out, (shape, out)
+    # Stability: single-anchor digests, npm aliases (scoped and the
+    # yarn-lock ``pkg@npm:other@1.0.0`` form), and plain e-mail prose
+    # are byte-identical; an e-mail followed by a colon path is an SCP
+    # reference and collapses.
+    digest = "nginx:1.25@sha256:" + "a" * 64
+    for benign in (digest, "see " + digest + " pinned",
+                   "@scope/pkg@1.2.3", "npm:@scope/pkg@^1.2.3",
+                   "pkg@npm:other@1.0.0", "pkg@npm:@scope/other@^1.0.0",
+                   "aliases @scope/pkg@1.2.3, pkg@npm:other@1.0.0",
+                   "mail user@example.com now",
+                   "npm:user@1.2.3", "pkg@workspace:*"):
+        assert redact_display_text(benign) == benign, benign
+    assert redact_display_text("mail user@example.com:private/x now") == \
+        "mail <ssh:example.com> now"
+    # A truncated digest tail is not a stable anchor (Global Constraint 6:
+    # only complete 64-hex sha256 digests are exempted), so it fails
+    # closed to the URL placeholder rather than passing through.
+    assert redact_display_text("nginx:1.25@sha256:abc") == "url:<redacted>"
+
+
 def test_hosted_git_and_ssh_placeholders():
     assert hosted_git_placeholder("github:org/private") == \
         ("<hosted-git:github>", "github")
@@ -466,6 +517,15 @@ def test_redaction_is_idempotent():
             text
         assert redact_dependency_ref(
             redact_dependency_ref(text)) == redact_dependency_ref(text), text
+        assert redact_display_text(
+            redact_display_text(text)) == redact_display_text(text), text
+    # The display sanitizer is a fixed point on the multi-anchor SCP
+    # shape and its prose embedding as well.
+    for text in ("widget@git@host.invalid:private/SENTINEL-repo.git",
+                 "see widget@git@host.invalid:private/SENTINEL-repo.git "
+                 "for details"):
+        assert redact_display_text(
+            redact_display_text(text)) == redact_display_text(text), text
 
 
 def test_redact_urls_deep_nested_anchor_chain_bounded():
@@ -1599,6 +1659,7 @@ TESTS = [
     test_scp_style_git_refs_collapse,
     test_python_scp_direct_reference_redacted,
     test_ssh_scheme_case_and_ipv4_scp_collapse,
+    test_display_multi_anchor_scp_collapses,
     test_dockerfile_template_credential_backstop_shapes,
     test_gitlab_local_include_targets_redacted,
     test_go_module_paths_redacted,

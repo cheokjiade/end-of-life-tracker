@@ -50,7 +50,6 @@ from .notify import (
 )
 from .runner import run_checks
 from .validation import (
-    check_config_bounds,
     config_bounds_error,
     load_validated_config_bytes,
 )
@@ -212,7 +211,6 @@ def load_config_from_s3(key=None):
         raw = read_response_bytes(obj["Body"], max_bytes=MAX_CONFIG_FILE_BYTES)
     except ValueError as exc:
         raise config_bounds_error(origin, str(exc)) from exc
-    check_config_bounds(raw, origin)
     config, product_findings = load_validated_config_bytes(
         raw, origin=origin)
     _log_product_findings(product_findings, origin)
@@ -223,9 +221,10 @@ def load_config_from_s3(key=None):
 def load_config_from_file(path):
     """Load product configuration from a local file (for testing).
 
-    Reads bytes and enforces the same encoding (ASCII or UTF-8) + JSON
-    rules as the ``--validate`` linter (see :mod:`eoltracker.validation`),
-    then applies :func:`enforce_valid_config` exactly like S3 loading —
+    Reads bytes and enforces the same bounded-JSON contract as the S3
+    loader and the ``--validate`` linter (size, nesting depth, UTF-8, JSON
+    syntax, top-level object; see :func:`eoltracker.validation.check_config_bounds`), then
+    applies :func:`enforce_valid_config` exactly like S3 loading —
     invalid top-level or runtime shapes raise
     :class:`ConfigValidationError` before providers run. After validation,
     config-level ``maven_repositories`` are stamped onto ``maven_central``
@@ -234,8 +233,6 @@ def load_config_from_file(path):
     """
     with open(path, "rb") as f:
         raw = f.read(MAX_CONFIG_FILE_BYTES + 1)
-    check_config_bounds(raw, path)
-
     config, product_findings = load_validated_config_bytes(raw, origin=path)
     _log_product_findings(product_findings, path)
     _stamp_maven_repositories(config, path)

@@ -15,6 +15,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -81,6 +82,26 @@ def _seed_project(root):
     }), encoding="utf-8")
 
 
+def _seed_bulky_project(root, pins):
+    """A project whose scan produces `pins` dependency records.
+
+    Every pin becomes its own config record carrying provenance - the
+    shape that made a 1.5 MB requirements file (well under
+    MAX_FILE_BYTES) serialize to a config far past
+    MAX_CONFIG_FILE_BYTES.
+    """
+    lines = "\n".join(f"pkg-filler-{i:05d}==1.0.{i}" for i in range(pins))
+    (root / "requirements.txt").write_text(lines + "\n", encoding="utf-8")
+
+
+def _captured(err):
+    """Context manager: silence stdout, capture stderr into `err`."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+    stack.enter_context(contextlib.redirect_stderr(err))
+    return stack
+
+
 def _expect_load_error(path, fragment):
     try:
         load_bounded_config(path)
@@ -110,9 +131,15 @@ def test_plain_json_load_recurses_on_deep_input():
 
 def test_config_bounds_are_the_documented_values():
     assert config_io.MAX_CONFIG_DEPTH == 100
-    # 20 MB: accommodates generated configs at the scanner's advertised
-    # maximum (5000 provenance sites ≈ 5 MB) with headroom. Matches
-    # eoltracker/core.py MAX_CONFIG_FILE_BYTES (runtime/helper parity).
+    # 20 MB is the ceiling for every config this repo loads *or writes*.
+    # A generated config costs ~415 bytes per dependency record, each
+    # record carrying its own `_found_in` provenance (measured on the
+    # _seed_bulky_project fixture: 2000 pins serialize to 831_041 bytes),
+    # so the bound admits roughly 50k records. Past that the generator
+    # fails closed (test_generator_refuses_to_write_oversize_generated_
+    # config) instead of emitting a config no loader could read back.
+    # Matches eoltracker/core.py MAX_CONFIG_FILE_BYTES (runtime/helper
+    # parity).
     assert config_io.MAX_CONFIG_FILE_BYTES == 20 * 1024 * 1024
 
 
@@ -163,6 +190,18 @@ def test_loader_rejects_invalid_json_non_object_and_unreadable():
         arr.write_text("[1, 2]", encoding="utf-8")
         _expect_load_error(arr, "top-level JSON value is not an object")
         _expect_load_error(Path(td) / "missing.json", "could not read file")
+
+
+def test_loader_accepts_bom_prefixed_config_like_the_runtime():
+    # eoltracker.core.validate_bounded_json decodes utf-8-sig, so a
+    # BOM-prefixed config the Lambda and --validate accept must not be
+    # refused here (helper_scripts/eol_inventory/config_io.py docstring:
+    # "keep the two in step").
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "bom.json"
+        path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"products": []}).encode("utf-8"))
+        config = load_bounded_config(path)
+        assert config == {"products": []}
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +279,74 @@ def test_generator_update_accepts_depth_just_under_the_limit():
         assert merged["curated"] == curated
         assert any(isinstance(p, dict) and p.get("product") == "react"
                    and p.get("version") == "18" for p in merged["products"])
+
+
+# ---------------------------------------------------------------------------
+# Generator CLI: a generated config never exceeds the shared size limit
+# ---------------------------------------------------------------------------
+
+def test_generator_refuses_to_write_oversize_generated_config():
+    original = config_io.MAX_CONFIG_FILE_BYTES
+    config_io.MAX_CONFIG_FILE_BYTES = 4096
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_bulky_project(root, 200)
+            out = root / "out.json"
+            err = io.StringIO()
+            with _captured(err):
+                rc = generate_config_main(
+                    [str(root), "--name", "demo", "--output", str(out)])
+            assert rc == 2, f"expected exit 2, got {rc}"
+            message = err.getvalue()
+            assert str(config_io.MAX_CONFIG_FILE_BYTES) in message, message
+            counted = re.search(r"for (\d+) dependency record", message)
+            assert counted, message
+            assert int(counted.group(1)) >= 200, message
+            assert not out.exists(), "an oversize config was written"
+            assert list(root.glob(".eol_config-*")) == [], "temp file left"
+    finally:
+        config_io.MAX_CONFIG_FILE_BYTES = original
+
+
+def test_generator_update_refuses_oversize_merge_without_clobber():
+    original = config_io.MAX_CONFIG_FILE_BYTES
+    config_io.MAX_CONFIG_FILE_BYTES = 4096
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_bulky_project(root, 200)
+            out = root / "out.json"
+            existing = json.dumps(
+                {"products": [{"product": "react", "version": "17"}]})
+            out.write_text(existing, encoding="utf-8")
+            err = io.StringIO()
+            with _captured(err):
+                rc = generate_config_main(
+                    [str(root), "--name", "demo", "--output", str(out),
+                     "--update"])
+            assert rc == 2, f"expected exit 2, got {rc}"
+            message = err.getvalue()
+            assert str(config_io.MAX_CONFIG_FILE_BYTES) in message, message
+            assert out.read_text(encoding="utf-8") == existing, (
+                "existing config was clobbered")
+            assert list(root.glob(".eol_config-*")) == [], "temp file left"
+    finally:
+        config_io.MAX_CONFIG_FILE_BYTES = original
+
+
+def test_generator_writes_config_just_under_the_size_limit():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _seed_bulky_project(root, 50)
+        out = root / "out.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = generate_config_main(
+                [str(root), "--name", "demo", "--output", str(out)])
+        assert rc == 0
+        written = out.read_bytes()
+        assert len(written) <= config_io.MAX_CONFIG_FILE_BYTES
+        assert len(json.loads(written.decode("ascii"))["products"]) >= 50
 
 
 # ---------------------------------------------------------------------------
@@ -407,10 +514,14 @@ TESTS = [
     test_loader_rejects_depth_just_over_the_limit,
     test_loader_rejects_oversize_files,
     test_loader_rejects_invalid_json_non_object_and_unreadable,
+    test_loader_accepts_bom_prefixed_config_like_the_runtime,
     test_generator_update_rejects_deep_config_without_clobber,
     test_generator_update_rejects_oversize_config_without_clobber,
     test_generator_update_rejects_invalid_json_without_clobber,
     test_generator_update_accepts_depth_just_under_the_limit,
+    test_generator_refuses_to_write_oversize_generated_config,
+    test_generator_update_refuses_oversize_merge_without_clobber,
+    test_generator_writes_config_just_under_the_size_limit,
     test_report_cli_rejects_deep_config_without_writing_outputs,
     test_report_cli_rejects_oversize_config_without_writing_outputs,
     test_report_cli_corrupt_config_does_not_clobber_output,

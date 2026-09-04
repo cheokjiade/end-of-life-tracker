@@ -29,7 +29,6 @@ Examples:
 """
 
 import argparse
-import json
 import os
 import re
 import shlex
@@ -37,7 +36,12 @@ import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
-from eol_inventory.config_io import ConfigLoadError, load_bounded_config
+from eol_inventory.config_io import (
+    ConfigLoadError,
+    ConfigTooLargeError,
+    dump_bounded_config,
+    load_bounded_config,
+)
 from eol_inventory.parsers.docker import split_image_reference
 from eol_inventory.redact import redact_image_reference, redact_urls
 
@@ -109,6 +113,21 @@ def _provenance_keys(entry):
     return keys
 
 
+def _unmapped_item_key(name, version, found_in):
+    """Identity of one unmapped inventory item or its generated row.
+
+    Name, version (the row's `version` is the item's `version` or
+    `version_spec`), and the full stable provenance keys, so two
+    same-name items at distinct sites, or at distinct locators in one
+    file, never collide.
+    """
+    return (
+        "" if name is None else str(name),
+        None if version is None else str(version),
+        frozenset(_provenance_keys({"_found_in": found_in})),
+    )
+
+
 def _generated_unmapped_defaults(existing, entry):
     """Generator-owned note/comment values for one old unmapped row.
 
@@ -156,6 +175,12 @@ def _merge_existing_config(existing, generated):
             fresh_by_provenance.setdefault(key, set()).add(index)
             if key[1] == "dockerfile":
                 fresh_dockerfile_sites.setdefault(key[0], set()).add(index)
+    old_identity_counts = {}
+    for old in existing.get("products", []):
+        if isinstance(old, dict) and not old.get("_section"):
+            identity = _merge_identity(old)
+            old_identity_counts[identity] = \
+                old_identity_counts.get(identity, 0) + 1
     used = set()
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
@@ -172,7 +197,20 @@ def _merge_existing_config(existing, generated):
                  if fresh[index].get("version") == old.get("version")]
         remapped = False
         selected = None
-        provenance_selected = False
+        # When several OLD rows share one merge identity (one dependency
+        # declared at several sites), a fresh row is only assignable to
+        # the old row at its own declaration site: the exact-version and
+        # sole-candidate fallbacks below would otherwise hand the one
+        # surviving site's row to whichever old row is processed first
+        # (moving that site's curation and leaving a stale duplicate).
+        # Such rows may only match by unique provenance; anything else
+        # retains conservatively. The gate mirrors the provenance
+        # branches below (`_comment` marks scanner-generated rows): a
+        # row that cannot be provenance-matched keeps its fallbacks,
+        # otherwise it could never match and would be retained AND
+        # re-added on every update.
+        site_bound = old_identity_counts.get(identity, 0) > 1 \
+            and bool(old.get("_comment")) and bool(_provenance_keys(old))
         if len(candidates) > 1 and old.get("_comment") \
                 and _provenance_keys(old):
             # Several fresh rows share the merge identity: a unique
@@ -191,11 +229,10 @@ def _merge_existing_config(existing, generated):
                 provenance_candidates &= set(candidates)
             if len(provenance_candidates) == 1:
                 selected = next(iter(provenance_candidates))
-                provenance_selected = True
         if selected is None:
-            if exact:
+            if exact and not site_bound:
                 selected = exact[0]
-            elif len(candidates) == 1:
+            elif len(candidates) == 1 and not site_bound:
                 selected = candidates[0]
             else:
                 provenance_candidates = set()
@@ -222,19 +259,17 @@ def _merge_existing_config(existing, generated):
                                     "_inventory_generated") == "unmapped"}
                 if len(provenance_candidates) == 1:
                     selected = next(iter(provenance_candidates))
-                    remapped = True
+                    # A same-identity (site-bound) match is a normal
+                    # same-component update, not a mapping change.
+                    if selected not in candidates:
+                        remapped = True
                 else:
                     products.append(old)
                     stats["retained_not_observed"] += 1
                     if old.get("_inventory_generated") == "unmapped":
-                        name = str(old.get("product")
-                                   or old.get("label") or "")
-                        paths = ",".join(sorted(
-                            str(loc.get("path", ""))
-                            for loc in (old.get("_found_in") or [])
-                            if isinstance(loc, dict)
-                        ))
-                        retained_unmapped_keys.add((name, paths))
+                        retained_unmapped_keys.add(_unmapped_item_key(
+                            old.get("product") or old.get("label"),
+                            old.get("version"), old.get("_found_in")))
                     continue
         new = fresh[selected]
         used.add(selected)
@@ -296,11 +331,13 @@ def _merge_existing_config(existing, generated):
         # generated-unmapped products: the fresh scan no longer observes
         # them, so its unmapped list omits them and the report would
         # silently drop the inventory (the plan's "never silently drop"
-        # rule). Match old items by name against retained product rows;
-        # deduplicate against fresh structured items by name and
-        # provenance paths. The unmapped list is copied so the caller's
-        # generated dict is never mutated.
-        retained_names = {key[0] for key in retained_unmapped_keys}
+        # rule). An old item is carried only for the retained row it was
+        # generated for: same name, same version, and the same full
+        # stable provenance (path, manifest, locator), so a same-name
+        # item at a site that is now tracked, or at another locator in
+        # the same file, is never borrowed. Deduplicate against fresh
+        # structured items on that same key. The unmapped list is copied
+        # so the caller's generated dict is never mutated.
         old_inv = existing.get("_inventory")
         old_unmapped = old_inv.get("unmapped") if isinstance(
             old_inv, dict) else []
@@ -312,26 +349,19 @@ def _merge_existing_config(existing, generated):
             for u in fresh_unmapped:
                 if not isinstance(u, dict):
                     continue
-                u_name = str(u.get("name", ""))
-                u_paths = ",".join(sorted(
-                    str(loc.get("path", ""))
-                    for loc in (u.get("found_in") or [])
-                    if isinstance(loc, dict)
-                ))
-                fresh_keys.add((u_name, u_paths))
+                fresh_keys.add(_unmapped_item_key(
+                    u.get("name"), u.get("version") or u.get("version_spec"),
+                    u.get("found_in")))
             for item in old_unmapped:
                 if not isinstance(item, dict):
                     continue
-                name = str(item.get("name", ""))
-                paths = ",".join(sorted(
-                    str(loc.get("path", ""))
-                    for loc in (item.get("found_in") or [])
-                    if isinstance(loc, dict)
-                ))
-                if name in retained_names \
-                        and (name, paths) not in fresh_keys:
+                key = _unmapped_item_key(
+                    item.get("name"),
+                    item.get("version") or item.get("version_spec"),
+                    item.get("found_in"))
+                if key in retained_unmapped_keys and key not in fresh_keys:
                     fresh_unmapped.append(item)
-                    fresh_keys.add((name, paths))
+                    fresh_keys.add(key)
     merged["_inventory"]["update_summary"] = stats
     return merged
 
@@ -340,14 +370,18 @@ def _atomic_write_json(config, output):
     """Write config JSON atomically: temp file in the target dir + os.replace.
 
     Output is deterministic ASCII (ensure_ascii=True, fixed indent).
+    Serialization happens first, through `dump_bounded_config`, so a
+    config over the shared size limit raises ConfigTooLargeError before
+    any temp file is created and neither a partial nor an oversize file
+    can reach disk.
     """
+    text = dump_bounded_config(config)
     dir_name = os.path.dirname(os.path.abspath(output))
     fd, tmp_path = tempfile.mkstemp(
         dir=dir_name, prefix=".eol_config-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="ascii", newline="\n") as f:
-            json.dump(config, f, indent=2, ensure_ascii=True)
-            f.write("\n")
+            f.write(text)
         os.replace(tmp_path, output)
     except BaseException:
         try:
@@ -414,7 +448,11 @@ def main(argv=None):
             return 2
     inventory = config["_inventory"]
 
-    _atomic_write_json(config, output)
+    try:
+        _atomic_write_json(config, output)
+    except ConfigTooLargeError as exc:
+        print(f"Refusing to write {output}: {exc}", file=sys.stderr)
+        return 2
 
     print(f"\nWrote {output}")
     print(f"  Tracker entries     : {inventory['summary']['products']}")

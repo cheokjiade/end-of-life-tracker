@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime
+from typing import Optional
 
 from ..core import (
     MAX_HTTP_BODY_BYTES,
@@ -397,7 +398,7 @@ def _parse_published(ts):
 def _latest_stable(leaves):
     """Pure: (version, published_date|None) of the highest listed stable
     release. Prereleases and unlisted versions never win."""
-    best_key: tuple | None = None
+    best_key: Optional[tuple] = None
     best_ver, best_date = None, None
     for ce in leaves:
         if not isinstance(ce, dict) or ce.get("listed") is False:

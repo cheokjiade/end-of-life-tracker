@@ -401,6 +401,23 @@ def redact_display_text(text):
         token = match.group(0)
         marker_at = token.find(f"{REDACTED}@")
         scheme_at = token.find("://")
+        head = token if scheme_at < 0 else token[:scheme_at]
+        first_at = head.find("@")
+        if first_at >= 0 and head.find("@", first_at + 1) >= 0 \
+                and not _NPM_ALIAS_RE.fullmatch(
+                    token.strip(_DISPLAY_TOKEN_PUNCT)) \
+                and not _DISPLAY_ALIAS_RE.fullmatch(
+                    token.strip(_DISPLAY_TOKEN_PUNCT)):
+            # Two or more @ anchors ahead of any scheme (redact_urls has
+            # already handled the authority of a scheme-anchored URL; a
+            # scheme planted after an @ chain is attacker material, not
+            # a URL). No display grammar but a complete npm alias carries
+            # that shape, and the SSH scan below cannot start a match
+            # after an earlier @ (its boundary lookbehind), so a
+            # multi-anchor SCP reference (widget@git@host:private/x)
+            # would otherwise pass through raw. Fail closed on the whole
+            # token.
+            return URL_PLACEHOLDER
         if scheme_at >= 0 and (marker_at < 0 or scheme_at < marker_at):
             # A scheme preceding any redaction marker is a real URL:
             # userinfo/query/fragment redaction is the contract; path
@@ -527,6 +544,18 @@ _WHITESPACE_RE = re.compile(r"\s")
 _NPM_ALIAS_RE = re.compile(
     r"^(?:npm:)?(?:@[A-Za-z0-9._~%-]+/)?[A-Za-z0-9._~%-]+"
     r"@(?:npm:|workspace:)?[\^~*<>=]?[vV]?[\w.+!~-]*$")
+# Display-only companion: the lockfile alias key form
+# (``pkg@npm:other@1.0.0``, ``@scope/pkg@npm:@other/pkg@^1.0.0``) is
+# the one further benign multi-@ shape; the name and target segments
+# carry no colon, so no userinfo grammar fits inside them.
+_DISPLAY_ALIAS_RE = re.compile(
+    r"^(?:@[A-Za-z0-9._~%-]+/)?[A-Za-z0-9._~%-]+"
+    r"@npm:(?:@[A-Za-z0-9._~%-]+/)?[A-Za-z0-9._~%-]+"
+    r"@[\^~*<>=]?[vV]?[\w.+!~-]*$")
+# Delimiters that prose may wrap around an alias token (``(pkg@npm:x@1)``,
+# ``@scope/pkg@1.2.3,``); stripped only to decide the alias exemption,
+# never from the emitted text.
+_DISPLAY_TOKEN_PUNCT = "([{\"'_.,;:!?)]}-"
 
 
 def _strip_path_credentials(ref):

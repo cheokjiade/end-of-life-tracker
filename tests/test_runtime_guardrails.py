@@ -362,4 +362,47 @@ finally:
     else:
         os.environ["CONFIG_BUCKET"] = old_bucket
 
+# --- non-object / undecodable configs reject identically from S3 -------------
+# One bounded-JSON contract: the S3 loader must produce the same finding
+# message as the local file loader (and as --validate, pinned in
+# tests/test_config_validation.py) for the same bad bytes.
+from eoltracker.handler import load_config_from_file as _load_config_from_file
+
+_bad_inputs = [("top-array.json", b"[1, 2]"),
+               ("undecodable.json", b'{"a": "\xff"}')]
+old_boto3 = sys.modules.get("boto3")
+old_bucket = os.environ.get("CONFIG_BUCKET")
+os.environ["CONFIG_BUCKET"] = "test-bucket"
+try:
+    for _name, _raw in _bad_inputs:
+        _p = os.path.join(TMPDIR, _name)
+        with open(_p, "wb") as _f:
+            _f.write(_raw)
+        try:
+            _load_config_from_file(_p)
+            raise AssertionError("file loader accepted %s" % _name)
+        except ConfigValidationError as exc:
+            _file_msgs = [f["message"] for f in exc.findings]
+        assert _file_msgs and _p not in _file_msgs[0], _file_msgs
+
+        fake_boto3 = types.ModuleType("boto3")
+        fake_boto3.client = lambda _n, raw=_raw: _S3(raw)
+        sys.modules["boto3"] = fake_boto3
+        try:
+            handler_mod.load_config_from_s3("projects/test/eol_config.json")
+            raise AssertionError("S3 loader accepted %s" % _name)
+        except ConfigValidationError as exc:
+            assert [f["path"] for f in exc.findings] == ["config"], exc.findings
+            assert [f["message"] for f in exc.findings] == _file_msgs, (
+                exc.findings, _file_msgs)
+finally:
+    if old_boto3 is None:
+        sys.modules.pop("boto3", None)
+    else:
+        sys.modules["boto3"] = old_boto3
+    if old_bucket is None:
+        os.environ.pop("CONFIG_BUCKET", None)
+    else:
+        os.environ["CONFIG_BUCKET"] = old_bucket
+
 print("OK test_runtime_guardrails")
