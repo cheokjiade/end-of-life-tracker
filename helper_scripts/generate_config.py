@@ -160,6 +160,7 @@ def _merge_existing_config(existing, generated):
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
              "retained_not_observed": 0}
+    retained_unmapped_names = set()
     for old in existing.get("products", []):
         if not isinstance(old, dict) or old.get("_section"):
             products.append(old)
@@ -225,6 +226,11 @@ def _merge_existing_config(existing, generated):
                 else:
                     products.append(old)
                     stats["retained_not_observed"] += 1
+                    if old.get("_inventory_generated") == "unmapped":
+                        name = str(old.get("product")
+                                   or old.get("label") or "")
+                        if name:
+                            retained_unmapped_names.add(name)
                     continue
         new = fresh[selected]
         used.add(selected)
@@ -279,6 +285,30 @@ def _merge_existing_config(existing, generated):
             merged[key] = value
     merged["products"] = products
     merged["_inventory"]["update_summary"] = stats
+    if retained_unmapped_names:
+        # Carry forward structured unmapped metadata for retained
+        # generated-unmapped products: the fresh scan no longer observes
+        # them, so its unmapped list omits them and the report would
+        # silently drop the inventory (the plan's "never silently drop"
+        # rule). Deduplicate against fresh structured items by name.
+        old_inv = existing.get("_inventory")
+        old_unmapped = old_inv.get("unmapped") if isinstance(
+            old_inv, dict) else []
+        if isinstance(old_unmapped, list):
+            fresh_unmapped = merged["_inventory"].setdefault(
+                "unmapped", [])
+            fresh_names = {
+                str(u.get("name", "")) for u in fresh_unmapped
+                if isinstance(u, dict)
+            }
+            for item in old_unmapped:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", ""))
+                if name in retained_unmapped_names \
+                        and name not in fresh_names:
+                    fresh_unmapped.append(item)
+                    fresh_names.add(name)
     return merged
 
 
