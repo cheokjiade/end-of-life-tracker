@@ -6,12 +6,149 @@ HTML table parsers. Parsers import from here; this module imports nothing
 from the rest of the package (keeps the import graph acyclic).
 """
 
+import gzip
 import html.parser
+import io
+import json
 import logging
 from datetime import datetime
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
+
+# Config loading bounds shared with helper_scripts/eol_inventory/config_io.py.
+# Generated configs at the scanner's advertised maximum (MAX_FILES = 5000
+# provenance sites) can reach ~5 MB; the limit is set well above that
+# while remaining finite. Both the Lambda runtime and the helper CLIs
+# enforce the same size and nesting-depth rules.
+MAX_CONFIG_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
+MAX_CONFIG_DEPTH = 100
+
+
+def _max_nesting_depth(text):
+    """Deepest {} / [] nesting outside JSON strings (iterative, O(n))."""
+    depth = max_depth = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+        elif ch in "}]":
+            depth -= 1
+    return max_depth
+
+
+def validate_bounded_json(data, max_bytes=MAX_CONFIG_FILE_BYTES,
+                          max_depth=MAX_CONFIG_DEPTH):
+    """Validate raw bytes as a bounded config JSON document.
+
+    Raises ValueError with a single-line message when *data* exceeds
+    *max_bytes*, nests deeper than *max_depth*, is not valid UTF-8 JSON,
+    or its top level is not an object. All checks run before recursive
+    JSON parsing, so rejected input never triggers RecursionError.
+    """
+    if len(data) > max_bytes:
+        raise ValueError(
+            f"config exceeds the {max_bytes} byte limit; "
+            "trim or split the config")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(
+            "config is not valid UTF-8; re-save as UTF-8") from None
+    depth = _max_nesting_depth(text)
+    if depth > max_depth:
+        raise ValueError(
+            f"JSON nesting depth {depth} exceeds the {max_depth} "
+            "level config limit; flatten or regenerate the config")
+    try:
+        config = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise ValueError("top-level JSON value is not an object")
+    return config
+
+
+def _read_bounded(stream, max_bytes, label):
+    """Read *stream* until EOF or *max_bytes* bytes, tolerating short reads.
+
+    ``read(size)`` may legitimately return fewer bytes than requested before
+    EOF (``http.client.HTTPResponse`` and boto3 ``StreamingBody`` are both
+    allowed to), so reads loop until EOF. One extra byte beyond the limit is
+    consumed to detect over-limit bodies, which raise instead of being
+    returned silently truncated.
+    """
+    chunks = []
+    total = 0
+    while total <= max_bytes:
+        chunk = stream.read(max_bytes + 1 - total)
+        if chunk is None:
+            raise ValueError(
+                f"{label} stream read() returned None; "
+                "non-compliant stream")
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > max_bytes:
+        raise ValueError(f"{label} exceeds {max_bytes} byte limit")
+    return b"".join(chunks)
+
+
+def read_response_bytes(response, max_bytes=MAX_HTTP_BODY_BYTES):
+    """Read a response body with a hard byte limit.
+
+    ``urllib`` response bodies and boto3 ``StreamingBody`` objects both
+    support ``read(size)``, which may short-read before EOF; the read loops
+    until EOF or the limit so a compliant short-reading stream is never
+    silently truncated. Reading one byte beyond the limit lets callers
+    fail loudly instead of parsing a silently truncated document.
+    """
+    if max_bytes < 1:
+        raise ValueError("response byte limit must be positive")
+    headers = getattr(response, "headers", None)
+    content_length = headers.get("Content-Length") if headers is not None else None
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except (TypeError, ValueError):
+            # A malformed or non-numeric length cannot be trusted; the bounded
+            # read below remains authoritative.
+            declared_length = None
+        if declared_length is not None and declared_length > max_bytes:
+            raise ValueError(
+                f"response exceeds {max_bytes} byte limit "
+                f"(Content-Length: {content_length})")
+    return _read_bounded(response, max_bytes, "response")
+
+
+def decompress_gzip_bytes(raw, max_bytes=MAX_HTTP_BODY_BYTES):
+    """Decompress one gzip body without allowing unbounded expansion.
+
+    Decompression streams through ``GzipFile`` with the same hard cap as the
+    byte-limited HTTP read, so a decompression bomb fails loudly instead of
+    exhausting memory.
+    """
+    if max_bytes < 1:
+        raise ValueError("decompressed byte limit must be positive")
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+        return _read_bounded(stream, max_bytes, "decompressed response")
 
 
 def parse_date_field(value):
@@ -54,7 +191,9 @@ def _error_result(entry, message):
             "version": entry.get("version"),
             "status": "error",
             "message": message,
+            "eol_date": None,
             "days_remaining": None,
+            "latest_patch": None,
             "source": source,
         }
     return {
@@ -63,7 +202,9 @@ def _error_result(entry, message):
         "version": None,
         "status": "error",
         "message": message,
+        "eol_date": None,
         "days_remaining": None,
+        "latest_patch": None,
         "source": "unknown",
     }
 
@@ -123,7 +264,8 @@ class _AWSCalendarParser(html.parser.HTMLParser):
             return
         if not self._in_target:
             return
-        if tag in ("th", "td") and self._cell_kind is not None:
+        if tag in ("th", "td") and self._cell_kind is not None \
+                and self._row is not None:
             cell = " ".join("".join(self._cell_buf).split())
             self._row.append((self._cell_kind, cell))
             self._cell_kind = None
@@ -201,7 +343,8 @@ class _HtmlTableExtractor(html.parser.HTMLParser):
             return
         if self._depth != 1:
             return
-        if tag in ("th", "td") and self._cell_kind is not None:
+        if tag in ("th", "td") and self._cell_kind is not None \
+                and self._row is not None:
             cell = " ".join("".join(self._cell_buf).split())
             self._row.append((self._cell_kind, cell))
             self._cell_kind = None

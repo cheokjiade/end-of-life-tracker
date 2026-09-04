@@ -1,0 +1,13 @@
+{
+  "name": "unlocked-app",
+  "version": "1.0.0",
+  "engines": { "node": ">=18 <21" },
+  "dependencies": {
+    "react": "^18.2.0",
+    "anything": "*",
+    "latest-pkg": "latest",
+    "ws-dep": "workspace:*",
+    "git-dep": "git+https://github.com/x/y.git",
+    "local-dep": "file:../local"
+  }
+}

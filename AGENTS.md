@@ -22,17 +22,27 @@ a verified manifest (see `docs/packaging.md`).
 | Validate a config structurally (network-free) | `python lambda_function.py --validate <config.json>` |
 | Update Terraform providers, handle the lockfile, or roll back an S3 config | `terraform/README.md` |
 | Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
+| Generate a config by scanning dependency manifests and container files | `python helper_scripts/generate_config.py <folder> --name <project>` (Java, Node, Python, Go, .NET, Dockerfile, GitLab CI images); render the Markdown/CSV/HTML inventory with `python helper_scripts/generate_inventory_report.py <config>`; novice guide: `helper_scripts/README.md` |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
 | Add a new data-source provider | Invoke `add-eol-provider` in Codex/OpenCode or `eol-provider` in Claude Code; canonical instructions: `.agents/skills/add-eol-provider/SKILL.md` |
 | Repair a provider whose upstream page drifted | Use the same provider skill; canonical repair procedure: `docs/adding-a-provider.md` |
 | Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
+| Run a Codex task while conserving Codex allowance | Ask Codex to follow `docs/codex-usage-efficient-workflow.md` |
+
+Two config generators currently coexist on purpose: root `generate_config.py`
+(the plain manifest extractor, being extended by open PR #35) and
+`helper_scripts/generate_config.py` backed by `helper_scripts/eol_inventory/`
+(the multi-ecosystem inventory scanner with provenance, curation-preserving
+`--update`, and container-image scanning). Consolidating them into one tool is
+a follow-up decision, not yet made — do not delete or merge either one without
+an explicit instruction to do so.
 
 Universal norms, whichever workflow you are in:
 
-- **Verify, don't fabricate.** Confirm endoflife.date slugs/cycles and npm/Maven
-  packages against the live APIs before writing them into a config. A wrong
-  string becomes a broken `error` row on every future run.
+- **Verify, don't fabricate.** Confirm endoflife.date slugs/cycles and
+  npm/Maven/PyPI/NuGet/Go packages against the live APIs before writing them
+  into a config. A wrong string becomes a broken `error` row on every future run.
 - **Validate + smoke-run** any config you write or change:
   `python -c "import json; json.load(open('eol_config.<project>.json'))"`, then
   `python lambda_function.py eol_config.<project>.json`.
@@ -48,8 +58,11 @@ Universal norms, whichever workflow you are in:
 ```
 lambda_function.py        # shim: re-exports lambda_handler; __main__ runs run_local
 eoltracker/
-  core.py                 # logger, parse_date_field, _error_result, the two HTML table parsers
-  parsers/                # one file per provider + __init__.py (auto-registration + dispatch)
+  core.py                 # logger, parse_date_field, _error_result, the two HTML table parsers,
+                          #   plus the bounded-JSON/HTTP helpers validate_bounded_json,
+                          #   read_response_bytes, decompress_gzip_bytes
+  parsers/                # one file per provider + __init__.py (auto-registration + dispatch);
+                          #   includes go_proxy.py, nuget_registry.py, pypi_registry.py
   report.py               # _categorise + plain-text and HTML formatters
   notify.py               # notification channels
   runner.py               # run_checks: bounded-concurrency provider execution, lookup dedupe,
@@ -57,6 +70,18 @@ eoltracker/
                           #   env knobs EOL_MAX_WORKERS / EOL_TIME_RESERVE_MS /
                           #   EOL_CHECK_START_GUARD_MS
   handler.py              # config loading, lambda_handler, run_local
+  html_runner.py          # HTML-only local report runner: one process, many configs, reusing
+                          #   provider caches, never touching console/SNS/SES
+  validation.py           # config JSON decode/parse + eoltracker.validation schema enforcement
+helper_scripts/
+  generate_config.py      # root-alternative CLI: folder scan -> eol_config.<project>.json (+ _inventory);
+                          #   extended by open PR #35 — see the coexistence note above
+  generate_inventory_report.py  # CLI: config -> Markdown/CSV/HTML inventory report
+  generate_config.sh/.ps1, generate_inventory_report.sh/.ps1  # interactive wrappers
+  eol_inventory/          # importable scan package: discovery.py, models.py, mappings.py,
+                          #   config_writer.py, report_writer.py, config_io.py (bounded config
+                          #   load, mirrors eoltracker/core.py's size/depth bounds), redact.py
+                          #   (URL/SSH/SCP secret redaction), parsers/ (per ecosystem)
 ```
 
 ## Architecture: providers (the "parsers")
@@ -98,9 +123,9 @@ def _provider_<name>(entry, today) -> dict   # a normalized result dict
 **auto-registered** at import time (`eoltracker/parsers/__init__.py` scans the
 package) —
 adding one is localized and touches no other provider: drop in a new file, no
-registry edits. Current providers (8): `endoflife_date`, `aws_rds_scrape`,
+registry edits. Current providers (11): `endoflife_date`, `aws_rds_scrape`,
 `aws_sdk_lifecycle`, `jackson_lifecycle`, `maven_central`, `npm_registry`,
-`manual`, `tyk_lifecycle`.
+`pypi_registry`, `nuget_registry`, `go_proxy`, `manual`, `tyk_lifecycle`.
 
 ## Adding or repairing a data-source provider
 
@@ -147,15 +172,31 @@ drifts). In brief:
 ## Config generation & maintenance
 
 - `eol_config_generation_prompt.md` is the **canonical extraction spec**: config
-  schema, the 8 providers' entry shapes, the input-to-entry mapping decision
+  schema, the 11 providers' entry shapes, the input-to-entry mapping decision
   order, and real-world document patterns (strikethrough = skip, "was X now Y" =
   current version, multi-version cells, reference-URL slug hints). Any agent in
   any harness can follow it directly.
-- `generate_config.py` is the deterministic scanner for clean dependency
-  manifests (Maven / Gradle / npm) — no LLM required.
+- `helper_scripts/generate_config.py` is the deterministic scanner — no LLM
+  required — for Java, Node, Python, Go, and .NET manifests plus Dockerfile and
+  GitLab CI image declarations. It emits per-entry `_found_in` provenance, an
+  ignored `_inventory` object (warnings, unmapped items, counts), explicit
+  `manual`/untracked rows for unmapped items, scans **direct dependencies
+  only** by default (`--include-transitive` opts into indirect/lockfile
+  records), refuses to overwrite an existing config unless `--update`
+  (curation-preserving merge) or `--replace` (explicit wholesale) is given,
+  and writes atomically as ASCII. Root `generate_config.py` still exists and
+  is a separate, simpler manifest extractor (see the coexistence note under
+  "Workflows index"); do not remove or modify it as part of inventory-scanner
+  work.
+- `helper_scripts/generate_inventory_report.py` renders a config locally (no
+  network) as Markdown (default), CSV, and HTML under
+  `reports/inventory/`, with a manual-review checklist; legacy configs and
+  `_skipped_npm_packages` remain readable. Interactive `.sh`/`.ps1` wrappers
+  cover both CLIs for first-time users; see `helper_scripts/README.md`.
 - `docs/updating-a-config.md` is the refresh workflow: diff new evidence against
   the existing config and patch it, preserving human curation. Never regenerate
-  an existing config wholesale.
+  an existing config wholesale — with the scanner, that means `--update`, never
+  `--replace`.
 
 ## Git workflow and commits
 
@@ -202,16 +243,27 @@ canonical message format and detailed workflow.
   subset), UTF-8 with or without a BOM is accepted — hand-edited configs may
   contain UTF-8 characters — and any other encoding is rejected with a clear
   re-save-as-UTF-8 error, so the old cp1252 (Windows) locale hazard is gone.
-  **Every load — local or S3 — enforces the `eoltracker.validation` schema**:
-  invalid top-level or runtime shapes (`products` container,
-  `alert_thresholds_days`, `notify_when`, notification channels) are rejected
-  before any provider call. Malformed individual product entries do not abort
-  the run; they become `error` rows while valid products continue.
+  **Every load — local or S3 — also enforces a bounded size and JSON-nesting
+  depth** (`MAX_CONFIG_FILE_BYTES` / `MAX_CONFIG_DEPTH` in `eoltracker/core.py`,
+  mirrored by `helper_scripts/eol_inventory/config_io.py`), rejecting
+  oversized or over-nested input with a clear error before recursive JSON
+  parsing so a hostile or malformed config cannot raise `RecursionError` or
+  exhaust memory. **Every load — local or S3 — enforces the
+  `eoltracker.validation` schema**: invalid top-level or runtime shapes
+  (`products` container, `alert_thresholds_days`, `notify_when`, notification
+  channels) are rejected before any provider call. Malformed individual
+  product entries do not abort the run; they become `error` rows while valid
+  products continue.
   `json.dump(..., ensure_ascii=True)` (the default) keeps generated configs
   pure ASCII.
 - **`eol_config.*.json` and `reports/` are gitignored** (except
   `eol_config.sample.json`, the template). Per-project configs and generated
-  reports are local artifacts.
+  reports (tracker reports under `reports/<project>/...`, inventory reports
+  under `reports/inventory/`) are local artifacts.
+- **Scanner metadata keys are ignored by the runtime.** Like `_comment` and
+  `_section`, `_found_in` (per-entry provenance) and `_inventory` (scan
+  metadata, warnings, unmapped items) are underscore-prefixed and skipped by
+  the Lambda; keep them intact so inventory reports stay accurate.
 - **Reports** land in `reports/<project>/<year>/<month>/<day>/`; `<project>`
   derives from the `html_file` `path` base name (`eol_report_a.html` → `a`,
   plain `eol_report.html` → `default`).
@@ -243,7 +295,7 @@ canonical message format and detailed workflow.
 | `AGENTS.md` | This file — the canonical guide for AI agents in any harness |
 | `CLAUDE.md` | Thin Claude Code discovery aliases for canonical `.agents` skills |
 | `lambda_function.py` | Shim: re-exports `lambda_handler` (the Lambda entry point) + the local CLI (`run_local`) |
-| `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers |
+| `eoltracker/core.py` | Shared primitives: `logger`, `parse_date_field`, `_error_result`, the two HTML table parsers, and the bounded-JSON/HTTP helpers `validate_bounded_json`, `read_response_bytes`, `decompress_gzip_bytes` |
 | `eoltracker/parsers/` | One file per provider + `eoltracker/parsers/__init__.py` auto-registration (`PROVIDERS`, `SOURCE_LABELS`, `source_url_for`, `check_product`) |
 | `eoltracker/report.py` | Categorizer + plain-text and HTML formatters |
 | `eoltracker/notify.py` | Notification channels (console / html_file / SNS / SES) |
@@ -251,7 +303,8 @@ canonical message format and detailed workflow.
 | `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |
 | `eol_config.<project>.json` | Per-project product lists (gitignored; `eol_config.sample.json` is the template) |
 | `eol_config_generation_prompt.md` | The canonical config-generation/extraction spec |
-| `generate_config.py` | Static dependency-manifest → config generator (Maven/Gradle/npm) |
+| `generate_config.py` | Root-level manifest extractor CLI (one of two coexisting generators — see "Workflows index"); extended by open PR #35 |
+| `helper_scripts/` | Second, multi-ecosystem dependency scanner + inventory report CLIs, wrappers, and the `eol_inventory` package (provenance, curation-preserving `--update`, container scanning, `helper_scripts/eol_inventory/redact.py`, `helper_scripts/eol_inventory/config_io.py`); see `helper_scripts/README.md` |
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |

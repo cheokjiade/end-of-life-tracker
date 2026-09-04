@@ -15,7 +15,7 @@ import re
 import urllib.request
 from datetime import date, datetime
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _TYK_LTS_URL = (
     "https://raw.githubusercontent.com/TykTechnologies/tyk-docs/main/"
@@ -116,7 +116,7 @@ def _scrape_tyk_lifecycle():
         return _TYK_CACHE["data"]
     req = urllib.request.Request(_TYK_LTS_URL, headers={"User-Agent": "EOL-Tracker/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        md = resp.read().decode("utf-8", "replace")
+        md = read_response_bytes(resp).decode("utf-8", "replace")
     versions = _parse_tyk_table(md)
     _validate_tyk(versions)
     logger.info("Tyk LTS scraped: %s", {v: str(i["eol"]) for v, i in versions.items()})

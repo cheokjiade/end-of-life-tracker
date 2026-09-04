@@ -1,0 +1,40 @@
+---
+variables:
+  RUNTIME_IMAGE: "python:3.12-slim"
+  SECRET_TOKEN: "example-token-value"
+
+default:
+  image:
+    name: "$RUNTIME_IMAGE"
+    entrypoint: [""]
+  services:
+    - postgres:16-alpine
+
+stages:
+  - build
+
+build-job:
+  stage: build
+  image: registry.gitlab.com/group/app/ci-builder:1.2.3
+  services:
+    - name: redis:7.2
+      command: ["--protected-mode", "no"]
+  script:
+    - echo ok
+
+test-job:
+  variables:
+    JOB_IMAGE: "node:22-bookworm"
+  image: "$JOB_IMAGE"
+  script:
+    - echo ok
+
+deploy-job:
+  image: nginx:1.27
+  script:
+    - echo ok
+
+include:
+  - local: "/.gitlab/ci/deploy.yml"
+  - project: "shared/pipelines"
+    file: "main.yml"

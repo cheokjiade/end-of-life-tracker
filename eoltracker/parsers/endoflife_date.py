@@ -5,13 +5,16 @@ for entries that don't declare one.
 """
 
 import json
+import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import date
 
-from ..core import parse_date_field, _error_result, logger
+from ..core import parse_date_field, _error_result, logger, read_response_bytes
 
 EOL_API_BASE = "https://endoflife.date/api"
+_PRODUCT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # Process-lifetime memo of product -> cycles list, so one long-lived runner
 # process checking several configs that track the same product (or the same
@@ -27,13 +30,20 @@ def fetch_all_cycles(product):
     error. Successful responses are memoized for the life of the process.
     """
     key = str(product)
+    if not _PRODUCT_RE.fullmatch(key):
+        logger.error("Invalid endoflife.date product slug: %r", product)
+        return None
     if key in _CYCLES_CACHE:
         return _CYCLES_CACHE[key]
-    url = f"{EOL_API_BASE}/{product}.json"
+    encoded = urllib.parse.quote(key, safe="")
+    url = f"{EOL_API_BASE}/{encoded}.json"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            cycles = json.loads(resp.read().decode("utf-8"))
+            cycles = json.loads(read_response_bytes(resp).decode("utf-8"))
+        if not isinstance(cycles, list) or any(
+                not isinstance(cycle, dict) for cycle in cycles):
+            raise ValueError("endoflife.date response is not a cycle list")
     except urllib.error.HTTPError as exc:
         logger.error("API error for %s: %s %s", product, exc.code, exc.reason)
         return None
@@ -58,6 +68,9 @@ def _provider_endoflife_date(entry, today):
     cycles = fetch_all_cycles(product)
     if cycles is None:
         return _error_result(entry, "Failed to fetch data from API")
+    if not isinstance(cycles, list) or any(
+            not isinstance(cycle, dict) for cycle in cycles):
+        return _error_result(entry, "endoflife.date returned malformed cycle data")
 
     info = None
     for c in cycles:
@@ -139,4 +152,7 @@ provider = _provider_endoflife_date
 
 def url_for(r):
     product = r.get("product") or ""
-    return f"https://endoflife.date/{product}" if product else None
+    if not _PRODUCT_RE.fullmatch(str(product)):
+        return None
+    encoded = urllib.parse.quote(str(product), safe="")
+    return f"https://endoflife.date/{encoded}" if encoded else None

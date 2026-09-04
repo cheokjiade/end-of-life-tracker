@@ -1,0 +1,5 @@
+image: redis:7.2
+
+deploy-job:
+  script:
+    - echo deploy

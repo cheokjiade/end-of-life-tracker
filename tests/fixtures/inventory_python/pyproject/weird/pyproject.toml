@@ -1,0 +1,8 @@
+[project]
+name = "weird"
+dependencies = [
+    "leftpad==0.1.0",
+]
+
+[[tool.weird.items]]
+name = "unsupported"

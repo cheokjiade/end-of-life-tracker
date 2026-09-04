@@ -13,10 +13,15 @@ Update = diff + patch.
 
 - The existing config: `eol_config.<project>.json` (the baseline).
 - Fresh evidence of what the project runs now — one of:
-  - **Dependency manifests** (`pom.xml`, `*.gradle*`, package.json): scan with
-    `python generate_config.py <folder> --name <project>-scan --output <scratch-file>`
-    and use the scratch output as the extracted inventory (do not overwrite the
-    real config with it).
+  - **Dependency manifests and container files** (Java, Node, Python, Go,
+    .NET, Dockerfile, GitLab CI images): scan with
+    `python helper_scripts/generate_config.py <folder> --name <project>-scan --output <scratch-file>`
+    and use the scratch output as the extracted inventory (the scanner refuses
+    to overwrite an existing file without `--update`/`--replace`, so pointing
+    `--output` at a scratch path keeps the real config untouched). Scans are
+    **direct dependencies only** unless `--include-transitive` is given.
+    Alternatively, when the baseline itself came from a scan,
+    `--update` performs the merge for you (see step 3b).
   - **Documents** (wiki/Confluence exports, spreadsheets, prose): extract an
     inventory per the spec in `eol_config_generation_prompt.md` (mapping decision
     order, strikethrough/"was X now Y"/multi-version-cell rules).
@@ -44,6 +49,16 @@ Update = diff + patch.
      Documents are often partial — absence from a partial input is NOT evidence.
      When unsure, keep the entry and flag it in the report.
    - **Unchanged** — keep the entry byte-identical, curation intact.
+
+   **3b. Automated merge alternative.** When the baseline was scan-generated,
+   `python helper_scripts/generate_config.py <folder> --name <project> --update`
+   performs this diff-and-patch mechanically: matched entries get refreshed
+   versions/labels while curation fields (`_comment`, `policy_note`, `note`,
+   `reference_url`, `eol_date`) are retained; entries the scan did not observe
+   are **retained, never dropped** (counted as `retained_not_observed` in
+   `_inventory.update_summary`); additions land under `=== Newly Discovered ===`.
+   Still review the resulting diff (step 7) — automated matching is by provider
+   identity, so a renamed component may appear as added rather than changed.
 4. **Preserve curation** on every kept or updated entry:
    - `_comment` provenance: update it, never delete it.
    - `policy_note`: keep unless the policy claim itself changed upstream.

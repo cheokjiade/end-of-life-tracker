@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _NPM_REGISTRY_API = "https://registry.npmjs.org"
 _NPM_STALE_MONTHS = 24
@@ -39,12 +39,14 @@ def _fetch_npm_doc(package):
     })
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            doc = json.loads(resp.read().decode("utf-8"))
+            doc = json.loads(read_response_bytes(resp).decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             _NPM_CACHE[package] = None
             return None
         raise
+    if not isinstance(doc, dict):
+        raise ValueError("npm registry document is not a JSON object")
     _NPM_CACHE[package] = doc
     return doc
 
@@ -61,10 +63,16 @@ def _npm_result_from_doc(entry, doc, today):
         result["product"] = package
         return result
 
+    if not isinstance(doc, dict):
+        raise ValueError("npm registry document is not a JSON object")
+
     dist_tags = doc.get("dist-tags") or {}
-    latest = dist_tags.get("latest")
     times = doc.get("time") or {}
     versions = doc.get("versions") or {}
+    if not all(isinstance(value, dict)
+               for value in (dist_tags, times, versions)):
+        raise ValueError("npm registry document has malformed metadata mappings")
+    latest = dist_tags.get("latest")
 
     def _pdate(v):
         ts = times.get(v)
@@ -156,13 +164,13 @@ def _provider_npm_registry(entry, today):
         return result
     try:
         doc = _fetch_npm_doc(package)
+        return _npm_result_from_doc(entry, doc, today)
     except Exception as exc:
         logger.error("npm registry fetch failed for %s: %s", package, exc)
         result = _error_result(entry, f"npm registry query failed: {exc}")
         result["source"] = "npm_registry"
         result["product"] = package
         return result
-    return _npm_result_from_doc(entry, doc, today)
 
 
 SOURCE = "npm_registry"
@@ -172,4 +180,5 @@ provider = _provider_npm_registry
 
 def url_for(r):
     product = r.get("product") or ""
-    return f"https://www.npmjs.com/package/{product}" if product else None
+    quoted = urllib.parse.quote(str(product), safe="@/")
+    return f"https://www.npmjs.com/package/{quoted}" if quoted else None

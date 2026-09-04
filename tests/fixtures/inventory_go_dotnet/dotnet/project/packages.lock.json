@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dependencies": {
+    ".NETCoreApp,Version=v8.0": {
+      "LockOnlyPkg": {
+        "type": "Direct",
+        "requested": "[2.0.1, )",
+        "resolved": "2.0.1"
+      },
+      "TransitivePkg": {
+        "type": "Transitive",
+        "resolved": "3.3.0"
+      }
+    }
+  }
+}
