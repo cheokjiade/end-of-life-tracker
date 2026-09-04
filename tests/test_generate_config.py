@@ -2316,6 +2316,7 @@ TESTS = [
     test_update_observed_unmapped_not_duplicated,
     test_update_curated_manual_row_remains_product,
     test_update_no_mutation_of_generated_dict,
+    test_snapshot_properties_stay_unmapped,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,
