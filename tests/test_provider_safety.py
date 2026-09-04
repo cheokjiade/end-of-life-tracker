@@ -142,6 +142,82 @@ def test_none_reading_stream_fails_loud():
         raise AssertionError("None-reading stream was not rejected")
 
 
+def test_runtime_config_bounds():
+    # Runtime and helper config loading share the same size and depth
+    # bounds: generated configs at the scanner's advertised maximum are
+    # accepted, and over-limit/over-depth input fails with ValueError
+    # (never RecursionError).
+    from eoltracker.core import (
+        MAX_CONFIG_DEPTH,
+        MAX_CONFIG_FILE_BYTES,
+        _max_nesting_depth,
+        validate_bounded_json,
+    )
+    import json as json_mod
+
+    # Max-bound generated config accepted.
+    big = json_mod.dumps({
+        "products": [], "_inventory": {
+            "manifests": [f"f{i}" for i in range(5000)],
+            "summary": {"files": 5000},
+        }})
+    assert len(big.encode("utf-8")) <= MAX_CONFIG_FILE_BYTES
+    result = validate_bounded_json(big.encode("utf-8"))
+    assert result["_inventory"]["summary"]["files"] == 5000
+
+    # Depth at the limit accepted, one level over rejected.
+    at_limit = json_mod.dumps({"k": [{"k": 1}] * 1})
+    deep_ok = "{\"k\":" * MAX_CONFIG_DEPTH + "1" + "}" * MAX_CONFIG_DEPTH
+    deep_bad = "{\"k\":" * (MAX_CONFIG_DEPTH + 1) + "1" + "}" * (
+        MAX_CONFIG_DEPTH + 1)
+    assert _max_nesting_depth(deep_ok) <= MAX_CONFIG_DEPTH
+    result = validate_bounded_json(deep_ok.encode("utf-8"))
+    try:
+        validate_bounded_json(deep_bad.encode("utf-8"))
+    except ValueError as exc:
+        assert "nesting depth" in str(exc)
+    else:
+        raise AssertionError("over-depth config was not rejected")
+
+    # Over-size rejected.
+    oversize = b'{"k":1}' + b' ' * (MAX_CONFIG_FILE_BYTES + 1)
+    try:
+        validate_bounded_json(oversize)
+    except ValueError as exc:
+        assert "byte limit" in str(exc)
+    else:
+        raise AssertionError("over-size config was not rejected")
+
+    # Non-object top-level rejected.
+    try:
+        validate_bounded_json(b"[1,2]")
+    except ValueError as exc:
+        assert "not an object" in str(exc)
+    else:
+        raise AssertionError("non-object config was not rejected")
+
+    # Invalid JSON rejected.
+    try:
+        validate_bounded_json(b"{invalid}")
+    except ValueError as exc:
+        assert "invalid JSON" in str(exc)
+    else:
+        raise AssertionError("invalid JSON was not rejected")
+
+    # Helper/runtime parity: the constants must match.
+    helper_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "helper_scripts")
+    if helper_dir not in sys.path:
+        sys.path.insert(0, helper_dir)
+    from eol_inventory.config_io import (
+        MAX_CONFIG_DEPTH as H_DEPTH,
+        MAX_CONFIG_FILE_BYTES as H_BYTES,
+    )
+    assert H_DEPTH == MAX_CONFIG_DEPTH
+    assert H_BYTES == MAX_CONFIG_FILE_BYTES
+
+
 def test_dispatch_isolates_provider_failures():
     source = "test_exploding_provider"
     PROVIDERS[source] = lambda entry, today: 1 / 0
@@ -270,6 +346,7 @@ TESTS = [
     test_bounded_response_and_gzip_helpers,
     test_short_read_streams_are_read_to_limit,
     test_none_reading_stream_fails_loud,
+    test_runtime_config_bounds,
     test_dispatch_isolates_provider_failures,
     test_malformed_provider_documents_return_error_rows,
     test_endoflife_urls_escape_config_values,

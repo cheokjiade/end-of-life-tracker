@@ -9,6 +9,7 @@ from the rest of the package (keeps the import graph acyclic).
 import gzip
 import html.parser
 import io
+import json
 import logging
 from datetime import datetime
 
@@ -16,6 +17,72 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024
+
+# Config loading bounds shared with helper_scripts/eol_inventory/config_io.py.
+# Generated configs at the scanner's advertised maximum (MAX_FILES = 5000
+# provenance sites) can reach ~5 MB; the limit is set well above that
+# while remaining finite. Both the Lambda runtime and the helper CLIs
+# enforce the same size and nesting-depth rules.
+MAX_CONFIG_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
+MAX_CONFIG_DEPTH = 100
+
+
+def _max_nesting_depth(text):
+    """Deepest {} / [] nesting outside JSON strings (iterative, O(n))."""
+    depth = max_depth = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+        elif ch in "}]":
+            depth -= 1
+    return max_depth
+
+
+def validate_bounded_json(data, max_bytes=MAX_CONFIG_FILE_BYTES,
+                          max_depth=MAX_CONFIG_DEPTH):
+    """Validate raw bytes as a bounded config JSON document.
+
+    Raises ValueError with a single-line message when *data* exceeds
+    *max_bytes*, nests deeper than *max_depth*, is not valid UTF-8 JSON,
+    or its top level is not an object. All checks run before recursive
+    JSON parsing, so rejected input never triggers RecursionError.
+    """
+    if len(data) > max_bytes:
+        raise ValueError(
+            f"config exceeds the {max_bytes} byte limit; "
+            "trim or split the config")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(
+            "config is not valid UTF-8; re-save as UTF-8") from None
+    depth = _max_nesting_depth(text)
+    if depth > max_depth:
+        raise ValueError(
+            f"JSON nesting depth {depth} exceeds the {max_depth} "
+            "level config limit; flatten or regenerate the config")
+    try:
+        config = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise ValueError("top-level JSON value is not an object")
+    return config
 
 
 def _read_bounded(stream, max_bytes, label):

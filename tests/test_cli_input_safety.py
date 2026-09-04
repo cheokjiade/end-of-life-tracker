@@ -110,7 +110,10 @@ def test_plain_json_load_recurses_on_deep_input():
 
 def test_config_bounds_are_the_documented_values():
     assert config_io.MAX_CONFIG_DEPTH == 100
-    assert config_io.MAX_CONFIG_FILE_BYTES == 10 * MAX_FILE_BYTES
+    # 20 MB: accommodates generated configs at the scanner's advertised
+    # maximum (5000 provenance sites ≈ 5 MB) with headroom. Matches
+    # eoltracker/core.py MAX_CONFIG_FILE_BYTES (runtime/helper parity).
+    assert config_io.MAX_CONFIG_FILE_BYTES == 20 * 1024 * 1024
 
 
 def test_loader_rejects_deep_nesting_with_clear_error():

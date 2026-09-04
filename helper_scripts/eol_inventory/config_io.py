@@ -31,8 +31,13 @@ import re
 
 from .models import MAX_FILE_BYTES
 
+# These values MUST match eoltracker/core.py MAX_CONFIG_FILE_BYTES and
+# MAX_CONFIG_DEPTH (the runtime-owned shared bounds). The parity is
+# verified by tests/test_provider_safety.py::test_runtime_config_bounds
+# and tests/test_cli_input_safety.py::test_config_bounds_are_the_
+# documented_values.
 MAX_CONFIG_DEPTH = 100
-MAX_CONFIG_FILE_BYTES = 10 * MAX_FILE_BYTES
+MAX_CONFIG_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 # JSON strings with escapes (linear pattern: the alternatives are disjoint
 # on their first character). Strings are stripped before counting so
