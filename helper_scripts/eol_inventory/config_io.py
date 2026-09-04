@@ -21,6 +21,10 @@ read can exhaust memory. This module gives both CLIs one loader that
       limit;
     - requires valid UTF-8 JSON with a top-level object.
 
+``dump_bounded_config`` applies the same size bound on the way out, so
+the generator can never write a config that these loaders (or the
+runtime) would refuse to read back.
+
 This is the standalone twin of the runtime's single implementation,
 ``eoltracker.core.validate_bounded_json`` (reached by every runtime loader
 via ``eoltracker.validation.check_config_bounds``); keep the two in step.
@@ -52,6 +56,52 @@ _STRUCTURE_RE = re.compile(r"[{}\[\]]")
 
 class ConfigLoadError(Exception):
     """A config file could not be loaded within the safety bounds."""
+
+
+class ConfigTooLargeError(Exception):
+    """A generated config would exceed MAX_CONFIG_FILE_BYTES on disk."""
+
+
+def _config_record_count(config):
+    """Dependency records in a config: tracked products plus unmapped rows."""
+    count = 0
+    products = config.get("products")
+    if isinstance(products, list):
+        count += len(products)
+    inventory = config.get("_inventory")
+    if isinstance(inventory, dict):
+        unmapped = inventory.get("unmapped")
+        if isinstance(unmapped, list):
+            count += len(unmapped)
+    return count
+
+
+def dump_bounded_config(config):
+    """Serialize a config to its exact on-disk text, refusing oversize output.
+
+    The write-side twin of load_bounded_config: the generator can turn a
+    single in-bounds manifest (MAX_FILE_BYTES, 2 MB) into a config far
+    past MAX_CONFIG_FILE_BYTES, because every record carries `_found_in`
+    provenance. Checking the serialized text here - before any file is
+    opened - means an over-limit config is never written at all, rather
+    than written and then rejected by every loader that reads it.
+
+    Returns the ASCII text to write (deterministic indent, trailing
+    newline). Raises ConfigTooLargeError, whose single-line message names
+    the limit, the actual size, and the record count, when the text would
+    exceed MAX_CONFIG_FILE_BYTES. Never truncates: an over-limit config
+    is a scan that must be narrowed, not silently shortened.
+    """
+    text = json.dumps(config, indent=2, ensure_ascii=True) + "\n"
+    size = len(text.encode("ascii"))
+    if size > MAX_CONFIG_FILE_BYTES:
+        records = _config_record_count(config)
+        raise ConfigTooLargeError(
+            f"generated config is {size} bytes for {records} dependency "
+            f"record(s), over the {MAX_CONFIG_FILE_BYTES} byte config "
+            "limit; narrow the scan with --exclude or split the project, "
+            "then re-run")
+    return text
 
 
 def _max_nesting_depth(text):

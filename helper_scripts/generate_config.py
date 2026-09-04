@@ -29,7 +29,6 @@ Examples:
 """
 
 import argparse
-import json
 import os
 import re
 import shlex
@@ -37,7 +36,12 @@ import sys
 import tempfile
 
 from eol_inventory import generate_config, scan_folder
-from eol_inventory.config_io import ConfigLoadError, load_bounded_config
+from eol_inventory.config_io import (
+    ConfigLoadError,
+    ConfigTooLargeError,
+    dump_bounded_config,
+    load_bounded_config,
+)
 from eol_inventory.parsers.docker import split_image_reference
 from eol_inventory.redact import redact_image_reference, redact_urls
 
@@ -370,14 +374,18 @@ def _atomic_write_json(config, output):
     """Write config JSON atomically: temp file in the target dir + os.replace.
 
     Output is deterministic ASCII (ensure_ascii=True, fixed indent).
+    Serialization happens first, through `dump_bounded_config`, so a
+    config over the shared size limit raises ConfigTooLargeError before
+    any temp file is created and neither a partial nor an oversize file
+    can reach disk.
     """
+    text = dump_bounded_config(config)
     dir_name = os.path.dirname(os.path.abspath(output))
     fd, tmp_path = tempfile.mkstemp(
         dir=dir_name, prefix=".eol_config-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="ascii", newline="\n") as f:
-            json.dump(config, f, indent=2, ensure_ascii=True)
-            f.write("\n")
+            f.write(text)
         os.replace(tmp_path, output)
     except BaseException:
         try:
@@ -444,7 +452,11 @@ def main(argv=None):
             return 2
     inventory = config["_inventory"]
 
-    _atomic_write_json(config, output)
+    try:
+        _atomic_write_json(config, output)
+    except ConfigTooLargeError as exc:
+        print(f"Refusing to write {output}: {exc}", file=sys.stderr)
+        return 2
 
     print(f"\nWrote {output}")
     print(f"  Tracker entries     : {inventory['summary']['products']}")
