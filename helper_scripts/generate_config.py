@@ -201,9 +201,13 @@ def _merge_existing_config(existing, generated):
         # surviving site's row to whichever old row is processed first
         # (moving that site's curation and leaving a stale duplicate).
         # Such rows may only match by unique provenance; anything else
-        # retains conservatively.
+        # retains conservatively. The gate mirrors the provenance
+        # branches below (`_comment` marks scanner-generated rows): a
+        # row that cannot be provenance-matched keeps its fallbacks,
+        # otherwise it could never match and would be retained AND
+        # re-added on every update.
         site_bound = old_identity_counts.get(identity, 0) > 1 \
-            and bool(_provenance_keys(old))
+            and bool(old.get("_comment")) and bool(_provenance_keys(old))
         if len(candidates) > 1 and old.get("_comment") \
                 and _provenance_keys(old):
             # Several fresh rows share the merge identity: a unique

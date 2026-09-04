@@ -2217,6 +2217,62 @@ def test_update_two_retained_locators_in_one_file_both_carried():
     assert view["summary"]["by_review_state"]["unmapped"] == 2
 
 
+def _uncurated_multi_site(version_a, version_b):
+    # Two same-identity rows with provenance but no `_comment` (so they
+    # are ineligible for provenance matching): the merge must keep the
+    # exact-version and sole-candidate fallbacks for them.
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    return [
+        {"source": "maven_central", "product": "shared",
+         "version": version_a, "_found_in": [dict(loc_a)]},
+        {"source": "maven_central", "product": "shared",
+         "version": version_b, "_found_in": [dict(loc_b)]},
+    ]
+
+
+def test_update_uncurated_multi_site_identical_rescan_is_unchanged():
+    # Task 3 review regression: an identical rescan of two uncurated
+    # multi-site rows must report unchanged=2 and exactly two rows, not
+    # retain both and add both (which doubled the rows on every update).
+    existing = {"products": _uncurated_multi_site("1.0", "1.0"),
+                "_inventory": {}}
+    generated = {"products": _uncurated_multi_site("1.0", "1.0"),
+                 "_inventory": {}}
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 2, products
+    assert sorted(p["_found_in"][0]["path"] for p in products) == [
+        "a/pom.xml", "b/pom.xml"]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 0, "unchanged": 2,
+        "retained_not_observed": 0}
+    # Stable under repeated updates: a second pass changes nothing.
+    again = _merge_existing_config(merged, generated)
+    assert len(_products(again)) == 2
+    assert again["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 0, "unchanged": 2,
+        "retained_not_observed": 0}
+
+
+def test_update_uncurated_multi_site_one_site_bump():
+    # Task 3 review regression: only site a bumps 1.0 -> 2.0; site b
+    # stays 1.0. Expect changed=1, unchanged=1 and exactly two rows.
+    existing = {"products": _uncurated_multi_site("1.0", "1.0"),
+                "_inventory": {}}
+    generated = {"products": _uncurated_multi_site("2.0", "1.0"),
+                 "_inventory": {}}
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 2, products
+    assert sorted(p["version"] for p in products) == ["1.0", "2.0"]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 1,
+        "retained_not_observed": 0}
+
+
 def test_update_no_mutation_of_generated_dict():
     # The merge must not mutate the caller's generated dict (aliasing):
     # two sequential merges with a shared generated dict must produce
@@ -2391,6 +2447,8 @@ TESTS = [
     test_update_partial_multi_version_removal_keeps_site_curation,
     test_update_same_name_tracked_and_retained_sites_keep_identity,
     test_update_two_retained_locators_in_one_file_both_carried,
+    test_update_uncurated_multi_site_identical_rescan_is_unchanged,
+    test_update_uncurated_multi_site_one_site_bump,
     test_update_no_mutation_of_generated_dict,
     test_snapshot_properties_stay_unmapped,
     test_cli_update_rejects_non_object_json,
