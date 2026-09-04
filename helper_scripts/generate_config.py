@@ -160,7 +160,7 @@ def _merge_existing_config(existing, generated):
     products = []
     stats = {"added": 0, "changed": 0, "unchanged": 0,
              "retained_not_observed": 0}
-    retained_unmapped_names = set()
+    retained_unmapped_keys = set()
     for old in existing.get("products", []):
         if not isinstance(old, dict) or old.get("_section"):
             products.append(old)
@@ -229,8 +229,12 @@ def _merge_existing_config(existing, generated):
                     if old.get("_inventory_generated") == "unmapped":
                         name = str(old.get("product")
                                    or old.get("label") or "")
-                        if name:
-                            retained_unmapped_names.add(name)
+                        paths = ",".join(sorted(
+                            str(loc.get("path", ""))
+                            for loc in (old.get("_found_in") or [])
+                            if isinstance(loc, dict)
+                        ))
+                        retained_unmapped_keys.add((name, paths))
                     continue
         new = fresh[selected]
         used.add(selected)
@@ -284,31 +288,49 @@ def _merge_existing_config(existing, generated):
         if key not in ("products", "_inventory", "_skipped_npm_packages"):
             merged[key] = value
     merged["products"] = products
-    merged["_inventory"]["update_summary"] = stats
-    if retained_unmapped_names:
+    # Deep-copy the _inventory dict so the caller's generated dict is
+    # never mutated (sequential merges share their generated argument).
+    merged["_inventory"] = dict(generated.get("_inventory") or {})
+    if retained_unmapped_keys:
         # Carry forward structured unmapped metadata for retained
         # generated-unmapped products: the fresh scan no longer observes
         # them, so its unmapped list omits them and the report would
         # silently drop the inventory (the plan's "never silently drop"
-        # rule). Deduplicate against fresh structured items by name.
+        # rule). Deduplicate against fresh structured items by name and
+        # provenance paths, and copy the list so the caller's generated
+        # dict is not mutated.
         old_inv = existing.get("_inventory")
         old_unmapped = old_inv.get("unmapped") if isinstance(
             old_inv, dict) else []
         if isinstance(old_unmapped, list):
-            fresh_unmapped = merged["_inventory"].setdefault(
-                "unmapped", [])
-            fresh_names = {
-                str(u.get("name", "")) for u in fresh_unmapped
-                if isinstance(u, dict)
-            }
+            merged["_inventory"]["unmapped"] = list(
+                merged["_inventory"].get("unmapped") or [])
+            fresh_unmapped = merged["_inventory"]["unmapped"]
+            fresh_keys = set()
+            for u in fresh_unmapped:
+                if not isinstance(u, dict):
+                    continue
+                u_name = str(u.get("name", ""))
+                u_paths = ",".join(sorted(
+                    str(loc.get("path", ""))
+                    for loc in (u.get("found_in") or [])
+                    if isinstance(loc, dict)
+                ))
+                fresh_keys.add((u_name, u_paths))
             for item in old_unmapped:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name", ""))
-                if name in retained_unmapped_names \
-                        and name not in fresh_names:
+                paths = ",".join(sorted(
+                    str(loc.get("path", ""))
+                    for loc in (item.get("found_in") or [])
+                    if isinstance(loc, dict)
+                ))
+                if (name, paths) in retained_unmapped_keys \
+                        and (name, paths) not in fresh_keys:
                     fresh_unmapped.append(item)
-                    fresh_names.add(name)
+                    fresh_keys.add((name, paths))
+    merged["_inventory"]["update_summary"] = stats
     return merged
 
 

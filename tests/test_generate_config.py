@@ -2004,6 +2004,191 @@ def test_update_curated_manual_row_remains_product():
     assert not merged["_inventory"].get("unmapped")
 
 
+def test_update_retained_untracked_inventory_visible():
+    # A generated-unmapped product retained as unobserved must remain
+    # visible as an untracked row (its old unmapped metadata is carried
+    # forward), not silently dropped from the report.
+    loc = {"path": "d/Dockerfile", "manifest": "dockerfile", "line": 1,
+           "locator": "FROM old-dep:1.0"}
+    old_unmapped_item = {
+        "ecosystem": "container", "name": "old-dep", "version": "1.0",
+        "reason": "legacy dependency", "found_in": [dict(loc)],
+    }
+    existing = {
+        "products": [
+            {"source": "manual", "label": "old-dep 1.0",
+             "product": "old-dep", "version": "1.0",
+             "_inventory_generated": "unmapped",
+             "note": "legacy dependency",
+             "_comment": "Untracked container inventory item",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {"unmapped": [old_unmapped_item]},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+    merged = _merge_existing_config(existing, generated)
+    inv = merged["_inventory"]
+    assert isinstance(inv.get("unmapped"), list)
+    names = [u.get("name") for u in inv["unmapped"] if isinstance(u, dict)]
+    assert "old-dep" in names
+    # The retained product row is still in the config (not deleted).
+    products = _products(merged)
+    assert any(p.get("_inventory_generated") == "unmapped"
+               for p in products)
+    # No duplicate: the carried-forward item appears once.
+    assert names.count("old-dep") == 1
+    # The carried-forward item preserves its reason and provenance.
+    item = next(u for u in inv["unmapped"]
+                if isinstance(u, dict) and u.get("name") == "old-dep")
+    assert item["reason"] == "legacy dependency"
+    assert item["found_in"][0]["path"] == "d/Dockerfile"
+
+
+def test_update_same_name_distinct_sites_both_carried():
+    # Two same-name retained generated-unmapped rows at distinct sites
+    # each carry their own unmapped metadata (no cross-borrowing).
+    loc_a = {"path": "a/Dockerfile", "manifest": "dockerfile", "line": 1,
+             "locator": "FROM old-dep:1.0"}
+    loc_b = {"path": "b/Dockerfile", "manifest": "dockerfile", "line": 1,
+             "locator": "FROM old-dep:2.0"}
+    existing = {
+        "products": [
+            {"source": "manual", "label": "old-dep 1.0",
+             "product": "old-dep", "version": "1.0",
+             "_inventory_generated": "unmapped",
+             "note": "site A", "_found_in": [dict(loc_a)]},
+            {"source": "manual", "label": "old-dep 2.0",
+             "product": "old-dep", "version": "2.0",
+             "_inventory_generated": "unmapped",
+             "note": "site B", "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {"unmapped": [
+            {"ecosystem": "container", "name": "old-dep",
+             "version": "1.0", "reason": "site A",
+             "found_in": [dict(loc_a)]},
+            {"ecosystem": "container", "name": "old-dep",
+             "version": "2.0", "reason": "site B",
+             "found_in": [dict(loc_b)]},
+        ]},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+    merged = _merge_existing_config(existing, generated)
+    inv = merged["_inventory"]
+    items = [u for u in (inv.get("unmapped") or []) if isinstance(u, dict)]
+    assert len(items) == 2
+    reasons = sorted(u["reason"] for u in items)
+    assert reasons == ["site A", "site B"]
+
+
+def test_update_observed_unmapped_not_duplicated():
+    # A currently observed unmapped row renders once; the carry-forward
+    # must not duplicate it.
+    loc = {"path": "d/Dockerfile", "manifest": "dockerfile", "line": 1,
+           "locator": "FROM old-dep:1.0"}
+    unmapped_item = {
+        "ecosystem": "container", "name": "old-dep", "version": "1.0",
+        "reason": "legacy", "found_in": [dict(loc)],
+    }
+    existing = {
+        "products": [
+            {"source": "manual", "label": "old-dep 1.0",
+             "product": "old-dep", "version": "1.0",
+             "_inventory_generated": "unmapped",
+             "_comment": "Untracked container inventory item",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {"unmapped": [dict(unmapped_item)]},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [dict(unmapped_item)],
+                       "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 1, "warnings": 0,
+                                   "indirect": 0}},
+    }
+    merged = _merge_existing_config(existing, generated)
+    inv = merged["_inventory"]
+    names = [u.get("name") for u in (inv.get("unmapped") or [])
+             if isinstance(u, dict)]
+    assert names.count("old-dep") == 1
+
+
+def test_update_curated_manual_row_remains_product():
+    # A curated manual row (not scanner-generated) is a product, not an
+    # unmapped metadata entry: the carry-forward must not touch it.
+    loc = {"path": "manual.txt", "manifest": "manual", "line": 1,
+           "locator": "manual"}
+    existing = {
+        "products": [
+            {"source": "manual", "label": "curated-dep",
+             "product": "curated-dep", "policy_note": "reviewed",
+             "_comment": "Added by hand", "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {"unmapped": []},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 1
+    assert products[0]["product"] == "curated-dep"
+    assert products[0]["policy_note"] == "reviewed"
+    assert not merged["_inventory"].get("unmapped")
+
+
+def test_update_no_mutation_of_generated_dict():
+    # The merge must not mutate the caller's generated dict (aliasing):
+    # two sequential merges with a shared generated dict must produce
+    # independent results.
+    loc = {"path": "d/Dockerfile", "manifest": "dockerfile", "line": 1,
+           "locator": "FROM alpha:1.0"}
+    existing_a = {
+        "products": [
+            {"source": "manual", "label": "alpha 1.0",
+             "product": "alpha", "version": "1.0",
+             "_inventory_generated": "unmapped",
+             "_comment": "Untracked", "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {"unmapped": [
+            {"ecosystem": "container", "name": "alpha",
+             "version": "1.0", "reason": "unmapped",
+             "found_in": [dict(loc)]},
+        ]},
+    }
+    generated = {
+        "products": [],
+        "_inventory": {"unmapped": [], "manifests": [],
+                       "summary": {"files": 0, "records": 0, "products": 0,
+                                   "unmapped": 0, "warnings": 0,
+                                   "indirect": 0}},
+    }
+    merged_a = _merge_existing_config(existing_a, generated)
+    assert len(merged_a["_inventory"].get("unmapped") or []) == 1
+    # The generated dict must be untouched by the first merge.
+    assert not generated["_inventory"].get("unmapped")
+    # A second merge with the same generated dict still works.
+    merged_b = _merge_existing_config(existing_a, generated)
+    assert len(merged_b["_inventory"].get("unmapped") or []) == 1
+
+
 def test_cli_update_rejects_non_object_json():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -2127,8 +2312,10 @@ TESTS = [
     test_update_one_changed_one_unchanged_multi_version,
     test_update_nuget_case_insensitive_identity,
     test_update_retained_untracked_inventory_visible,
+    test_update_same_name_distinct_sites_both_carried,
     test_update_observed_unmapped_not_duplicated,
     test_update_curated_manual_row_remains_product,
+    test_update_no_mutation_of_generated_dict,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,
