@@ -1750,6 +1750,156 @@ def test_update_retains_ambiguous_same_identity_rows():
         "retained_not_observed": 2}
 
 
+def test_update_crossing_partial_upgrade_by_provenance():
+    # Sol round-three: exact-version matching must not cross curation
+    # between sites when both versions changed across two rows sharing
+    # one identity.
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0", "policy_note": "A",
+             "_comment": "From a/pom.xml", "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "1.0", "policy_note": "B",
+             "_comment": "From b/pom.xml", "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "3.0", "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    by_site = {p["_found_in"][0]["path"]: p for p in products}
+    assert by_site["a/pom.xml"]["version"] == "3.0"
+    assert by_site["a/pom.xml"]["policy_note"] == "A"
+    assert by_site["b/pom.xml"]["version"] == "2.0"
+    assert by_site["b/pom.xml"]["policy_note"] == "B"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 2, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
+def test_update_all_changed_multi_version_by_provenance():
+    # Both versions changed at distinct sites: each old row matches its
+    # own site's fresh row.
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "1.0.0", "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "1.1.0", "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.1.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert sorted(p["version"] for p in products) == ["1.1.0", "2.1.0"]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 2, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
+def test_update_one_changed_one_unchanged_multi_version():
+    loc_a = {"path": "a/pom.xml", "manifest": "pom", "line": 3,
+             "locator": "shared"}
+    loc_b = {"path": "b/pom.xml", "manifest": "pom", "line": 4,
+             "locator": "shared"}
+    existing = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "1.0.0", "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "maven_central", "product": "shared",
+             "version": "1.1.0", "_comment": "From a/pom.xml",
+             "_found_in": [dict(loc_a)]},
+            {"source": "maven_central", "product": "shared",
+             "version": "2.0.0", "_comment": "From b/pom.xml",
+             "_found_in": [dict(loc_b)]},
+        ],
+        "_inventory": {},
+    }
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert sorted(p["version"] for p in products) == ["1.1.0", "2.0.0"]
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 1,
+        "retained_not_observed": 0}
+
+
+def test_update_nuget_case_insensitive_identity():
+    # NuGet package IDs match case-insensitively: a case-only change in
+    # the package ID must produce one changed row with curation
+    # preserved, not a retained stale row plus a duplicate.
+    loc = {"path": "x.csproj", "manifest": "csproj", "line": 3,
+           "locator": "Newtonsoft.Json"}
+    existing = {
+        "products": [
+            {"source": "nuget_registry", "product": "Newtonsoft.Json",
+             "label": "Newtonsoft.Json 13.0.2", "version": "13.0.2",
+             "policy_note": "keep", "_comment": "From x.csproj",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {},
+    }
+    generated = {
+        "products": [
+            {"source": "nuget_registry", "product": "newtonsoft.json",
+             "label": "newtonsoft.json 13.0.3", "version": "13.0.3",
+             "_comment": "From x.csproj",
+             "_found_in": [dict(loc)]},
+        ],
+        "_inventory": {},
+    }
+    merged = _merge_existing_config(existing, generated)
+    products = _products(merged)
+    assert len(products) == 1
+    assert products[0]["version"] == "13.0.3"
+    assert products[0]["product"] == "newtonsoft.json"
+    assert products[0]["policy_note"] == "keep"
+    assert merged["_inventory"]["update_summary"] == {
+        "added": 0, "changed": 1, "unchanged": 0,
+        "retained_not_observed": 0}
+
+
 def test_cli_update_rejects_non_object_json():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1868,6 +2018,10 @@ TESTS = [
     test_update_legacy_bare_from_key_never_clobbers_when_ambiguous,
     test_update_matches_both_changed_rows_of_one_identity_by_provenance,
     test_update_retains_ambiguous_same_identity_rows,
+    test_update_crossing_partial_upgrade_by_provenance,
+    test_update_all_changed_multi_version_by_provenance,
+    test_update_one_changed_one_unchanged_multi_version,
+    test_update_nuget_case_insensitive_identity,
     test_cli_update_rejects_non_object_json,
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,

@@ -53,11 +53,18 @@ def _live_smoke_command(output, executable=None, platform=None):
 
 
 def _merge_identity(entry):
-    """Identity excluding version, used for curation-preserving updates."""
+    """Identity excluding version, used for curation-preserving updates.
+
+    NuGet package IDs match case-insensitively (the registry grammar),
+    so the identity key case-folds them while display casing stays
+    untouched."""
     source = entry.get("source") or "endoflife_date"
-    identity = (source,) + tuple(entry.get(key) for key in (
-        "product", "package", "module", "group", "artifact", "sdk",
-        "major", "label" if source == "manual" else "_unused"))
+    keys = ("product", "package", "module", "group", "artifact", "sdk",
+            "major", "label" if source == "manual" else "_unused")
+    values = [entry.get(key) for key in keys]
+    if source == "nuget_registry" and isinstance(values[0], str):
+        values[0] = values[0].lower()
+    identity = (source,) + tuple(values)
     if source == "manual":
         identity += (entry.get("note"),)
     return identity
@@ -159,48 +166,73 @@ def _merge_existing_config(existing, generated):
         exact = [index for index in candidates
                  if fresh[index].get("version") == old.get("version")]
         remapped = False
-        if exact:
-            selected = exact[0]
-        elif len(candidates) == 1:
-            selected = candidates[0]
-        else:
+        selected = None
+        provenance_selected = False
+        if len(candidates) > 1 and old.get("_comment") \
+                and _provenance_keys(old):
+            # Several fresh rows share the merge identity: a unique
+            # stable-provenance match outranks the exact-version
+            # fallback, which can cross curation between declaration
+            # sites when both versions changed.
             provenance_candidates = set()
-            if old.get("_comment") and _provenance_keys(old):
-                for key in _provenance_keys(old):
+            for key in _provenance_keys(old):
+                provenance_candidates.update(
+                    fresh_by_provenance.get(key, ()))
+                if key[1] == "dockerfile" and key[2] == "FROM":
                     provenance_candidates.update(
-                        fresh_by_provenance.get(key, ()))
-                    if key[1] == "dockerfile" and key[2] == "FROM":
-                        provenance_candidates.update(
-                            fresh_dockerfile_sites.get(key[0], ()))
-                provenance_candidates.difference_update(used)
-                if old.get("_inventory_generated") != "unmapped":
-                    # A tracked row may use provenance only to
-                    # disambiguate among its OWN identity's fresh rows
-                    # (several fresh rows share the merge identity); a
-                    # weak shared locator must never pull the row onto an
-                    # unrelated tracked product. With zero identity
-                    # candidates the mapping went stale: only fresh
-                    # unmapped rows (the same site now unmapped) may
-                    # claim it. Unmapped remap semantics keep their
-                    # original behavior.
-                    if candidates:
-                        provenance_candidates &= set(candidates)
-                    else:
-                        provenance_candidates = {
-                            index for index in provenance_candidates
-                            if fresh[index].get("_inventory_generated") ==
-                            "unmapped"}
+                        fresh_dockerfile_sites.get(key[0], ()))
+            provenance_candidates.difference_update(used)
+            if old.get("_inventory_generated") != "unmapped":
+                provenance_candidates &= set(candidates)
             if len(provenance_candidates) == 1:
                 selected = next(iter(provenance_candidates))
-                remapped = True
+                provenance_selected = True
+        if selected is None:
+            if exact:
+                selected = exact[0]
+            elif len(candidates) == 1:
+                selected = candidates[0]
             else:
-                products.append(old)
-                stats["retained_not_observed"] += 1
-                continue
+                provenance_candidates = set()
+                if old.get("_comment") and _provenance_keys(old):
+                    for key in _provenance_keys(old):
+                        provenance_candidates.update(
+                            fresh_by_provenance.get(key, ()))
+                        if key[1] == "dockerfile" and key[2] == "FROM":
+                            provenance_candidates.update(
+                                fresh_dockerfile_sites.get(key[0], ()))
+                    provenance_candidates.difference_update(used)
+                    if old.get("_inventory_generated") != "unmapped":
+                        # A tracked row may use provenance only to
+                        # disambiguate among its OWN identity's fresh rows;
+                        # with zero identity candidates the mapping went
+                        # stale: only fresh unmapped rows (the same site
+                        # now unmapped) may claim it.
+                        if candidates:
+                            provenance_candidates &= set(candidates)
+                        else:
+                            provenance_candidates = {
+                                index for index in provenance_candidates
+                                if fresh[index].get(
+                                    "_inventory_generated") == "unmapped"}
+                if len(provenance_candidates) == 1:
+                    selected = next(iter(provenance_candidates))
+                    remapped = True
+                else:
+                    products.append(old)
+                    stats["retained_not_observed"] += 1
+                    continue
         new = fresh[selected]
         used.add(selected)
-        merged_entry = dict(new) if remapped else dict(old)
-        if not remapped:
+        mapping_changed = (
+            old.get("_inventory_generated") == "unmapped"
+            or new.get("_inventory_generated") == "unmapped")
+        # A provenance-selected tracked-to-tracked match is a normal
+        # same-component update: merge from the old row so matching
+        # order never changes merge semantics.
+        merged_entry = dict(new) if remapped or mapping_changed \
+            else dict(old)
+        if not (remapped or mapping_changed):
             merged_entry.update(new)
         curated_keys = [
             "policy_note", "reference_url", "eol_date", "latest"]
