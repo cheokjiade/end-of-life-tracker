@@ -351,6 +351,30 @@ except ConfigValidationError as exc:
 else:
     raise AssertionError("runtime loader accepted an over-deep config")
 
+# --- one bounded-JSON contract for every loader ------------------------------
+# core.validate_bounded_json is the single implementation of the config
+# contract (size, depth, UTF-8, top-level object). The runtime file loader and
+# the --validate linter must reject the same bytes with the *same* finding
+# message, with no origin path baked into the message (the caller adds it).
+# The S3 loader is held to the same messages in tests/test_runtime_guardrails.py.
+top_array = tmpfile("top-array.json", b"[1, 2]")
+undecodable = tmpfile("undecodable.json", b'{"a": "\xff"}')
+
+for _path, _needle in ((top_array, "top-level"), (undecodable, "not valid UTF-8")):
+    _linted = errors(validate_config_file(_path))
+    assert [e["path"] for e in _linted] == ["config"], _linted
+    assert _needle in _linted[0]["message"], _linted
+    assert _path not in _linted[0]["message"], _linted
+    assert validate_main([_path]) == 1
+    try:
+        load_config_from_file(_path)
+    except ConfigValidationError as exc:
+        assert [f["path"] for f in exc.findings] == ["config"], exc.findings
+        assert [f["message"] for f in exc.findings] == [
+            e["message"] for e in _linted], (exc.findings, _linted)
+    else:
+        raise AssertionError("runtime loader accepted %s" % _path)
+
 # --- CLI exit codes -----------------------------------------------------------
 assert validate_main([good]) == 0
 assert validate_main([bad_json]) == 1

@@ -57,17 +57,26 @@ def validate_bounded_json(data, max_bytes=MAX_CONFIG_FILE_BYTES,
                           max_depth=MAX_CONFIG_DEPTH):
     """Validate raw bytes as a bounded config JSON document.
 
+    The single implementation of the config contract: every loader in the
+    package (:func:`eoltracker.validation.check_config_bounds`, and through
+    it the Lambda's file/S3 loaders and the ``--validate`` linter) goes
+    through here, so they can never disagree about a config.
+
     Raises ValueError with a single-line message when *data* exceeds
     *max_bytes*, nests deeper than *max_depth*, is not valid UTF-8 JSON,
-    or its top level is not an object. All checks run before recursive
-    JSON parsing, so rejected input never triggers RecursionError.
+    or its top level is not an object. The size and depth checks run
+    before recursive JSON parsing, so rejected input never triggers
+    RecursionError.
     """
     if len(data) > max_bytes:
         raise ValueError(
             f"config exceeds the {max_bytes} byte limit; "
             "trim or split the config")
     try:
-        text = data.decode("utf-8")
+        # utf-8-sig, not utf-8: a leading BOM (added by Windows editors) is
+        # stripped rather than rejected. Every other byte sequence decodes
+        # identically, so this only widens what a hand-edited config may be.
+        text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError(
             "config is not valid UTF-8; re-save as UTF-8") from None

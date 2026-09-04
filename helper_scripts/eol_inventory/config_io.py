@@ -21,6 +21,10 @@ read can exhaust memory. This module gives both CLIs one loader that
       limit;
     - requires valid UTF-8 JSON with a top-level object.
 
+This is the standalone twin of the runtime's single implementation,
+``eoltracker.core.validate_bounded_json`` (reached by every runtime loader
+via ``eoltracker.validation.check_config_bounds``); keep the two in step.
+
 Every rejection raises ConfigLoadError with a single-line actionable
 message, so a CLI can exit 2 without touching any output file.
 Standard-library only; no network.
