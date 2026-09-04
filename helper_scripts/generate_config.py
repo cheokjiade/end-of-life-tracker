@@ -296,9 +296,11 @@ def _merge_existing_config(existing, generated):
         # generated-unmapped products: the fresh scan no longer observes
         # them, so its unmapped list omits them and the report would
         # silently drop the inventory (the plan's "never silently drop"
-        # rule). Deduplicate against fresh structured items by name and
-        # provenance paths, and copy the list so the caller's generated
-        # dict is not mutated.
+        # rule). Match old items by name against retained product rows;
+        # deduplicate against fresh structured items by name and
+        # provenance paths. The unmapped list is copied so the caller's
+        # generated dict is never mutated.
+        retained_names = {key[0] for key in retained_unmapped_keys}
         old_inv = existing.get("_inventory")
         old_unmapped = old_inv.get("unmapped") if isinstance(
             old_inv, dict) else []
@@ -326,7 +328,7 @@ def _merge_existing_config(existing, generated):
                     for loc in (item.get("found_in") or [])
                     if isinstance(loc, dict)
                 ))
-                if (name, paths) in retained_unmapped_keys \
+                if name in retained_names \
                         and (name, paths) not in fresh_keys:
                     fresh_unmapped.append(item)
                     fresh_keys.add((name, paths))
