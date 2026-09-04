@@ -240,11 +240,12 @@ def redact_dependency_ref(ref):
         if not _NPM_ALIAS_RE.fullmatch(ref):
             if "@" in ref and _USERINFO_AT_RE.search(ref):
                 after = ref[ref.index("@") + 1:]
+                anchor_match = _DIGEST_TAIL_RE.match(
+                    ref, len(ref) - len(after))
+                anchor_tail = anchor_match and not ref[anchor_match.end():] \
+                    .strip("_.,;:!?)]}\"'-")
                 if "/" in after or "#" in after or (
-                        ":" in after
-                        and not _DIGEST_TAIL_RE.fullmatch(ref, len(ref)
-                                                          - len(after))) \
-                        or not after:
+                        ":" in after and not anchor_tail) or not after:
                     # Colon-bearing userinfo with a path, fragment, or
                     # empty tail: the password never survives.
                     return URL_PLACEHOLDER
@@ -410,7 +411,9 @@ def redact_display_text(text):
         if m2 and not _DIGEST_ANCHOR_RE.fullmatch(token) \
                 and not _NPM_ALIAS_RE.fullmatch(token):
             after = token[m2.end():]
-            anchor_tail = _DIGEST_TAIL_RE.fullmatch(token, m2.end())
+            anchor_match = _DIGEST_TAIL_RE.match(token, m2.end())
+            anchor_tail = anchor_match and not token[
+                anchor_match.end():].strip("_.,;:!?)]}\"'-")
             if "/" in after or "#" in after or (
                     ":" in after and not anchor_tail) or not after:
                 # Colon-bearing userinfo with a path, fragment, or empty
@@ -603,7 +606,8 @@ def redact_image_reference(ref):
         # another @, or query material carries only credentials and no
         # parseable registry host: fail closed.
         return URL_PLACEHOLDER
-    if slash >= 0 and ":" in rest and not _registry_port_ok(rest):
+    if ":" in rest and (rest.startswith("[") or slash >= 0) \
+            and not _registry_port_ok(rest):
         # Registry-port position: every colon-separated segment after
         # the host must be numeric; a password fragment in port
         # position fails closed.
