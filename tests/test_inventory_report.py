@@ -750,6 +750,34 @@ def test_view_metadata_collapse_scp_references():
     assert view["meta"]["project"] == "proj"
 
 
+def test_view_multi_anchor_scp_sentinel_absent():
+    # Review finding 1 (High): a two-anchor SCP reference planted in a
+    # warning path, a warning message, and generator_version metadata
+    # never reaches the normalized view or any rendered report.
+    sentinel = "widget@git@host.invalid:private/SENTINEL-repo.git"
+    config = {
+        "products": [],
+        "_inventory": {
+            "scan_date": "2026-09-04",
+            "generator_version": sentinel,
+            "scan_root": "proj",
+            "manifests": [],
+            "warnings": [{"category": "parse_error", "path": sentinel,
+                          "message": "see " + sentinel + " for details"}],
+        },
+    }
+    view = build_inventory_view(config, project_name="proj")
+    serialized = json.dumps(view)
+    assert "SENTINEL" not in serialized and "private" not in serialized, \
+        serialized
+    md = render_markdown(view)
+    html_out = render_html(view)
+    for rendered in (md, html_out):
+        assert "SENTINEL" not in rendered and "private" not in rendered
+    assert view["warnings"][0]["category"] == "parse_error"
+    assert view["meta"]["scan_date"] == "2026-09-04"
+
+
 def test_view_hostile_metadata_and_warning_fields_render_clean():
     # Sol round-two 1B: loaded config content is untrusted — warning
     # category/path and every rendered metadata field pass through
@@ -821,6 +849,8 @@ TESTS = [
     test_view_deep_nested_version_spec_renders_bounded,
     test_view_hostile_identity_fields_render_clean,
     test_view_benign_identity_fields_byte_identical,
+    test_view_metadata_collapse_scp_references,
+    test_view_multi_anchor_scp_sentinel_absent,
     test_view_hostile_metadata_and_warning_fields_render_clean,
     test_view_benign_metadata_byte_identical,
     test_markdown_new_model,
