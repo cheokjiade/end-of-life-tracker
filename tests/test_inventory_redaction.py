@@ -172,10 +172,11 @@ def test_scp_style_git_refs_collapse():
             "user:pass@host" + ws + ":path") == "url:<redacted>", repr(ws)
     digest = "sha256:" + "a" * 64
     assert redact_dependency_ref("img@" + digest) == "img@" + digest
-    # A digest tail followed by path material keeps the digest anchor
-    # doctrine: the reference is digest-pinned, not SCP-shaped.
-    assert redact_dependency_ref("img@" + digest + "/x") == \
-        "img@" + digest + "/x"
+    # A digest tail followed by path material is not punctuation-only:
+    # fail closed rather than exempting arbitrary tails after the anchor.
+    assert redact_dependency_ref("img@" + digest + "/x") == "<ssh:sha256>"
+    assert redact_dependency_ref(
+        "img@" + digest + "?token=" + SECRET) == "<ssh:sha256>"
     # The digest exemption covers only single-@ tokens: a credential
     # segment between an earlier @ and the anchor fails closed.
     # A multi-@ token fails closed in every shape unless the WHOLE token

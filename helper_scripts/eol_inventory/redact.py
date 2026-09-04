@@ -255,7 +255,7 @@ def redact_dependency_ref(ref):
                     if scp else None
                 if scp and not (
                         anchor_match
-                        and not ref[anchor_match.end():scp.end()].strip(
+                        and not ref[anchor_match.end():].strip(
                             "_.,;:!?)]}\"'-")) \
                         and _scp_collapse_host(scp.group("host") or "",
                                                ref[scp.end():]):
