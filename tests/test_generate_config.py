@@ -1868,12 +1868,13 @@ def test_update_one_changed_one_unchanged_multi_version():
 def test_update_nuget_case_insensitive_identity():
     # NuGet package IDs match case-insensitively: a case-only change in
     # the package ID must produce one changed row with curation
-    # preserved, not a retained stale row plus a duplicate.
+    # preserved, not a retained stale row plus a duplicate. The scanner
+    # emits the ID in `package` (the canonical key).
     loc = {"path": "x.csproj", "manifest": "csproj", "line": 3,
            "locator": "Newtonsoft.Json"}
     existing = {
         "products": [
-            {"source": "nuget_registry", "product": "Newtonsoft.Json",
+            {"source": "nuget_registry", "package": "Newtonsoft.Json",
              "label": "Newtonsoft.Json 13.0.2", "version": "13.0.2",
              "policy_note": "keep", "_comment": "From x.csproj",
              "_found_in": [dict(loc)]},
@@ -1882,7 +1883,7 @@ def test_update_nuget_case_insensitive_identity():
     }
     generated = {
         "products": [
-            {"source": "nuget_registry", "product": "newtonsoft.json",
+            {"source": "nuget_registry", "package": "newtonsoft.json",
              "label": "newtonsoft.json 13.0.3", "version": "13.0.3",
              "_comment": "From x.csproj",
              "_found_in": [dict(loc)]},
@@ -1893,7 +1894,7 @@ def test_update_nuget_case_insensitive_identity():
     products = _products(merged)
     assert len(products) == 1
     assert products[0]["version"] == "13.0.3"
-    assert products[0]["product"] == "newtonsoft.json"
+    assert products[0]["package"] == "newtonsoft.json"
     assert products[0]["policy_note"] == "keep"
     assert merged["_inventory"]["update_summary"] == {
         "added": 0, "changed": 1, "unchanged": 0,

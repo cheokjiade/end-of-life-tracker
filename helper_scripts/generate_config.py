@@ -62,8 +62,12 @@ def _merge_identity(entry):
     keys = ("product", "package", "module", "group", "artifact", "sdk",
             "major", "label" if source == "manual" else "_unused")
     values = [entry.get(key) for key in keys]
-    if source == "nuget_registry" and isinstance(values[0], str):
-        values[0] = values[0].lower()
+    if source == "nuget_registry":
+        # NuGet package IDs match case-insensitively; the scanner emits
+        # them in `package` (the provider fallback uses `product`).
+        for index in (1, 0):
+            if isinstance(values[index], str):
+                values[index] = values[index].lower()
     identity = (source,) + tuple(values)
     if source == "manual":
         identity += (entry.get("note"),)
