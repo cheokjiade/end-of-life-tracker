@@ -197,7 +197,6 @@ def _merge_existing_config(existing, generated):
                  if fresh[index].get("version") == old.get("version")]
         remapped = False
         selected = None
-        provenance_selected = False
         # When several OLD rows share one merge identity (one dependency
         # declared at several sites), a fresh row is only assignable to
         # the old row at its own declaration site: the exact-version and
@@ -230,7 +229,6 @@ def _merge_existing_config(existing, generated):
                 provenance_candidates &= set(candidates)
             if len(provenance_candidates) == 1:
                 selected = next(iter(provenance_candidates))
-                provenance_selected = True
         if selected is None:
             if exact and not site_bound:
                 selected = exact[0]
@@ -263,9 +261,7 @@ def _merge_existing_config(existing, generated):
                     selected = next(iter(provenance_candidates))
                     # A same-identity (site-bound) match is a normal
                     # same-component update, not a mapping change.
-                    if selected in candidates:
-                        provenance_selected = True
-                    else:
+                    if selected not in candidates:
                         remapped = True
                 else:
                     products.append(old)

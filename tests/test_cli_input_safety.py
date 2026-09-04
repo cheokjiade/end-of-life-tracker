@@ -192,6 +192,18 @@ def test_loader_rejects_invalid_json_non_object_and_unreadable():
         _expect_load_error(Path(td) / "missing.json", "could not read file")
 
 
+def test_loader_accepts_bom_prefixed_config_like_the_runtime():
+    # eoltracker.core.validate_bounded_json decodes utf-8-sig, so a
+    # BOM-prefixed config the Lambda and --validate accept must not be
+    # refused here (helper_scripts/eol_inventory/config_io.py docstring:
+    # "keep the two in step").
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "bom.json"
+        path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"products": []}).encode("utf-8"))
+        config = load_bounded_config(path)
+        assert config == {"products": []}
+
+
 # ---------------------------------------------------------------------------
 # Generator CLI (--update): bad existing config never clobbers the output
 # ---------------------------------------------------------------------------
@@ -502,6 +514,7 @@ TESTS = [
     test_loader_rejects_depth_just_over_the_limit,
     test_loader_rejects_oversize_files,
     test_loader_rejects_invalid_json_non_object_and_unreadable,
+    test_loader_accepts_bom_prefixed_config_like_the_runtime,
     test_generator_update_rejects_deep_config_without_clobber,
     test_generator_update_rejects_oversize_config_without_clobber,
     test_generator_update_rejects_invalid_json_without_clobber,

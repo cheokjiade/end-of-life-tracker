@@ -137,7 +137,10 @@ def load_bounded_config(path):
             f"file exceeds the {MAX_CONFIG_FILE_BYTES} byte config limit; "
             "trim or split the config")
     try:
-        text = raw.decode("utf-8")
+        # utf-8-sig, not utf-8: matches eoltracker.core.validate_bounded_json
+        # so a BOM-prefixed config (added by Windows editors) that the
+        # Lambda and --validate accept is not refused here.
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ConfigLoadError(
             "file is not valid UTF-8; re-save the config as UTF-8") from None
