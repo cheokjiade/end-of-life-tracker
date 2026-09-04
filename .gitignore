@@ -31,3 +31,9 @@ terraform/candidate*.json
 inputs/
 project-*/
 *_run*.txt
+
+# Claude Code per-machine settings
+.claude/settings.local.json
+
+# Local presentation deck
+EOL_Tracker_Project_Overview.pptx

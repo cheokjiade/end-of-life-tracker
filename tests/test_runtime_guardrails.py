@@ -253,8 +253,12 @@ try:
 
     def _npm_stub(entry, today):
         seen["called"] = True
-        return {"label": "x", "status": "ok", "message": "latest",
-                "days_remaining": None, "source": "npm_registry"}
+        # Providers must return the full result contract enforced by
+        # eoltracker.parsers._validate_provider_result.
+        return {"label": "x", "product": "x", "version": None,
+                "status": "ok", "message": "latest",
+                "eol_date": None, "days_remaining": None,
+                "latest_patch": None, "source": "npm_registry"}
 
     PROVIDERS["npm_registry"] = _npm_stub
     r = check_product({"source": "npm_registry", "package": "x",
@@ -319,8 +323,14 @@ assert "Traceback" not in proc.stderr, proc.stderr
 class _Body:
     def __init__(self, raw):
         self.raw = raw
-    def read(self):
-        return self.raw
+    def read(self, amt=None):
+        # Mirrors boto3 StreamingBody.read(amt): the S3 loader reads the
+        # body under a hard byte bound, so the fake must accept a size.
+        if amt is None:
+            raw, self.raw = self.raw, b""
+            return raw
+        raw, self.raw = self.raw[:amt], self.raw[amt:]
+        return raw
 
 class _S3:
     def __init__(self, raw):

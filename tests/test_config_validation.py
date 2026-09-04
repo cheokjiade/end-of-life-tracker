@@ -300,6 +300,57 @@ missing = os.path.join(tmpdir, "nope.json")
 findings = validate_config_file(missing)
 assert len(findings) == 1 and findings[0]["severity"] == "error"
 
+# --- shared size/depth bounds (parity with the runtime loader) ---------------
+# --validate is the deploy gate (terraform/main.tf), so it must reject exactly
+# what eoltracker.handler rejects at load time: over-deep and oversize configs.
+import eoltracker.validation as _validation
+
+
+def _deep_config(levels):
+    inner = json.dumps({"source": "manual", "label": "Vendor tool"})
+    return ('{"products":[' + inner + '],"pad":' + "[" * levels
+            + "]" * levels + "}").encode("ascii")
+
+
+at_limit = tmpfile("depth-ok.json", _deep_config(_validation.MAX_CONFIG_DEPTH - 1))
+assert not errors(validate_config_file(at_limit)), validate_config_file(at_limit)
+
+too_deep = tmpfile("depth-bad.json", _deep_config(_validation.MAX_CONFIG_DEPTH + 1))
+findings = validate_config_file(too_deep)
+errs = errors(findings)
+assert [e["path"] for e in errs] == ["config"], findings
+assert f"exceeds the {_validation.MAX_CONFIG_DEPTH} level" in errs[0]["message"], findings
+assert validate_main([too_deep]) == 1
+
+_original_max_bytes = _validation.MAX_CONFIG_FILE_BYTES
+_validation.MAX_CONFIG_FILE_BYTES = 64
+try:
+    oversize = tmpfile(
+        "oversize.json",
+        json.dumps({"products": [{"source": "manual",
+                                  "label": "x" * 200}]}).encode("ascii"))
+    findings = validate_config_file(oversize)
+    errs = errors(findings)
+    assert [e["path"] for e in errs] == ["config"], findings
+    assert f"exceeds the {_validation.MAX_CONFIG_FILE_BYTES} byte" in errs[0]["message"], findings
+    assert validate_main([oversize]) == 1
+    # a config inside the (shrunken) limit still passes
+    small = tmpfile("small.json", json.dumps(
+        {"products": [{"source": "manual", "label": "V"}]}).encode("ascii"))
+    assert not errors(validate_config_file(small)), validate_config_file(small)
+finally:
+    _validation.MAX_CONFIG_FILE_BYTES = _original_max_bytes
+
+# the runtime loader and the linter agree on the over-deep config
+from eoltracker.handler import load_config_from_file
+from eoltracker.validation import ConfigValidationError
+try:
+    load_config_from_file(too_deep)
+except ConfigValidationError as exc:
+    assert f"exceeds the {_validation.MAX_CONFIG_DEPTH} level" in str(exc), exc
+else:
+    raise AssertionError("runtime loader accepted an over-deep config")
+
 # --- CLI exit codes -----------------------------------------------------------
 assert validate_main([good]) == 0
 assert validate_main([bad_json]) == 1

@@ -210,29 +210,71 @@ def analyse_results(results, thresholds):
 
 
 # ---------------------------------------------------------------------------
+# Field-text normalization (plain-text report boundary)
+# ---------------------------------------------------------------------------
+
+# ECMA-48/ANSI escape sequences: CSI (ESC [ parameters intermediates final),
+# OSC/DCS/SOS/PM/APC strings closed by BEL or ST, two-byte ESC sequences,
+# and a lone ESC.
+_ESCAPE_SEQUENCE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)?"
+    r"|[PX^_][^\x1b]*(?:\x1b\\)?"
+    r"|[@-Z\\-_]"
+    r"|[ -/]*[@-~])?")
+
+# C0 controls other than tab/CR/LF, DEL, and C1 controls.
+_CONTROL_CHARS_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0080-\u009f]")
+
+
+def _sanitize_field_text(value):
+    """Normalize untrusted field text for the plain-text report.
+
+    Labels, messages, and notes are provider/config-controlled, so at this
+    boundary they are stripped of ECMA-48/ANSI escape sequences (CSI, OSC,
+    other ESC introducers, lone ESC), every newline variant inside the
+    field (plus tab and the Unicode line/paragraph separators) collapses
+    to a single space -- no field can start a line and forge the report's
+    own section headers -- and the remaining C0/C1 control characters and
+    DEL are dropped. Printable ASCII and non-ASCII characters pass through
+    unchanged. Only the text report normalizes here: the HTML formatter
+    HTML-escapes at its own boundary and stays untouched.
+    """
+    text = "" if value is None else str(value)
+    text = _ESCAPE_SEQUENCE_RE.sub("", text)
+    text = re.sub(r"\r\n|[\r\n\t\u2028\u2029]", " ", text)
+    return _CONTROL_CHARS_RE.sub("", text)
+
+
+# ---------------------------------------------------------------------------
 # Plain-text report
 # ---------------------------------------------------------------------------
 
 def _append_version_info(lines, r):
     """Append in-use, latest-patch, and latest-cycle lines to the report."""
     if r.get("in_use_release_date"):
-        lines.append(f"    In use: {r['version']} (released {r['in_use_release_date']})")
+        lines.append(
+            f"    In use: {_sanitize_field_text(r['version'])} "
+            f"(released {_sanitize_field_text(r['in_use_release_date'])})")
 
     if r.get("latest_patch"):
-        patch_line = f"    Latest patch: {r['latest_patch']}"
+        patch_line = f"    Latest patch: {_sanitize_field_text(r['latest_patch'])}"
         if r.get("latest_patch_date"):
-            patch_line += f" (released {r['latest_patch_date']})"
+            patch_line += (f" (released "
+                           f"{_sanitize_field_text(r['latest_patch_date'])})")
         lines.append(patch_line)
 
     if r.get("latest_cycle"):
-        cycle = r["latest_cycle"]
+        cycle = _sanitize_field_text(r["latest_cycle"])
         cycle_v = r.get("latest_cycle_version")
         if r.get("on_latest_cycle"):
             cycle_line = f"    Latest cycle: {cycle} (you are on the latest)"
-        elif cycle_v and cycle_v != cycle:
-            cycle_line = f"    Latest cycle: {cycle} -> {cycle_v}"
+        elif cycle_v and _sanitize_field_text(cycle_v) != cycle:
+            cycle_line = (f"    Latest cycle: {cycle} -> "
+                          f"{_sanitize_field_text(cycle_v)}")
             if r.get("latest_cycle_release_date"):
-                cycle_line += f" (released {r['latest_cycle_release_date']})"
+                cycle_line += (f" (released "
+                               f"{_sanitize_field_text(r['latest_cycle_release_date'])})")
         else:
             cycle_line = f"    Latest cycle: {cycle}"
         lines.append(cycle_line)
@@ -241,9 +283,9 @@ def _append_version_info(lines, r):
 def _append_notes(lines, r):
     """Append support-status and policy observation sub-lines (ASCII for console/SNS)."""
     if r.get("support_message"):
-        lines.append(f"    {r['support_message']}")
+        lines.append(f"    {_sanitize_field_text(r['support_message'])}")
     if r.get("policy_note"):
-        lines.append(f"    Policy: {r['policy_note']}")
+        lines.append(f"    Policy: {_sanitize_field_text(r['policy_note'])}")
 
 
 def format_report_text(results, thresholds, today):
@@ -253,6 +295,11 @@ def format_report_text(results, thresholds, today):
     are lifecycle alerts (eol/approaching — including undated approaching)
     OR tracker-health failures (including empty inventories), so
     ``alerts_only`` delivery can never silently suppress an unverifiable run.
+
+    Field text (label, message, notes, versions, source labels) is
+    normalized at this boundary via :func:`_sanitize_field_text` so a
+    hostile field cannot forge the report's own line structure or carry
+    terminal escape sequences.
     """
     a = analyse_results(results, thresholds)
 
@@ -266,8 +313,8 @@ def format_report_text(results, thresholds, today):
     if a["eol"]:
         lines += ["", "!! ALREADY END OF LIFE", "-" * 42]
         for r in a["eol"]:
-            lines.append(f"  * {r['label']}  [{_source_label(r)}]")
-            lines.append(f"    {r['message']}")
+            lines.append(f"  * {_sanitize_field_text(r['label'])}  [{_sanitize_field_text(_source_label(r))}]")
+            lines.append(f"    {_sanitize_field_text(r['message'])}")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
@@ -278,17 +325,17 @@ def format_report_text(results, thresholds, today):
         lines += ["", title, "-" * 42]
         for r in a["approaching"]:
             if r["days_remaining"] is None:
-                lines.append(f"  * {r['label']}  [at risk, no date]  [{_source_label(r)}]")
+                lines.append(f"  * {_sanitize_field_text(r['label'])}  [at risk, no date]  [{_sanitize_field_text(_source_label(r))}]")
             else:
-                lines.append(f"  * {r['label']}  [{_source_label(r)}]")
-            lines.append(f"    {r['message']}")
+                lines.append(f"  * {_sanitize_field_text(r['label'])}  [{_sanitize_field_text(_source_label(r))}]")
+            lines.append(f"    {_sanitize_field_text(r['message'])}")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
     if a["ok"]:
         lines += ["", "-- No Immediate Concerns", "-" * 42]
         for r in a["ok"]:
-            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            lines.append(f"  * {_sanitize_field_text(r['label'])}  -  {_sanitize_field_text(r['message'])}  [{_sanitize_field_text(_source_label(r))}]")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
@@ -301,7 +348,7 @@ def format_report_text(results, thresholds, today):
             "-" * 42,
         ]
         for r in a["error"]:
-            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            lines.append(f"  * {_sanitize_field_text(r['label'])}  -  {_sanitize_field_text(r['message'])}  [{_sanitize_field_text(_source_label(r))}]")
 
     if a["unknown"]:
         lines += [
@@ -310,7 +357,7 @@ def format_report_text(results, thresholds, today):
             "-" * 42,
         ]
         for r in a["unknown"]:
-            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            lines.append(f"  * {_sanitize_field_text(r['label'])}  -  {_sanitize_field_text(r['message'])}  [{_sanitize_field_text(_source_label(r))}]")
 
     if a["empty_inventory"]:
         lines += [
@@ -323,11 +370,12 @@ def format_report_text(results, thresholds, today):
     if a["untracked"]:
         lines += ["", "?? UNTRACKED (no EOL source)", "-" * 42]
         for r in a["untracked"]:
-            lines.append(f"  * {r['label']}  -  {r['message']}  [{_source_label(r)}]")
+            lines.append(f"  * {_sanitize_field_text(r['label'])}  -  {_sanitize_field_text(r['message'])}  [{_sanitize_field_text(_source_label(r))}]")
             _append_notes(lines, r)
             _append_version_info(lines, r)
 
-    sources_used = sorted({_source_label(r) for r in results})
+    sources_used = sorted({
+        _sanitize_field_text(_source_label(r)) for r in results})
     lines += [
         "",
         "=" * 52,

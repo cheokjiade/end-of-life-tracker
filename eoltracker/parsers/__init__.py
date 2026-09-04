@@ -18,6 +18,13 @@ import pkgutil
 from ..core import _error_result, logger
 
 PROVIDERS, SOURCE_LABELS, _URL_FNS = {}, {}, {}
+_RESULT_KEYS = frozenset((
+    "label", "product", "version", "status", "message",
+    "eol_date", "days_remaining", "latest_patch", "source",
+))
+_RESULT_STATUSES = frozenset((
+    "eol", "approaching", "ok", "error", "unknown", "untracked",
+))
 for _finder, _name, _ispkg in pkgutil.iter_modules(__path__):
     _mod = importlib.import_module(f"{__name__}.{_name}")
     src = getattr(_mod, "SOURCE", None)
@@ -30,7 +37,43 @@ for _finder, _name, _ispkg in pkgutil.iter_modules(__path__):
 
 def source_url_for(result):
     fn = _URL_FNS.get(result.get("source"))
-    return fn(result) if fn else None
+    if fn is None:
+        return None
+    try:
+        url = fn(result)
+    except Exception:
+        logger.exception(
+            "Provider URL builder %s failed for %s",
+            result.get("source"), result.get("label"))
+        return None
+    if url is not None and not isinstance(url, str):
+        logger.error(
+            "Provider URL builder %s returned %s, expected string or null",
+            result.get("source"), type(url).__name__)
+        return None
+    return url
+
+
+def _validate_provider_result(result, expected_source=None):
+    """Reject provider output that cannot satisfy the report contract."""
+    if not isinstance(result, dict):
+        raise TypeError(
+            f"provider returned {type(result).__name__}, expected dict")
+    missing = sorted(_RESULT_KEYS.difference(result))
+    if missing:
+        raise TypeError(f"provider result missing required keys: {missing}")
+    for key in ("label", "message", "source"):
+        if not isinstance(result[key], str) or not result[key]:
+            raise TypeError(f"provider result {key} must be a non-empty string")
+    if expected_source is not None and result["source"] != expected_source:
+        raise ValueError(
+            f"provider result source {result['source']!r} does not match "
+            f"dispatched source {expected_source!r}")
+    if result["status"] not in _RESULT_STATUSES:
+        raise ValueError(f"provider result has unsupported status {result['status']!r}")
+    days = result["days_remaining"]
+    if days is not None and (not isinstance(days, int) or isinstance(days, bool)):
+        raise TypeError("provider result days_remaining must be an integer or null")
 
 
 def check_product(entry, today, index=None):
@@ -82,16 +125,18 @@ def check_product(entry, today, index=None):
                     entry,
                     f"unexpected {type(exc).__name__} while checking source "
                     f"'{source}'")
-            if not isinstance(result, dict):
+            try:
+                _validate_provider_result(result, expected_source=source)
+            except (TypeError, ValueError) as exc:
                 # A broken provider contract must not leak into the report
                 # loop or formatters; normalize it like any other failure.
                 logger.error(
-                    "provider for source '%s' returned %s instead of a dict",
-                    source, type(result).__name__)
+                    "provider for source '%s' returned an invalid result: %s",
+                    source, exc)
                 result = _error_result(
                     entry,
                     f"provider for source '{source}' returned an invalid "
-                    f"result ({type(result).__name__})")
+                    f"result ({exc})")
     note = entry.get("policy_note")
     if note and isinstance(result, dict):
         result["policy_note"] = note

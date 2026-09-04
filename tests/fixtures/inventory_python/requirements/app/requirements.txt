@@ -1,0 +1,20 @@
+# Runtime requirements for the sample service.
+--index-url https://pypi.org/simple
+
+requests==2.32.4  # pinned HTTP client
+urllib3>=2.2,<3
+pydantic~=2.7
+wildcard==1.2.*
+unpinned-package
+rich==13.7.1 ; python_version >= "3.8"
+requests[socks]==2.31.0
+coloredlogs @ https://github.com/example/coloredlogs/archive/main.zip
+legacy-ref@https://example.com/legacy.tar.gz
+./libs/localtool
+-e .
+-e git+https://github.com/example/edittarget.git#egg=edittarget
+-c constraints.txt
+sphinx>=7.0,\
+        <8.0
+-r requirements-dev.txt
+-r base/base.txt

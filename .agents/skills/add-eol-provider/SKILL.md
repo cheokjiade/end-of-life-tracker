@@ -14,7 +14,7 @@ Read `../../../AGENTS.md`, then read `../../../docs/adding-a-provider.md` comple
 - **Add:** the requested `source` does not exist under `eoltracker/parsers/`.
 - **Repair:** the provider exists but returns errors, fails a canary or row-count check, or no longer parses its upstream source.
 
-Do not change provider behavior until you have reproduced the need and inspected the current provider, its network-free tests, and the authoritative upstream source.
+Before adding a provider, establish the new-source need and inspect analogous providers, their network-free tests, and the authoritative upstream source. Before repairing a provider, reproduce the failure and inspect the current provider, its network-free tests, and the authoritative upstream source.
 
 ## Implement
 

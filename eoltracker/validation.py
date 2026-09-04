@@ -49,6 +49,11 @@ abort an otherwise valid run.
 import json
 import math
 
+from .core import (
+    MAX_CONFIG_DEPTH,
+    MAX_CONFIG_FILE_BYTES,
+    _max_nesting_depth,
+)
 from .parsers import SOURCE_LABELS
 from .parsers.aws_rds import DEFAULT_ENGINE, _AWS_DOCS_URLS
 from .parsers.maven_central import _normalize_repository
@@ -441,6 +446,41 @@ def load_config_json_bytes(raw):
                          f"{exc.colno})") from exc
 
 
+def config_bounds_error(origin, message):
+    """Uniform :class:`ConfigValidationError` for a size/depth rejection."""
+    where = f"{origin}: " if origin else ""
+    return ConfigValidationError(
+        f"{where}invalid EOL tracker config ({message})",
+        [_finding("config", "error", message)])
+
+
+def check_config_bounds(raw, origin=""):
+    """Reject configs past the shared size/depth bounds before parsing.
+
+    Single source of truth for the two bounds the runtime loaders
+    (:mod:`eoltracker.handler`) and the ``--validate`` linter both enforce,
+    so the deploy gate and the Lambda never disagree about a config.
+
+    *raw* may be truncated at ``MAX_CONFIG_FILE_BYTES + 1`` bytes by the
+    caller; anything longer than the limit is rejected on length alone.
+    Undecodable bytes are left alone for :func:`load_config_json_bytes`,
+    which reports the encoding failure with its own diagnostics.
+    """
+    if len(raw) > MAX_CONFIG_FILE_BYTES:
+        raise config_bounds_error(
+            origin, f"config exceeds the {MAX_CONFIG_FILE_BYTES} byte limit")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return
+    depth = _max_nesting_depth(text)
+    if depth > MAX_CONFIG_DEPTH:
+        raise config_bounds_error(
+            origin,
+            f"JSON nesting depth {depth} exceeds the {MAX_CONFIG_DEPTH} "
+            "level config limit")
+
+
 def load_validated_config_bytes(raw, origin=""):
     """Decode and runtime-validate config bytes with uniform diagnostics."""
     try:
@@ -458,13 +498,20 @@ def validate_config_file(path):
     """Load and validate a config file path; returns the findings list.
 
     Unreadable/unparsable files produce a single error finding instead of
-    raising, so CLI callers get uniform exit-code behaviour.
+    raising, so CLI callers get uniform exit-code behaviour. The shared
+    size and nesting-depth bounds (:func:`check_config_bounds`) are applied
+    first, so ``--validate`` rejects exactly what the runtime loaders
+    reject rather than passing a config the Lambda would refuse.
     """
     try:
         with open(path, "rb") as f:
-            raw = f.read()
+            raw = f.read(MAX_CONFIG_FILE_BYTES + 1)
     except OSError as exc:
         return [_finding("config", "error", f"cannot read {path}: {exc}")]
+    try:
+        check_config_bounds(raw, origin=path)
+    except ConfigValidationError as exc:
+        return list(exc.findings)
     try:
         config = load_config_json_bytes(raw)
     except ValueError as exc:

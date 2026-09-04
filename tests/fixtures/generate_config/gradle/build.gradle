@@ -1,0 +1,16 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.apache.commons:commons-text:1.11.0"
+    api "io.netty:netty-codec-http:4.1.111.Final"
+    compileOnly "org.jetbrains.kotlin:kotlin-stdlib:2.0.0"
+    runtimeOnly "com.h2database:h2:2.2.224"
+    testImplementation "junit:junit:4.13.2"
+    implementation 'org.acme:single-quoted:1.0.0'
+}

@@ -30,7 +30,11 @@ import os
 import time
 from datetime import date
 
-from .core import logger
+from .core import (
+    MAX_CONFIG_FILE_BYTES,
+    logger,
+    read_response_bytes,
+)
 from .report import (
     analyse_results,
     format_report_html,
@@ -45,7 +49,11 @@ from .notify import (
     summarize_outcomes,
 )
 from .runner import run_checks
-from .validation import ConfigValidationError, load_validated_config_bytes
+from .validation import (
+    check_config_bounds,
+    config_bounds_error,
+    load_validated_config_bytes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +208,13 @@ def load_config_from_s3(key=None):
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     origin = f"s3://{bucket}/{key}"
+    try:
+        raw = read_response_bytes(obj["Body"], max_bytes=MAX_CONFIG_FILE_BYTES)
+    except ValueError as exc:
+        raise config_bounds_error(origin, str(exc)) from exc
+    check_config_bounds(raw, origin)
     config, product_findings = load_validated_config_bytes(
-        obj["Body"].read(), origin=origin)
+        raw, origin=origin)
     _log_product_findings(product_findings, origin)
     _stamp_maven_repositories(config, origin)
     return config
@@ -220,7 +233,8 @@ def load_config_from_file(path):
     :func:`_stamp_maven_repositories`).
     """
     with open(path, "rb") as f:
-        raw = f.read()
+        raw = f.read(MAX_CONFIG_FILE_BYTES + 1)
+    check_config_bounds(raw, path)
 
     config, product_findings = load_validated_config_bytes(raw, origin=path)
     _log_product_findings(product_findings, path)

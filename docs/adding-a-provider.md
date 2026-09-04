@@ -16,8 +16,11 @@ def _provider_<name>(entry, today) -> dict
   here). It carries whatever fields your provider needs (`product`, `version`, `package`,
   `group`/`artifact`, etc.) plus an optional `label`.
 - `today` — a `datetime.date` (injected so tests are deterministic).
-- **Returns** a result dict. Build the common keys the formatters read; set the ones your
-  source can't supply to `None`. Minimum viable set:
+- **Returns** a result dict. `_validate_provider_result` in
+  `eoltracker/parsers/__init__.py` is a hard gate: a return value that breaks any rule
+  below is discarded and the entry becomes an error row, so a partial dict is never
+  rendered. Exactly these nine keys are required (`_RESULT_KEYS`) — set the ones your
+  source can't supply to `None`:
 
 ```python
 {
@@ -30,9 +33,23 @@ def _provider_<name>(entry, today) -> dict
     "days_remaining": int or None,
     "latest_patch": <str> or None,
     "source": "<name>",
-    # …plus the other keys the formatters read; copy an existing provider's dict.
 }
 ```
+
+What the gate enforces:
+
+- the return value is a `dict`; all nine keys above are present (extra keys are allowed);
+- `label`, `message`, and `source` are **non-empty strings**;
+- `source` equals the source the entry was dispatched to;
+- `status` is one of exactly six values (`_RESULT_STATUSES`): `eol`, `approaching`, `ok`,
+  `error`, `unknown`, `untracked`;
+- `days_remaining` is an `int` or `None` (a `bool` is rejected).
+
+Nothing else is type-checked: `product`, `version`, `eol_date`, and `latest_patch` are
+passed through as-is, so keep them strings or `None` for the formatters. One optional
+key is rendered when present: every existing provider also sets `latest_patch_date`
+(a `"YYYY-MM-DD"` string or `None`), which `eoltracker/report.py` reads with `.get`
+and shows beside the latest patch.
 
 On any failure, return `_error_result(entry, "<why>")` and set `result["source"] =
 "<name>"` (and `result["product"]` if you want the source link to resolve).
@@ -48,10 +65,11 @@ bottom (no registry edits anywhere else).
 
 import urllib.request
 
-from ..core import _error_result, logger
+from ..core import _error_result, logger, read_response_bytes
 
 _FOO_URL = "https://example.com/eol-data"
 _FOO_CACHE = {}          # cache the fetch — a run checks many products against one source
+_FOO_MIN_ROWS = 3        # tune to the smallest legitimate upstream data set
 
 
 def _fetch_foo():
@@ -60,7 +78,7 @@ def _fetch_foo():
         return _FOO_CACHE["data"]
     req = urllib.request.Request(_FOO_URL, headers={"User-Agent": "EOL-Tracker/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        raw = resp.read().decode("utf-8", "replace")
+        raw = read_response_bytes(resp).decode("utf-8", "replace")
     data = _parse_foo(raw)                       # keep parsing pure + testable
     if len(data) < _FOO_MIN_ROWS:                # loud failure on structural drift
         raise ValueError(f"Foo parsed only {len(data)} rows; source may have changed.")
@@ -92,11 +110,11 @@ def _provider_foo(entry, today):
         return result
 
     eol = info["eol"]                            # a datetime.date, or None
-    result = {  # copy the full key set from _provider_maven_central / _provider_endoflife_date
+    result = {  # all nine required keys — see "The contract" above
         "label": label, "product": "foo", "version": version, "source": "foo",
         "eol_date": str(eol) if eol else None, "days_remaining": None,
-        "latest_patch": None, "latest_patch_date": None,
-        # …the rest of the standard keys, set to None where N/A…
+        "latest_patch": None, "latest_patch_date": None,   # optional, rendered if set
+        "status": "unknown", "message": "pending",         # overwritten below
     }
     if eol is None:
         result["status"] = "unknown"
