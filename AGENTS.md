@@ -70,6 +70,8 @@ eoltracker/
                           #   env knobs EOL_MAX_WORKERS / EOL_TIME_RESERVE_MS /
                           #   EOL_CHECK_START_GUARD_MS
   handler.py              # config loading, lambda_handler, run_local
+  html_runner.py          # HTML-only local report runner: one process, many configs, reusing
+                          #   provider caches, never touching console/SNS/SES
   validation.py           # config JSON decode/parse + eoltracker.validation schema enforcement
 helper_scripts/
   generate_config.py      # root-alternative CLI: folder scan -> eol_config.<project>.json (+ _inventory);
