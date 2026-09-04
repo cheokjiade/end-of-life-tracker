@@ -52,8 +52,11 @@ assert "&#9432;" not in out_err, "policy_note leaked into an error row"
 unknown = dict(r2, status="unknown", message="Lifecycle cannot be established")
 unknown_html, unknown_alert = format_report_html([unknown], TH, TODAY)
 assert unknown_alert is True
-assert "UNKNOWN" in unknown_html
-assert "require lifecycle review" in unknown_html
+# Badge and banner wording for unverifiable rows is the tracker-health
+# wording carried on this branch.
+assert "UNVERIFIED" in unknown_html
+assert "TRACKER HEALTH" in unknown_html
+assert "could NOT be verified this run" in unknown_html
 assert "All products are within support" not in unknown_html
 
 print("OK test_policy_html")

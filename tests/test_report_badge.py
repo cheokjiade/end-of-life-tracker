@@ -36,11 +36,11 @@ html, alerts = format_report_html([undated, dated], TH, TODAY)
 assert alerts is True
 assert "Noned remaining" not in html, "undated badge leaked a None literal"
 assert "None" not in html, html
-assert "date not published" in html, "undated badge text missing"
+assert "AT RISK (no date)" in html, "undated badge text missing"
 assert "42d remaining" in html, "dated badge lost its days-remaining text"
 
 badge = _status_label(undated, "approaching")
-assert ">date not published<" in badge, badge
+assert ">AT RISK (no date)<" in badge, badge
 assert "None" not in badge, badge
 badge = _status_label(dated, "approaching")
 assert ">42d remaining<" in badge, badge
@@ -50,6 +50,6 @@ text, text_alerts = format_report_text([undated], TH, TODAY)
 assert text_alerts is True
 assert "None" not in text, text
 assert "Maintenance phase (SDK went GA on 2021-01-14)" in text, text
-assert "date not published" not in text, "HTML badge text leaked into text report"
+assert "AT RISK (no date)" not in text, "HTML badge text leaked into text report"
 
 print("OK test_report_badge")
