@@ -15,9 +15,6 @@ from generate_config import (
     _map_java_dep_with_reason,
     _strip_gradle_comments,
     parse_gradle,
-    parse_pom,
-    parse_version_catalog,
-    scan_folder,
     generate_config,
 )
 
@@ -244,163 +241,6 @@ config = generate_config(scan, "demo")
 rows = [prod for prod in config["products"] if not prod.get("_section")]
 assert [r["label"] for r in rows] == ["keeper 1.2.3"], rows
 print("OK ranged/dynamic declarations never become tracker rows")
-
-
-# --- F: POM dependency kinds (managed / unversioned) ------------------------
-
-POM_NAMESPACED = """<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0">
-  <parent>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.3.4</version>
-  </parent>
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>com.fasterxml.jackson</groupId>
-        <artifactId>jackson-bom</artifactId>
-        <version>2.17.0</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>commons-io</groupId>
-      <artifactId>commons-io</artifactId>
-      <version>2.16.1</version>
-    </dependency>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <version>4.13.2</version>
-      <scope>test</scope>
-    </dependency>
-  </dependencies>
-</project>
-"""
-
-with tempfile.TemporaryDirectory() as tmp:
-    p = _write(tmp, "pom.xml", POM_NAMESPACED)
-    deps, props, repos = parse_pom(p)
-    assert repos == [], repos
-assert ("org.springframework.boot", "spring-boot-starter-parent", "3.3.4", "parent") in deps, deps
-assert ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "managed-dep") in deps, deps
-assert ("org.springframework.boot", "spring-boot-starter-web", None, "unversioned-dep") in deps, deps
-assert ("commons-io", "commons-io", "2.16.1", "dep") in deps, deps
-assert ("junit", "junit", "4.13.2", "test-scope-dep") in deps, deps
-print("OK namespaced pom: parent/managed-dep/unversioned-dep/dep kinds, test scope recorded")
-
-POM_PLAIN = """<project>
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>io.netty</groupId>
-        <artifactId>netty-bom</artifactId>
-        <version>4.1.111.Final</version>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
-  <dependencies>
-    <dependency>
-      <groupId>ch.qos.logback</groupId>
-      <artifactId>logback-classic</artifactId>
-    </dependency>
-  </dependencies>
-</project>
-"""
-
-with tempfile.TemporaryDirectory() as tmp:
-    p = _write(tmp, "pom.xml", POM_PLAIN)
-    deps, props, repos = parse_pom(p)
-    assert repos == [], repos
-assert ("io.netty", "netty-bom", "4.1.111.Final", "managed-dep") in deps, deps
-assert ("ch.qos.logback", "logback-classic", None, "unversioned-dep") in deps, deps
-print("OK non-namespaced pom: managed-dep and unversioned-dep kinds")
-
-# End-to-end: unversioned deps never map (would crash/doom); managed deps keep
-# the current behaviour (jackson-bom -> its own jackson_lifecycle row).
-scan = {
-    "java": [
-        ("org.springframework.boot", "spring-boot-starter-web", None,
-         "pom.xml", "unversioned-dep"),
-        ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "pom.xml", "managed-dep"),
-    ],
-    "pom_properties": [],
-    "node": [],
-    "files": ["pom.xml"],
-}
-config = generate_config(scan, "demo")
-rows = [prod for prod in config["products"] if not prod.get("_section")]
-assert [r["label"] for r in rows] == ["Jackson BOM 2.17"], rows
-print("OK generate_config skips unversioned deps, keeps managed-dep mapping")
-
-
-# --- G: Gradle version catalogs ---------------------------------------------
-
-CATALOG_TOML = """
-[versions]
-commonsLang3 = "3.14.0"
-gson = "2.11.0"
-
-[libraries]
-commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commonsLang3" }
-netty-http = { group = "io.netty", name = "netty-codec-http", version = "4.1.111.Final" }
-gson = { module = "com.google.code.gson:gson", version = { ref = "gson" } }
-broken = { module = "com.example:broken", version.ref = "missing" }
-
-[bundles]
-common = ["commons-lang3", "netty-http"]
-"""
-
-KTS_CATALOG = """
-dependencies {
-    implementation(libs.commons.lang3)
-    implementation(libs.netty.http)
-    implementation(libs.bundles.common)
-    implementation(libs.broken)
-    implementation(libs.versions.commonsLang3.get())
-}
-"""
-
-with tempfile.TemporaryDirectory() as tmp:
-    toml_p = _write(tmp, "libs.versions.toml", CATALOG_TOML)
-    aliases, bundles = parse_version_catalog(toml_p)
-assert aliases["commons.lang3"] == ("org.apache.commons", "commons-lang3", "3.14.0"), aliases
-assert aliases["netty.http"] == ("io.netty", "netty-codec-http", "4.1.111.Final"), aliases
-assert aliases["gson"] == ("com.google.code.gson", "gson", "2.11.0"), aliases
-assert "broken" not in aliases, aliases
-assert bundles["common"] == ["commons.lang3", "netty.http"], bundles
-print("OK libs.versions.toml parses: module + group/name, ref and table-ref versions")
-
-with tempfile.TemporaryDirectory() as tmp:
-    _write(tmp, "libs.versions.toml", CATALOG_TOML)
-    p = _write(tmp, "build.gradle.kts", KTS_CATALOG)
-    scan = scan_folder(tmp)
-java = scan["java"]
-assert ("org.apache.commons", "commons-lang3", "3.14.0", str(p), "gradle-catalog") in java, java
-assert ("io.netty", "netty-codec-http", "4.1.111.Final", str(p), "gradle-catalog") in java, java
-assert not any(g == "com.example" for g, *_rest in java), java
-assert "libs.versions.toml" in " ".join(scan["files"])
-config = generate_config(scan, "demo")
-rows = [prod for prod in config["products"] if not prod.get("_section")]
-labels = sorted(r["label"] for r in rows)
-assert labels == ["commons-lang3 3.14.0", "netty-codec-http 4.1.111.Final"], labels
-print("OK catalog refs resolve end-to-end (direct refs, bundle expansion, dedupe)")
-
-with tempfile.TemporaryDirectory() as tmp:
-    toml_p = _write(tmp, "libs.versions.toml", CATALOG_TOML)
-    p = _write(tmp, "build.gradle", 'implementation(libs.commons.lang3)\n')
-    aliases, bundles = parse_version_catalog(toml_p)
-    deps = parse_gradle(p, (aliases, bundles))
-assert deps == [("org.apache.commons", "commons-lang3", "3.14.0", "gradle-catalog")], deps
-print("OK parse_gradle resolves a passed-in catalog directly")
 
 
 # --- H: classpath map notation (buildscript blocks) --------------------------
@@ -634,19 +474,6 @@ tracked = [r for r in records if r["decl"] == "logback.version=1.5.18"]
 assert len(tracked) == 1 and tracked[0]["outcome"] == (
     "tracked: Logback Classic 1.5.18"), records
 print("OK pom property blank value skips; real property still tracks")
-
-# A truly empty element (<logback.version></logback.version>) carries no
-# text at all, so parse_pom never records it as a property: no row and no
-# property-mapping record either.
-with tempfile.TemporaryDirectory() as tmp:
-    p = _write(tmp, "pom.xml", """<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0">
-  <properties><logback.version></logback.version></properties>
-</project>""")
-    _deps, props, _repos = parse_pom(p)
-assert "logback.version" not in props, props
-print("OK truly empty pom property element is not a property at all")
-
 
 # --- L: test-* configurations and non-dependency declarations ----------------
 

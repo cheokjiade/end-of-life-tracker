@@ -927,8 +927,20 @@ def test_generate_config_gradle():
         ("kotlinx-coroutines-core", "1.8.1"),
         ("spring-boot", "3.3"),     # spring-boot-gradle-plugin via classpath
         ("guava", "33.2.1-jre"),    # named form in the kts file
+        # RETARGETED: the fixture gained gradle/libs.versions.toml and a
+        # libs.commons.lang3 reference in the kts file, resolved through the
+        # catalog into an ordinary Maven Central row.
+        ("commons-lang3", "3.14.0"),
         ("spring-security", "6.3"),
     ]
+    lang3 = [p for p in prods if p.get("artifact") == "commons-lang3"]
+    assert lang3[0]["_comment"] == (
+        "From build.gradle.kts (org.apache.commons:commons-lang3:3.14.0)")
+    assert lang3[0]["_found_in"] == [{
+        "path": "build.gradle.kts", "manifest": "gradle", "line": 9,
+        "locator": "dependency:org.apache.commons:commons-lang3"}]
+    assert config["_inventory"]["manifests"] == [
+        "build.gradle", "build.gradle.kts", "gradle/libs.versions.toml"]
     guava = [p for p in prods if p.get("artifact") == "guava"]
     assert guava[0]["_comment"] == (
         "From build.gradle.kts (com.google.guava:guava:33.2.1-jre)")

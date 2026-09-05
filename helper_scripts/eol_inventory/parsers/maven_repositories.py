@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 from ..models import load_safe_xml, new_warning
-from .java import parse_gradle_records
+from .java import nearest_catalog, parse_gradle_records
 
 # Repository URL declarations inside a `repositories { ... }` block, in the
 # three forms Gradle accepts: `url = uri("...")` (Kotlin DSL and Groovy),
@@ -222,9 +222,17 @@ def parse_settings_gradle(path, rel_path, root=None, scan_state=None):
     ``buildscript { dependencies { classpath ... } }`` block), so the
     ordinary Gradle record scan still runs: this row collects
     repositories *in addition to* the records, never instead of them.
+    Version catalogs already stashed in *scan_state* (see the discovery
+    catalog row) resolve ``libs.*`` references here exactly as in build
+    files.
     """
     urls, warnings = parse_gradle_repositories(path, rel_path)
-    records, record_warnings = parse_gradle_records(path, rel_path)
+    catalog = None
+    if scan_state is not None:
+        catalog = nearest_catalog(
+            scan_state.get("gradle", {}).get("catalogs", {}), rel_path)
+    records, record_warnings = parse_gradle_records(
+        path, rel_path, catalog=catalog)
     warnings = list(warnings) + list(record_warnings)
     if scan_state is not None:
         state = scan_state.setdefault("gradle", {})

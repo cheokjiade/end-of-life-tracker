@@ -30,6 +30,11 @@ from .parsers import (
     parse_package_json_records,
     parse_pom_records,
 )
+from .parsers.java import (
+    catalog_scope,
+    nearest_catalog,
+    parse_version_catalog,
+)
 from .parsers.maven_repositories import (
     parse_gradle_repositories,
     parse_pom_repositories,
@@ -105,6 +110,33 @@ def _parse_dotnet_manifest(path, rel_path, root, scan_state=None):
         consumed=None if state is None else state["sidecars"])
 
 
+def _parse_gradle_catalog(path, rel_path, root, scan_state=None):
+    """Parse a libs.versions.toml and stash it for the gradle rows.
+
+    The catalog yields no records of its own; build and settings files at
+    or below its scope (see parsers.java.catalog_scope) resolve their
+    libs.* references against it.
+    """
+    aliases, bundles, warnings = parse_version_catalog(path, rel_path)
+    if scan_state is not None:
+        catalogs = scan_state.setdefault("gradle", {}).setdefault("catalogs", {})
+        catalogs[catalog_scope(rel_path)] = (aliases, bundles)
+    return [], warnings
+
+
+def gradle_catalog_for(rel_path, scan_state):
+    """The (aliases, bundles) catalog governing a gradle file, or None."""
+    if scan_state is None:
+        return None
+    return nearest_catalog(
+        scan_state.get("gradle", {}).get("catalogs", {}), rel_path)
+
+
+def _parse_gradle_build(path, rel_path, root, scan_state=None):
+    return parse_gradle_records(
+        path, rel_path, catalog=gradle_catalog_for(rel_path, scan_state))
+
+
 def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
     state = None if scan_state is None else scan_state.setdefault(
         "gitlab", {"files": 0, "visited": set(), "manifests": set()})
@@ -126,6 +158,11 @@ def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
 # sidecar tracking.
 _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False, False),
+    # Gradle version catalogs are parsed before every gradle row so build
+    # and settings files can resolve their libs.* references; the catalog
+    # is listed as a manifest but yields no records itself.
+    ("gradle_catalog", ("libs.versions.toml",), _parse_gradle_catalog,
+     True, True),
     # settings.gradle(.kts) declares dependency repositories (and, rarely,
     # buildscript classpath dependencies); its row precedes the gradle row
     # so the settings spellings dispatch here (the first matching row
@@ -136,8 +173,8 @@ _MANIFEST_PATTERNS = (
     # gradle file twice.
     ("gradle_settings", ("settings.gradle", "settings.gradle.kts"),
      parse_settings_gradle, True, True),
-    ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records,
-     False, False),
+    ("gradle", ("*.gradle.kts", "*.gradle"), _parse_gradle_build,
+     True, True),
     ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True, True),
     ("python", ("requirements*.txt", "pyproject.toml", "Pipfile", "Pipfile.lock",
                 ".python-version", "runtime.txt"),

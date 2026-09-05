@@ -192,8 +192,16 @@ def _has_gradle_interpolation(value):
     return False
 
 
-def parse_gradle_records(path, rel_path):
-    """Parse build.gradle / build.gradle.kts; return (records, warnings)."""
+def parse_gradle_records(path, rel_path, catalog=None):
+    """Parse build.gradle / build.gradle.kts; return (records, warnings).
+
+    *catalog* is the ``(aliases, bundles)`` pair from
+    :func:`parse_version_catalog` (or None). When given, ``libs.*``
+    references resolve to ordinary dependency records whose ``version_spec``
+    keeps the reference text; a reference the catalog cannot resolve becomes
+    a versionless record plus an ``unresolved_version`` warning, so it is
+    visible for review instead of silently dropped.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -244,9 +252,12 @@ def parse_gradle_records(path, rel_path):
     records = []
     warnings = []
 
-    def emit(group, artifact, version, line, interpolates=True):
+    def emit(group, artifact, version, line, interpolates=True,
+             version_spec=None):
         # A Groovy/Kotlin string interpolation is retained as a warning and
         # a versionless record; it is never emitted as an exact product.
+        # *version_spec* (a resolved catalog reference) is kept on the
+        # exact record as provenance of where the version came from.
         version = redact_urls(version)
         if ((interpolates and _has_gradle_interpolation(version))
                 or not _is_exact_java_version(version)):
@@ -263,7 +274,7 @@ def parse_gradle_records(path, rel_path):
                 version = version.replace("\\$", "$")
             record = new_record(
                 "java", f"{group}:{artifact}", version=version,
-                group=group, artifact=artifact,
+                group=group, artifact=artifact, version_spec=version_spec,
             )
         add_location(record, rel_path, "gradle",
                      line=line, locator=f"dependency:{group}:{artifact}")
@@ -276,4 +287,175 @@ def parse_gradle_records(path, rel_path):
     for m in _GRADLE_PATTERN_NAMED.finditer(scan_text):
         line = scan_text.count("\n", 0, m.start()) + 1
         emit(m.group(1), m.group(2), m.group(3), line)
+    if catalog is not None:
+        aliases, bundles = catalog
+        for m in _CATALOG_REF_RE.finditer(scan_text):
+            line = scan_text.count("\n", 0, m.start()) + 1
+            reference = m.group(0)
+            resolved = _resolve_catalog_ref(m.group(1), aliases, bundles)
+            if resolved is None:
+                continue
+            if not resolved:
+                record = new_record(
+                    "java", reference, version=None, version_spec=reference)
+                add_location(record, rel_path, "gradle", line=line,
+                             locator=f"catalog:{reference}")
+                records.append(record)
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"version catalog reference {reference} does not"
+                    f" resolve at line {line}"))
+                continue
+            for group, artifact, version in resolved:
+                emit(group, artifact, version, line, interpolates=False,
+                     version_spec=reference)
     return records, warnings
+
+
+# ---------------------------------------------------------------------------
+# Gradle version catalogs (libs.versions.toml) — best-effort TOML subset:
+# only the [versions]/[libraries]/[bundles] tables with quoted-string values.
+# ---------------------------------------------------------------------------
+
+_CATALOG_REF_RE = re.compile(r"\blibs\.([A-Za-z0-9_.\-]+)")
+_TOML_FIELD_RE = re.compile(r'([A-Za-z0-9_.\-]+)\s*=\s*(?:\'([^\']*)\'|"([^"]*)")')
+
+
+def _norm_alias(alias):
+    """Normalize a catalog alias/reference for matching: TOML 'commons-lang3'
+    and code reference 'commons.lang3' both -> 'commons.lang3'."""
+    return re.sub(r"[-_]", ".", alias.lower())
+
+
+def _strip_toml_comment(line):
+    """Drop a trailing TOML comment, respecting quoted strings."""
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch == "#":
+            break
+        else:
+            out.append(ch)
+            if ch in "\"'":
+                quote = ch
+    return "".join(out)
+
+
+def _toml_inline_fields(value):
+    """Extract key = "string" pairs from a TOML inline-table blob."""
+    value = re.sub(
+        r"version\s*=\s*\{\s*ref\s*=\s*([\'\"])([^\'\"]+)\1\s*\}",
+        r'version.ref = "\2"', value)
+    return {k: (m or n) for k, m, n in _TOML_FIELD_RE.findall(value)}
+
+
+def parse_version_catalog(path, rel_path):
+    """Parse a libs.versions.toml catalog; return (aliases, bundles, warnings).
+
+    aliases: normalized alias -> (group, artifact, version). Aliases with no
+    resolvable version (unknown version.ref, no module/group) are skipped.
+    bundles: normalized bundle name -> list of normalized aliases. TOML
+    support is a best-effort subset: no multi-line arrays, no nested inline
+    tables beyond version = { ref = "..." }. An unreadable file yields empty
+    tables plus an ``unreadable_file`` warning.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {}, {}, [new_warning(
+            "unreadable_file", rel_path,
+            f"could not read version catalog: {exc}")]
+
+    section = None
+    versions = {}
+    libraries = {}
+    bundles = {}
+    for raw in text.splitlines():
+        line = _strip_toml_comment(raw).strip()
+        if not line:
+            continue
+        m = re.match(r"^\[([A-Za-z0-9_.\-]+)\]$", line)
+        if m:
+            section = m.group(1).lower()
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*=\s*(.+)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip()
+        if section == "versions":
+            sm = re.match(r"^[\'\"]([^\'\"]*)[\'\"]$", value)
+            if sm:
+                versions[key] = sm.group(1)
+        elif section == "libraries":
+            fields = _toml_inline_fields(value)
+            if fields:
+                libraries[key] = fields
+        elif section == "bundles":
+            if value.startswith("[") and value.endswith("]"):
+                bundles[key] = re.findall(r"[\'\"]([^\'\"]+)[\'\"]", value)
+
+    aliases = {}
+    for alias, fields in libraries.items():
+        module = fields.get("module", "")
+        if ":" in module:
+            group, artifact = module.split(":", 1)
+        else:
+            group, artifact = fields.get("group", ""), fields.get("name", "")
+        version = fields.get("version") or versions.get(fields.get("version.ref", ""))
+        if not (group and artifact and version):
+            continue
+        aliases[_norm_alias(alias)] = (group, artifact, version)
+
+    norm_bundles = {
+        _norm_alias(name): [_norm_alias(member) for member in members]
+        for name, members in bundles.items()
+    }
+    return aliases, norm_bundles, []
+
+
+def _resolve_catalog_ref(segment, aliases, bundles):
+    """Resolve one ``libs.<segment>`` reference against a catalog.
+
+    Returns None for references that are not library lookups
+    (``libs.versions.*`` and ``libs.plugins.*``), a list of ``(g, a, v)``
+    triples for a library or bundle, and an empty list when the catalog has
+    no such alias or bundle (or the bundle expands to nothing resolvable).
+    """
+    seg = segment.lower()
+    if seg.startswith("versions.") or seg.startswith("plugins."):
+        return None
+    if seg.startswith("bundles."):
+        members = bundles.get(_norm_alias(seg[len("bundles."):]), [])
+        return [aliases[alias] for alias in members if alias in aliases]
+    gav = aliases.get(_norm_alias(seg))
+    return [gav] if gav else []
+
+
+def nearest_catalog(catalogs, rel_path):
+    """The catalog governing *rel_path*: the entry of *catalogs* (a mapping
+    of "/"-separated directory -> (aliases, bundles), "" for the scan root)
+    at or nearest above the file's directory, or None."""
+    if not catalogs:
+        return None
+    parts = rel_path.split("/")[:-1]
+    while True:
+        catalog = catalogs.get("/".join(parts))
+        if catalog is not None:
+            return catalog
+        if not parts:
+            return None
+        parts.pop()
+
+
+def catalog_scope(rel_path):
+    """The directory a catalog file governs: the parent of its ``gradle/``
+    folder for the conventional ``gradle/libs.versions.toml`` placement,
+    otherwise the file's own directory ("" for the scan root)."""
+    parts = rel_path.split("/")[:-1]
+    if parts and parts[-1] == "gradle":
+        parts = parts[:-1]
+    return "/".join(parts)
