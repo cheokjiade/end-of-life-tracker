@@ -294,6 +294,8 @@ canonical message format and detailed workflow.
   in files with a `TESTS = [...]` list, never added to that list
   (unregistered — never runs); run it with `--self-test` to exercise its own
   detector against synthetic fixtures.
+  `tests/test_generator_parity.py` — temporary: both generators over the
+  shared fixtures; removed with the root script.
 - **Run locally:** `python lambda_function.py <config.json>`, or `./run.sh` /
   `.\run.ps1` (interactive config picker).
 - **`policy_note`** (optional, any config entry) is a short ASCII observation of
