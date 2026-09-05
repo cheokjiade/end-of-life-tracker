@@ -10,7 +10,10 @@ unparseable output degrades to a ``transitive_unavailable`` warning while the
 scan continues.
 
 ``run``/``which`` are injectable on every entry point so tests exercise the
-success and failure paths without a build tool installed.
+success and failure paths without a build tool installed. Commands are always
+passed as argv lists with no shell; on Windows ``shutil.which("mvn")`` resolves
+``mvn.cmd``, which the OS runs through cmd.exe, so scanned paths are trusted
+input (this module is already documented as for trusted repositories only).
 """
 
 import fnmatch

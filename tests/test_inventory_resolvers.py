@@ -414,6 +414,71 @@ def test_cli_resolve_transitive_with_no_tools_on_path():
     ], unavailable
 
 
+# --- subprocess boundary: argv shape and timeouts ----------------------------
+
+def test_runners_pass_argv_lists_without_a_shell():
+    """Both runners cross the subprocess boundary as an argv LIST with no
+    shell, a bounded timeout, and the scanned path as its own element.
+
+    A string command line (or shell=True) would let a scanned path with
+    spaces, quotes or metacharacters change the command; resolvers.py runs
+    only against trusted repositories, and this pins the shape that keeps
+    that assumption narrow.
+    """
+    calls = []
+
+    def capture_mvn(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        out_path = [a for a in cmd if str(a).startswith("-DoutputFile=")]
+        with open(str(out_path[0]).split("=", 1)[1], "w",
+                  encoding="utf-8") as handle:
+            handle.write("org.example:lib:jar:1.0.0:compile" + chr(10))
+        return _Proc(returncode=0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pom = Path(tmp) / "sub dir" / "pom.xml"
+        pom.parent.mkdir()
+        pom.write_text("<project/>", encoding="utf-8")
+        gavs, error = mvn_dependency_list(
+            pom, run=capture_mvn, which=_which_found)
+    assert error is None, error
+    assert gavs == [("org.example", "lib", "1.0.0")], gavs
+    cmd, kwargs = calls[0]
+    assert isinstance(cmd, list), cmd
+    assert all(isinstance(arg, str) for arg in cmd), cmd
+    assert kwargs.get("shell") is not True, kwargs
+    assert "shell" not in kwargs, kwargs
+    assert kwargs["timeout"] == MVN_TIMEOUT_S, kwargs
+    assert cmd[cmd.index("-f") + 1] == str(pom), cmd
+    assert " ".join(cmd) != cmd[0], cmd
+
+    calls = []
+
+    def capture_gradle(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Proc(
+            returncode=0,
+            stdout=("runtimeClasspath:org.example:lib:1.0.0"
+                    + chr(10)).encode("utf-8"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "proj dir"
+        project_dir.mkdir()
+        gavs, error = gradle_dependency_dump(
+            project_dir, run=capture_gradle, which=_which_found)
+    assert error is None, error
+    assert gavs == [("org.example", "lib", "1.0.0")], gavs
+    cmd, kwargs = calls[0]
+    assert isinstance(cmd, list), cmd
+    assert all(isinstance(arg, str) for arg in cmd), cmd
+    assert kwargs.get("shell") is not True, kwargs
+    assert "shell" not in kwargs, kwargs
+    assert kwargs["timeout"] == GRADLE_TIMEOUT_S, kwargs
+    assert kwargs["cwd"] == str(project_dir), kwargs
+    init_arg = cmd[cmd.index("--init-script") + 1]
+    assert init_arg.endswith(".init.gradle.kts"), cmd
+
+
 TESTS = [
     test_mvn_list_keeps_compile_and_runtime_and_ignores_noise,
     test_mvn_list_empty_and_header_only_output,
@@ -428,6 +493,7 @@ TESTS = [
     test_resolve_transitive_runs_gradle_once_per_project_directory,
     test_transitive_records_reach_products_only_when_asked,
     test_cli_resolve_transitive_with_no_tools_on_path,
+    test_runners_pass_argv_lists_without_a_shell,
 ]
 
 
