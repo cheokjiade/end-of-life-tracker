@@ -27,6 +27,7 @@ if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 
 import eol_inventory.parsers.node as node_parser
+from eol_inventory.config_writer import generate_config
 from eol_inventory.discovery import scan_folder
 
 
@@ -211,13 +212,17 @@ def test_lock_v1_legacy_dependencies_tree():
 def test_unresolved_specs_preserved_with_typed_warnings():
     records, warnings = _parse("unlocked", "package.json")
 
+    # RETARGETED: engines.node names the runtime's release line, not a
+    # resolvable package, so a range now records its leading concrete version
+    # (the range itself stays in version_spec) and raises no warning. Package
+    # specifications below are unchanged: they are still never guessed.
     node = _one(records, "node")
-    assert node["kind"] == "runtime" and node["version"] is None
+    assert node["kind"] == "runtime" and node["version"] == "18"
     assert node["version_spec"] == ">=18 <21"
     assert node["found_in"] == [{
         "path": "unlocked/package.json", "manifest": "npm",
         "locator": "engines.node"}]
-    assert _has_warning(warnings, "unresolved_version", "engines.node")
+    assert not _has_warning(warnings, "unresolved_version", "engines.node")
     assert _has_warning(warnings, "unresolved_version", "not guessed")
     assert not _has_warning(warnings, "parse_error", "")
 
@@ -312,6 +317,29 @@ def test_nvmrc_and_wrong_typed_package_fields():
         assert warnings == []
         assert [(r["name"], r["version"], r["kind"]) for r in records] == [
             ("node", "20.15.1", "runtime")]
+
+        # engines.node ranges resolve to their leading concrete version; the
+        # range is preserved in version_spec and raises no warning.
+        for spec, version in ((">=18 <21", "18"), ("^20.0.0", "20.0.0"),
+                              ("18.x", "18"), ("^18 || ^20", "18")):
+            package.write_text(json.dumps({"engines": {"node": spec}}),
+                               encoding="utf-8")
+            records, warnings = node_parser.parse_package_json_records(
+                package, "package.json", root=root)
+            assert warnings == [], (spec, warnings)
+            assert [(r["version"], r["version_spec"]) for r in records] == [
+                (version, spec)], spec
+
+        # a specification with no numeric leading segment stays unresolved
+        for spec in ("*", "latest", ">=lts"):
+            package.write_text(json.dumps({"engines": {"node": spec}}),
+                               encoding="utf-8")
+            records, warnings = node_parser.parse_package_json_records(
+                package, "package.json", root=root)
+            assert [(r["version"], r["version_spec"]) for r in records] == [
+                (None, spec)], spec
+            assert _has_warning(
+                warnings, "unresolved_version", "engines.node"), spec
 
         package.write_text(json.dumps({
             "engines": {"node": {"bad": True}},
@@ -409,6 +437,275 @@ def test_lock_present_without_package_json_is_never_listed():
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Lockfile graph enumeration (moved from
+# tests/test_generate_transitive_parsers.py, npm part; the root generator's
+# parse_npm_lockfile is now node_parser.lock_graph_records)
+# ---------------------------------------------------------------------------
+
+def _graph(data, direct_versions=()):
+    """(name, version) pairs of lock_graph_records, in record order."""
+    records = node_parser.lock_graph_records(
+        data, "package-lock.json", set(direct_versions))
+    for record in records:
+        # RETARGETED: the root parser returned bare (name, version) tuples;
+        # the inventory returns normalized indirect records, so every moved
+        # assertion also pins the record shape here.
+        assert record["ecosystem"] == "node", record
+        assert record["direct"] is False and record["kind"] == "dependency"
+        assert record["found_in"] == [{
+            "path": "package-lock.json", "manifest": "npm",
+            "locator": "lock:" + record["name"]}], record
+    return [(r["name"], r["version"]) for r in records]
+
+
+def test_lock_graph_v3_packages_map():
+    # lockfileVersion 3: packages map, scoped names, nested installs,
+    # root entry, link:/file: resolved entries, version-less entries.
+    v3 = {
+        "name": "app", "version": "1.0.0", "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app", "version": "1.0.0"},
+            "node_modules/react": {"version": "18.3.1"},
+            "node_modules/@angular/core": {"version": "17.3.0"},
+            "node_modules/@scope/thing": {"version": "1.2.3"},
+            "node_modules/react/node_modules/react-dom": {"version": "18.3.1"},
+            "node_modules/linked-pkg": {"resolved": "link:../linked-pkg",
+                                        "link": True},
+            "node_modules/file-pkg": {"resolved": "file:../local",
+                                      "version": "0.0.0"},
+            "node_modules/no-version": {
+                "resolved": "https://registry.example/x"},
+        },
+    }
+    deps = _graph(v3)
+    assert deps == [
+        ("react", "18.3.1"),
+        ("@angular/core", "17.3.0"),
+        ("@scope/thing", "1.2.3"),
+        ("react-dom", "18.3.1"),
+    ], deps
+    print("OK npm lock v3: scoped names kept, nested installs, root skipped")
+    print("OK npm lock v3: link:/file: and version-less entries skipped")
+
+    # New: package.json declarations already recorded at the resolved
+    # version keep their direct record and are not repeated as indirect ones.
+    assert _graph(v3, {("react", "18.3.1"), ("@angular/core", "17.3.0")}) == [
+        ("@scope/thing", "1.2.3"), ("react-dom", "18.3.1")]
+    print("OK npm lock: direct (name, version) pairs excluded from the graph")
+
+
+def test_lock_graph_v2_prefers_packages_over_legacy_tree():
+    # lockfileVersion 2: has both shapes -- "packages" wins, legacy ignored.
+    v2 = {
+        "lockfileVersion": 2,
+        "packages": {"node_modules/x": {"version": "1.0.0"}},
+        "dependencies": {"x": {"version": "9.9.9"}},
+    }
+    assert _graph(v2) == [("x", "1.0.0")], _graph(v2)
+    print("OK npm lock v2: packages map preferred over legacy dependencies")
+
+
+def test_lock_graph_v1_dependencies_tree():
+    # lockfileVersion 1: dependencies tree, recursed including nested
+    # installs.
+    v1 = {
+        "name": "app", "version": "1.0.0", "lockfileVersion": 1,
+        "dependencies": {
+            "react": {"version": "18.2.0"},
+            "vue": {"version": "3.4.21"},
+            "lodash": {"version": "4.17.21", "requires": {"react": "^18"}},
+            "nested-parent": {
+                "version": "1.0.0",
+                "dependencies": {"react": {"version": "17.0.2"}},
+            },
+            "linked": {"resolved": "link:../x"},
+        },
+    }
+    deps = _graph(v1)
+    assert deps == [
+        ("react", "18.2.0"),
+        ("vue", "3.4.21"),
+        ("lodash", "4.17.21"),
+        ("nested-parent", "1.0.0"),
+        ("react", "17.0.2"),
+    ], deps
+    print("OK npm lock v1: tree recursed with nested installs, links skipped")
+
+
+def test_lock_graph_tolerates_unusable_documents():
+    # RETARGETED: the root parser opened the lockfile itself and returned []
+    # for a malformed file, a missing file, and a non-dict top level. The
+    # inventory splits reading (_read_lock, which warns) from enumeration, so
+    # the shape check moves onto lock_graph_records and the file-level cases
+    # onto parse_package_json_records.
+    assert node_parser.lock_graph_records([1, 2, 3], "package-lock.json",
+                                          set()) == []
+    assert node_parser.lock_graph_records(None, "package-lock.json",
+                                          set()) == []
+    print("OK npm lock: non-dict top level -> no records")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(
+            json.dumps({"dependencies": {"react": "18.2.0"}}),
+            encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+        assert [r["name"] for r in records] == ["react"], records
+        assert warnings == [], warnings
+        print("OK npm lock: missing lockfile -> no records, no warning")
+
+        (root / "package-lock.json").write_text("{not json", encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+        assert [r["name"] for r in records] == ["react"], records
+        assert _has_warning(warnings, "parse_error", "package-lock.json")
+        print("OK npm lock: malformed JSON -> parse_error warning, no records")
+
+
+def test_utf8_bom_manifest_and_lockfile_are_tolerated():
+    # Moved from the root parser tests (utf-8-sig): a hand-edited
+    # package.json or lockfile carrying a UTF-8 BOM still parses.
+    bom = b"\xef\xbb\xbf"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_bytes(
+            bom + b'{"dependencies": {"react": "^18.2.0"}}')
+        (root / "package-lock.json").write_bytes(bom + json.dumps({
+            "packages": {"node_modules/react": {"version": "18.2.0"},
+                         "node_modules/scheduler": {"version": "0.23.0"}},
+        }).encode("utf-8"))
+        records, warnings = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+    assert warnings == [], warnings
+    assert _one(records, "react")["version"] == "18.2.0"
+    print("OK package.json: UTF-8 BOM tolerated")
+    scheduler = _one(records, "scheduler")
+    assert scheduler["version"] == "0.23.0" and scheduler["direct"] is False
+    print("OK npm lock: UTF-8 BOM tolerated")
+
+
+def test_transitive_lock_packages_reach_products_only_when_asked():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "name": "app",
+            "dependencies": {"react": "^18.2.0"},
+        }), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "app"},
+                "node_modules/react": {"version": "18.2.0"},
+                "node_modules/loose-envify": {"version": "1.4.0"},
+                "node_modules/js-tokens": {"version": "4.0.0"},
+            },
+        }), encoding="utf-8")
+        scan = scan_folder(str(root))
+
+    indirect = [r for r in scan["records"]
+                if r["ecosystem"] == "node" and r["direct"] is False]
+    assert sorted(r["name"] for r in indirect) == ["js-tokens", "loose-envify"]
+    assert all(_locators(r) == ["lock:" + r["name"]] for r in indirect)
+
+    plain = generate_config(scan, "demo")
+    names = {p.get("package") or p.get("product")
+             for p in plain["products"] if "_section" not in p}
+    assert "loose-envify" not in names and "js-tokens" not in names, names
+    assert "react" in names, names
+    assert plain["_inventory"]["summary"]["indirect"] == 2
+    assert plain["_inventory"]["include_transitive"] is False
+    print("OK lock graph: indirect packages stay out of products by default")
+
+    with_transitive = generate_config(scan, "demo", include_transitive=True)
+    names = {p.get("package") or p.get("product")
+             for p in with_transitive["products"] if "_section" not in p}
+    assert {"react", "loose-envify", "js-tokens"} <= names, names
+    assert with_transitive["_inventory"]["summary"]["indirect"] == 2
+    print("OK lock graph: --include-transitive tracks the lockfile packages")
+
+
+def test_generate_config_node_fixture_transitive_package():
+    # RETARGETED: the shared parity fixture's lockfile gained a genuinely
+    # transitive entry (node_modules/react/node_modules/loose-envify, which
+    # no package.json section declares), so the assertion that the fixture
+    # produced no indirect records becomes an assertion on that one record.
+    fixture = ROOT / "tests" / "fixtures" / "generate_config" / "node"
+    scan = scan_folder(str(fixture))
+    indirect = [r for r in scan["records"] if r["direct"] is False]
+    assert [(r["name"], r["version"]) for r in indirect] == [
+        ("loose-envify", "1.4.0")], indirect
+    assert _locators(indirect[0]) == ["lock:loose-envify"]
+    plain = generate_config(scan, "parity")
+    assert all(p.get("package") != "loose-envify"
+               for p in plain["products"]), plain["products"]
+    assert plain["_inventory"]["summary"]["indirect"] == 1
+    with_transitive = generate_config(scan, "parity", include_transitive=True)
+    assert any(p.get("package") == "loose-envify"
+               for p in with_transitive["products"])
+    print("OK generate_config/node: the lock's transitive package is indirect")
+
+
+def test_nested_copy_of_a_direct_package_is_kept_as_indirect():
+    # A nested install of a direct dependency at a DIFFERENT version is a
+    # second package on disk; the root parse_npm_lockfile returned both, so
+    # the name-only exclusion must not swallow it.
+    lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"version": "18.2.0"},
+            "node_modules/some-pkg": {"version": "1.0.0"},
+            "node_modules/some-pkg/node_modules/react": {"version": "17.0.2"},
+        },
+    }
+    assert _graph(lock, {("react", "18.2.0")}) == [
+        ("some-pkg", "1.0.0"), ("react", "17.0.2")], _graph(
+            lock, {("react", "18.2.0")})
+    print("OK npm lock: a nested copy at another version stays indirect")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps(lock),
+                                                encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+    assert warnings == [], warnings
+    direct = [r for r in records if r["direct"]]
+    assert [(r["name"], r["version"]) for r in direct] == [("react", "18.2.0")]
+    indirect = [r for r in records if r["direct"] is False]
+    assert [(r["name"], r["version"]) for r in indirect] == [
+        ("some-pkg", "1.0.0"), ("react", "17.0.2")], indirect
+    assert _locators(indirect[1]) == ["lock:react"]
+    print("OK package.json + lock: the nested react 17.0.2 is recorded")
+
+
+def test_lock_copy_of_a_direct_package_at_the_same_version_is_not_repeated():
+    lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"version": "18.2.0"},
+            "node_modules/some-pkg/node_modules/react": {"version": "18.2.0"},
+        },
+    }
+    assert _graph(lock, {("react", "18.2.0")}) == []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps(lock),
+                                                encoding="utf-8")
+        records, _ = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+    react = _one(records, "react")
+    assert react["direct"] is True and react["version"] == "18.2.0"
+    print("OK npm lock: a same-version copy adds no duplicate record")
+
+
 TESTS = [
     test_exact_spec_passthrough_never_touches_lock,
     test_lock_resolution_v3_provenance_and_scoped_packages,
@@ -427,6 +724,15 @@ TESTS = [
     test_shrinkwrap_listed_and_unread_package_lock_not_listed,
     test_malformed_lock_warns_but_is_not_listed,
     test_lock_present_without_package_json_is_never_listed,
+    test_lock_graph_v3_packages_map,
+    test_lock_graph_v2_prefers_packages_over_legacy_tree,
+    test_lock_graph_v1_dependencies_tree,
+    test_lock_graph_tolerates_unusable_documents,
+    test_utf8_bom_manifest_and_lockfile_are_tolerated,
+    test_transitive_lock_packages_reach_products_only_when_asked,
+    test_generate_config_node_fixture_transitive_package,
+    test_nested_copy_of_a_direct_package_is_kept_as_indirect,
+    test_lock_copy_of_a_direct_package_at_the_same_version_is_not_repeated,
 ]
 
 

@@ -164,7 +164,19 @@ full bill of materials. Pass `--include-transitive` to also include Go
 `// indirect` requirements, `Pipfile.lock` graph entries, and other records
 explicitly marked indirect. Node and .NET lock files still resolve exact
 versions for direct declarations; `packages.lock.json` transitive graph
-entries are not emitted.
+entries are not emitted. Lockfile packages are always enumerated into
+`_inventory.declarations` (and counted in `summary.indirect`) even without
+the flag; the flag only controls whether they become product rows.
+
+Pass `--resolve-transitive` to additionally resolve the **Java** graph by
+running `mvn dependency:list` per `pom*.xml` and a Gradle init-script task
+per project directory. This is the only option that executes external
+tools: everything else is pure file parsing, with no subprocess and no
+network. Because `mvn`/`gradle` execute the scanned repository's own build
+scripts and plugins, point this option only at repositories you trust. It
+implies `--include-transitive`, and when a tool is missing, exits non-zero,
+or times out the scan continues and records a `transitive_unavailable`
+warning for that manifest.
 
 ---
 
@@ -244,7 +256,8 @@ one for you and version-check it).
 ```
 python helper_scripts/generate_config.py <folder> [--name PROJECT] [--output FILE]
                                          [--exclude PATTERN] [--update | --replace]
-                                         [--include-transitive] [--strict]
+                                         [--include-transitive]
+                                         [--resolve-transitive] [--strict]
 ```
 
 | Option | Meaning |
@@ -256,6 +269,7 @@ python helper_scripts/generate_config.py <folder> [--name PROJECT] [--output FIL
 | `--update` | Merge into an existing config, preserving curation (see above) |
 | `--replace` | Replace an existing config wholesale (explicit) |
 | `--include-transitive` | Also include indirect/lockfile dependencies |
+| `--resolve-transitive` | Also run `mvn`/`gradle` to resolve the Java dependency graph (implies `--include-transitive`; the only option that executes external tools — it runs the scanned repository's own build scripts and plugins, so use it only on repositories you trust) |
 | `--strict` | Exit non-zero if any scan warning was emitted (useful in CI) |
 
 Exit codes: `0` success; `1` `--strict` warnings; `2` refused to overwrite,
@@ -328,7 +342,9 @@ helper_scripts/
     mappings.py                    version helpers + provider mapping tables
     config_writer.py               de-dup, provenance merging, config assembly
     report_writer.py               Markdown/CSV/HTML rendering
-    parsers/                       python, node, java, go, dotnet, docker, gitlab_ci
+    resolvers.py                   mvn/gradle runners (--resolve-transitive only)
+    parsers/                       python, node, java, go, dotnet, docker, gitlab_ci,
+                                   maven_repositories
 ```
 
 Tests live in `tests/` (`tests/test_inventory_*.py`,

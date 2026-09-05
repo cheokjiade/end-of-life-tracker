@@ -838,6 +838,125 @@ def test_view_benign_metadata_byte_identical():
     assert "Scan timestamp: 2026-09-02T10:00:00+08:00" in rendered
 
 
+# ---------------------------------------------------------------------------
+# Declarations (moved from tests/test_generate_full_picture.py, which
+# asserted the root generator's `_discovered_dependencies`; the reporting
+# assertions are retargeted to `_inventory.declarations`).
+# ---------------------------------------------------------------------------
+
+def _declarations_config():
+    """New-model config carrying a declaration of every outcome class."""
+    config = _new_model_config()
+    config["_inventory"]["declarations"] = [
+        {"decl": "io.netty:netty-codec-http:4.1.111.Final",
+         "file": "pom.xml", "kind": "dep",
+         "outcome": "tracked: Netty Codec HTTP 4.1.111.Final"},
+        {"decl": "io.netty:netty-codec-http:4.1.111.Final",
+         "file": "service/pom.xml", "kind": "dep",
+         "outcome": "duplicate-of: Netty Codec HTTP 4.1.111.Final"},
+        {"decl": "com.example:inflight:2.0.0-SNAPSHOT", "file": "pom.xml",
+         "kind": "dep",
+         "outcome": "unmapped: SNAPSHOT build resolves on no public registry"},
+        {"decl": "mvn transitive resolution", "file": "pom.xml",
+         "kind": "transitive-maven",
+         "outcome": "skipped: transitive resolution unavailable "
+                    "(mvn not on PATH or failed)"},
+    ]
+    config["_inventory"]["summary"]["declarations"] = {
+        "total": 4,
+        "by_outcome": {"duplicate-of": 1, "skipped": 1, "tracked": 1,
+                       "unmapped": 1},
+    }
+    return config
+
+
+def test_view_declarations():
+    view = build_inventory_view(_declarations_config(), project_name="demo")
+    assert [(d["decl"], d["file"], d["kind"], d["outcome"])
+            for d in view["declarations"]][:2] == [
+        ("io.netty:netty-codec-http:4.1.111.Final", "pom.xml", "dep",
+         "tracked: Netty Codec HTTP 4.1.111.Final"),
+        ("io.netty:netty-codec-http:4.1.111.Final", "service/pom.xml", "dep",
+         "duplicate-of: Netty Codec HTTP 4.1.111.Final"),
+    ], view["declarations"]
+    assert view["summary"]["by_declaration_outcome"] == {
+        "duplicate-of": 1, "skipped": 1, "tracked": 1, "unmapped": 1,
+    }, view["summary"]
+    # Legacy configs without declarations render exactly as before.
+    legacy = build_inventory_view(_legacy_config())
+    assert legacy["declarations"] == []
+    assert legacy["summary"]["by_declaration_outcome"] == {}
+
+
+def test_view_malformed_declarations_are_ignored():
+    config = _declarations_config()
+    config["_inventory"]["declarations"] = {"not": "a list"}
+    view = build_inventory_view(config, project_name="demo")
+    assert view["declarations"] == []
+    assert any(w["category"] == "malformed_config"
+               and w["path"] == "_inventory.declarations"
+               for w in view["warnings"]), view["warnings"]
+
+
+def test_markdown_declarations_section():
+    md = render_markdown(
+        build_inventory_view(_declarations_config(), project_name="demo"))
+    assert md.index("## Declarations") > md.index("## Tracked products")
+    section = _section(md, "Declarations")
+    assert "| Declaration | File | Kind | Outcome |" in section
+    assert ("| io.netty:netty-codec-http:4.1.111.Final | pom.xml | dep "
+            "| tracked: Netty Codec HTTP 4.1.111.Final |") in section
+    assert ("| mvn transitive resolution | pom.xml | transitive-maven "
+            "| skipped: transitive resolution unavailable "
+            "(mvn not on PATH or failed) |") in section
+    assert all(ord(char) < 128 for char in md)
+    # Configs without declarations keep the previous report shape.
+    assert "## Declarations" not in render_markdown(
+        build_inventory_view(_legacy_config()))
+
+
+def test_csv_declaration_rows():
+    view = build_inventory_view(_declarations_config(), project_name="demo")
+    rows = list(csv.reader(io.StringIO(render_csv(view))))
+    declarations = [r for r in rows[1:] if r[0] == "declaration"]
+    assert len(declarations) == 4, rows
+    assert declarations[0] == [
+        "declaration", "", "dep", "io.netty:netty-codec-http:4.1.111.Final",
+        "", "tracked", "", "pom.xml",
+        "tracked: Netty Codec HTTP 4.1.111.Final"], declarations[0]
+    assert len(rows) == (1 + len(view["products"]) + len(view["unmapped"])
+                         + len(view["declarations"]))
+
+
+def test_html_declaration_table():
+    html_text = render_html(
+        build_inventory_view(_declarations_config(), project_name="demo"))
+    assert "<h2>Declarations</h2>" in html_text
+    assert ("<td>io.netty:netty-codec-http:4.1.111.Final</td><td>pom.xml</td>"
+            "<td>dep</td>") in html_text
+    assert "<h2>Declarations</h2>" not in render_html(
+        build_inventory_view(_legacy_config()))
+
+
+def test_declaration_fields_are_redacted():
+    # Declaration text comes from scanned manifests: it passes through the
+    # same display redaction as warnings in every renderer.
+    sentinel = "widget@git@host.invalid:private/SENTINEL-repo.git"
+    config = _declarations_config()
+    config["_inventory"]["declarations"] = [
+        {"decl": sentinel, "file": sentinel, "kind": "dep",
+         "outcome": "unmapped: " + sentinel},
+    ]
+    view = build_inventory_view(config, project_name="demo")
+    serialized = json.dumps(view)
+    assert "SENTINEL" not in serialized and "private" not in serialized, \
+        serialized
+    for rendered in (render_markdown(view), render_csv(view),
+                     render_html(view)):
+        assert "SENTINEL" not in rendered and "private" not in rendered, \
+            rendered
+
+
 TESTS = [
     test_build_view_new_model,
     test_view_container_separation,
@@ -871,6 +990,12 @@ TESTS = [
     test_cli_render_refuse_and_force,
     test_cli_csv_with_and_without_value,
     test_cli_missing_config,
+    test_view_declarations,
+    test_view_malformed_declarations_are_ignored,
+    test_markdown_declarations_section,
+    test_csv_declaration_rows,
+    test_html_declaration_table,
+    test_declaration_fields_are_redacted,
 ]
 
 

@@ -4,7 +4,10 @@ Products keep their historical shape and section order. Each mapped
 product additionally carries an ignored `_found_in` array (the Lambda
 runtime, like for `_comment`, never reads underscore-prefixed keys), and
 the config gains an ignored `_inventory` object with schema metadata,
-structured warnings, and unmapped records.
+structured warnings, unmapped records, and `declarations`: one
+{decl, file, kind, outcome} row per record, so the config carries the
+complete picture of what every scanned manifest declared and what became
+of it.
 
 Mapping policy per ecosystem (see the plan:
 docs/plans/2026-08-28-project-dependency-inventory.md):
@@ -136,6 +139,95 @@ def _dotnet_entry(record):
     return None, _spec_reason(record)
 
 
+# Outcome of a resolved-graph record kept out of products (no
+# --include-transitive): the root generator's wording, kept verbatim.
+_TRANSITIVE_ONLY = "unmapped-transitive (tracked in records only)"
+
+# Record kinds that are declarations only: the pom declared them, but they
+# are never tracker candidates, so they are declared with the outcome
+# below and then dropped before any mapping. They never reach `add` or
+# `add_unmapped`, so they produce no product row, no unmapped item, no
+# manual-review row and no `_skipped_npm_packages` entry.
+_SKIPPED_KINDS = {
+    "test-scope-dep": "skipped: test scope",
+    "provided-scope-dep": "skipped: provided scope",
+    "system-scope-dep": "skipped: system scope",
+    "unversioned-dep": "skipped: no version",
+}
+
+
+def _declaration_tally(declarations):
+    """Declaration counts by outcome class (the text before the first ':')."""
+    tally = {}
+    for declaration in declarations:
+        outcome = declaration["outcome"].split(":", 1)[0]
+        tally[outcome] = tally.get(outcome, 0) + 1
+    return {key: tally[key] for key in sorted(tally)}
+
+
+def _entry_label(entry):
+    """Display label of a product entry, for declaration outcomes."""
+    for key in ("label", "product", "package", "module", "artifact", "name"):
+        value = entry.get(key)
+        if value:
+            return str(value)
+    return "entry"
+
+
+# Declaration kinds keep the retired root generator's vocabulary so that a
+# declaration means the same thing to anyone reading an older config:
+#
+#     property                       mapped <properties> entry in a pom
+#     parent                         pom <parent> coordinate
+#     dep                            pom dependency (see the note below)
+#     gradle                         build/settings.gradle(.kts) dependency
+#     gradle-plugin                  gradle plugins-block entry
+#     transitive-maven/-gradle       mvn/gradle resolved graph coordinate
+#     npm                            package.json dependency or engine
+#     npm-lock                       package-lock.json graph package
+#     unversioned-dep                pom dependency with no resolvable version
+#     test-/provided-/system-scope-dep   pom dependency in a skipped scope
+#
+# One root kind has no counterpart in the normalized record model and
+# collapses into `dep`: `managed-dep` (a <dependencyManagement> entry).
+# The four declaration-only kinds above keep the root's spelling and are
+# declared with a `skipped: ...` outcome (see `_SKIPPED_KINDS`); they
+# never produce a product row. Gradle version-catalog libraries resolve
+# to ordinary `gradle` declarations (the catalog reference stays in the
+# record's version_spec). Records of the ecosystems the root generator
+# never scanned (python, go, dotnet, container) declare with their own
+# record kind.
+def _declaration_kind(record):
+    """The root generator's declaration kind for a normalized record."""
+    if record["kind"] == "property" or record["kind"] in _SKIPPED_KINDS:
+        # Declaration-only kinds already carry the root's spelling.
+        return record["kind"]
+    location = record["found_in"][0] if record["found_in"] else {}
+    manifest = location.get("manifest") or ""
+    if record["ecosystem"] == "java":
+        if location.get("locator") == "transitive":
+            return ("transitive-maven" if manifest == "mvn"
+                    else "transitive-gradle")
+        if record["kind"] == "parent":
+            return "parent"
+        if record["kind"] == "plugin":
+            return "gradle-plugin"
+        return "gradle" if manifest == "gradle" else "dep"
+    if record["ecosystem"] == "node":
+        return "npm" if record["direct"] else "npm-lock"
+    return record["kind"]
+
+
+def _declaration_decl(record):
+    """The declaration text: how the manifest spelled the dependency."""
+    version = record["version"] or record["version_spec"] or ""
+    if record["kind"] == "property":
+        return f"{record['name']}={version}"
+    if record["ecosystem"] == "java" and record["group"] and record["artifact"]:
+        return f"{record['group']}:{record['artifact']}:{version}"
+    return f"{record['name']}@{version}"
+
+
 def _container_entry(record):
     """(entry, skip_reason) for a container image record."""
     identity = record.get("image_identity", record["name"])
@@ -151,10 +243,26 @@ def generate_config(scan, project_name, include_transitive=False):
     seen_keys = {}          # entry key -> product entry (for _found_in merge)
     unmapped_by_key = {}    # identity key -> unmapped item (merged provenance)
     skipped_npm = []        # legacy mirror of node unmapped items
+    declarations = []       # one {decl, file, kind, outcome} per record
+    declared = set()        # id(record) of records already declared
+
+    def _declare(record, outcome):
+        """Record one declaration outcome; the first outcome wins."""
+        if id(record) in declared:
+            return
+        declared.add(id(record))
+        declarations.append({
+            "decl": _declaration_decl(record),
+            "file": (record["found_in"][0]["path"]
+                     if record["found_in"] else ""),
+            "kind": _declaration_kind(record),
+            "outcome": outcome,
+        })
 
     def add(entry, record, comment=None):
         """Add a mapped entry; merge provenance on duplicate keys."""
         if entry is None:
+            _declare(record, "skipped: no lifecycle mapping")
             return False
         if comment:
             entry.setdefault("_comment", comment)
@@ -169,13 +277,16 @@ def generate_config(scan, project_name, include_transitive=False):
                     merged.append(loc)
             if merged:
                 existing["_found_in"] = sort_locations(merged)
+            _declare(record, f"duplicate-of: {_entry_label(existing)}")
             return False
         seen_keys[key] = entry
         products.append(entry)
+        _declare(record, f"tracked: {_entry_label(entry)}")
         return True
 
     def add_unmapped(record, reason):
         """Record one unmapped item; identical items merge provenance."""
+        _declare(record, f"unmapped: {reason}")
         item = _unmapped_item(record, reason)
         name = item["name"]
         if item["ecosystem"] == "dotnet":
@@ -204,6 +315,7 @@ def generate_config(scan, project_name, include_transitive=False):
         for record in property_records:
             mapper = _POM_PROPERTY_MAPPINGS.get(record["name"])
             if mapper is None:
+                _declare(record, "skipped: unmapped property")
                 continue
             if record["version"] is None:
                 add_unmapped(record, _spec_reason(record))
@@ -223,12 +335,49 @@ def generate_config(scan, project_name, include_transitive=False):
                 f"From {_basename(record['found_in'][0]['path'])} "
                 f"(<{record['name']}>{v}</{record['name']}>)"))
 
+    # --- Transitive resolution availability (--resolve-transitive only) -------
+    # A tool that is absent or failed left a transitive_unavailable warning
+    # instead of records: declare the attempt so the config still shows
+    # that the graph for that manifest was never resolved.
+    for warning in scan.get("warnings") or []:
+        if warning.get("category") != "transitive_unavailable":
+            continue
+        path = str(warning.get("path") or "")
+        tool = "mvn" if _basename(path).startswith("pom") else "gradle"
+        declarations.append({
+            "decl": f"{tool} transitive resolution",
+            "file": path,
+            "kind": ("transitive-maven" if tool == "mvn"
+                     else "transitive-gradle"),
+            "outcome": (f"skipped: transitive resolution unavailable "
+                        f"({tool} not on PATH or failed)"),
+        })
+
     # --- Java/Maven dependencies ---------------------------------------------
-    java_records = [r for r in records
-                    if r["ecosystem"] == "java" and r["kind"] != "property"]
+    # Every non-property java record maps through the coordinate rules:
+    # "dependency" and "parent" records from POM and Gradle files, and
+    # "plugin" records from Gradle plugins blocks (synthesized plugin
+    # artifact coordinates are mapped exactly like declared dependencies,
+    # as the root generator did for its "gradle-plugin" kind).
+    java_records = []
+    for record in records:
+        if record["ecosystem"] != "java" or record["kind"] == "property":
+            continue
+        outcome = _SKIPPED_KINDS.get(record["kind"])
+        if outcome is not None:
+            _declare(record, outcome)
+            continue
+        java_records.append(record)
     if java_records:
         added_section = False
         for record in java_records:
+            # Resolver-produced graph records carry direct=False (mvn/gradle
+            # resolved the tree, like a lockfile does): excluded from
+            # products unless --include-transitive, counted in the summary.
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
+                _declare(record, _TRANSITIVE_ONLY)
+                continue
             if record["version"] is None:
                 add_unmapped(record, "unresolved version expression")
                 continue
@@ -244,10 +393,17 @@ def generate_config(scan, project_name, include_transitive=False):
             add(entry, record, comment=comment_for(record, raw))
 
     # --- npm dependencies ----------------------------------------------------
+    # Lockfile-graph records carry direct=False (the lock is a resolved
+    # graph, like Pipfile.lock and go's indirect requires): excluded from
+    # products unless --include-transitive, counted in the summary.
     node_records = [r for r in records if r["ecosystem"] == "node"]
     if node_records:
         added_section = False
         for record in node_records:
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
+                _declare(record, _TRANSITIVE_ONLY)
+                continue
             entry = None
             if record["version"]:
                 entry = _map_npm_dep(record["name"], record["version"])
@@ -285,6 +441,7 @@ def generate_config(scan, project_name, include_transitive=False):
         for record in python_records:
             if (record["kind"] == "dependency" and not record["direct"]
                     and not include_transitive):
+                _declare(record, _TRANSITIVE_ONLY)
                 continue
             entry, reason = _python_entry(record)
             if entry is None:
@@ -305,11 +462,14 @@ def generate_config(scan, project_name, include_transitive=False):
         for record in go_records:
             if (record["kind"] == "dependency" and not record["direct"]
                     and not include_transitive):
+                _declare(record, _TRANSITIVE_ONLY)
                 continue
             entry, reason = _go_entry(record)
             if entry is None:
                 if reason is not None:
                     add_unmapped(record, reason)
+                else:
+                    _declare(record, "skipped: the scanned module itself")
                 continue
             if not added_section:
                 products.append({"_section": "=== Go dependencies ==="})
@@ -379,6 +539,13 @@ def generate_config(scan, project_name, include_transitive=False):
                 seen_keys[key] = inferred_entry
                 products.append(inferred_entry)
 
+    # Every record reaches exactly one declaration: a record no ecosystem
+    # branch above evaluated (an unknown ecosystem) still declares, so
+    # summary.declarations.total always equals the record count plus the
+    # unavailable-resolution rows.
+    for record in records:
+        _declare(record, "skipped: no mapping path for this ecosystem")
+
     # Unmapped evidence is also represented as manual tracker rows. The manual
     # provider reports these as `untracked`, so the normal EOL report never
     # silently drops inventory that lacks a live data source.
@@ -421,7 +588,7 @@ def generate_config(scan, project_name, include_transitive=False):
     config = {
         "_comment": [
             f"EOL config for the {project_name} project.",
-            f"Auto-generated by generate_config.py on {date.today()}.",
+            f"Auto-generated by helper_scripts/generate_config.py on {date.today()}.",
             f"Files scanned: {len(scan['files'])}.",
             f"Tracked entries: {len(tracked_products)}; "
             f"manual-review entries: {len(real_products) - len(tracked_products)}.",
@@ -444,6 +611,11 @@ def generate_config(scan, project_name, include_transitive=False):
         "products": products,
     }
 
+    if scan.get("maven_repositories"):
+        # Config-level, not per-entry: handler.py stamps this list onto
+        # maven_central entries lacking an explicit 'repository' at load
+        # time (single source of truth, capped there).
+        config["maven_repositories"] = list(scan["maven_repositories"])
     if skipped_npm:
         config["_skipped_npm_packages"] = skipped_npm
 
@@ -461,9 +633,14 @@ def generate_config(scan, project_name, include_transitive=False):
             "unmapped": len(unmapped),
             "warnings": len(warnings),
             "indirect": sum(1 for r in records if r["direct"] is False),
+            "declarations": {
+                "total": len(declarations),
+                "by_outcome": _declaration_tally(declarations),
+            },
         },
         "warnings": warnings,
         "unmapped": unmapped,
+        "declarations": declarations,
     }
 
     return config

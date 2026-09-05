@@ -1621,6 +1621,35 @@ def test_python_runtime_constraints_redacted():
 
 # ---------------------------------------------------------------------------
 
+def test_maven_repository_credential_warning_renders_without_secret():
+    """A credentialed <repositories> URL never reaches the config, the
+    warning text, or the rendered Markdown/HTML report."""
+    sentinel = "SENTINELREPORTSECRET"
+    pom = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+        "<repositories><repository><id>r</id><url>"
+        f"https://user:{sentinel}@nexus.example.invalid/m2"
+        "</url></repository></repositories></project>")
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "pom.xml").write_text(pom, encoding="utf-8")
+        scan = scan_folder(Path(tmp))
+        config = generate_config(scan, "cred-report")
+    assert config["maven_repositories"] == [
+        "https://nexus.example.invalid/m2"], config["maven_repositories"]
+    assert sentinel not in json.dumps(config, indent=2)
+    view = build_inventory_view(config, project_name="cred-report")
+    markdown = render_markdown(view)
+    html = render_html(view)
+    assert sentinel not in markdown
+    assert sentinel not in html
+    assert [w for w in view["warnings"]
+            if w["category"] == "credential_in_url"], view["warnings"]
+    # The Markdown table escapes underscores in the category cell.
+    assert "credential" in markdown and "nexus.example.invalid" in markdown
+    assert "credential_in_url" in html and "nexus.example.invalid" in html
+
+
 TESTS = [
     test_redact_urls_userinfo_query_fragment_matrix,
     test_redact_dependency_ref_matrix,
@@ -1666,6 +1695,7 @@ TESTS = [
     test_go_module_directive_credentials_redacted,
     test_python_runtime_constraints_redacted,
     test_report_view_and_scan_preserve_npm_alias_versions,
+    test_maven_repository_credential_warning_renders_without_secret,
 ]
 
 

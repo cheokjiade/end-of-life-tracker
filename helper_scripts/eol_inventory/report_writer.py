@@ -3,7 +3,8 @@
 `build_inventory_view` flattens a generated config into a plain view
 dict: product rows (label, version, provider, inferred state,
 provenance, ecosystem), container rows kept separately, unmapped
-records, warnings, and summary counts. `render_markdown` and
+records, declarations (every parsed declaration and its outcome),
+warnings, and summary counts. `render_markdown` and
 `render_csv` turn that view into deterministic reports. Legacy configs
 without `_inventory` render with "not recorded" placeholders instead of
 failing, and legacy `_skipped_npm_packages` are surfaced as unmapped
@@ -289,6 +290,23 @@ def build_inventory_view(config, project_name=None):
         if isinstance(w, dict)
     ]
 
+    # Declaration text comes from scanned manifests, so every field is
+    # redacted on its string form exactly like a warning's fields.
+    declarations = [
+        {"decl": redact_display_text(str(d.get("decl", ""))),
+         "file": redact_display_text(str(d.get("file", ""))),
+         "kind": redact_display_text(str(d.get("kind", ""))),
+         "outcome": redact_display_text(str(d.get("outcome", "")))}
+        for d in _as_list(inventory.get("declarations"),
+                          "_inventory.declarations", malformed)
+        if isinstance(d, dict)
+    ]
+    by_declaration_outcome = {}
+    for declaration in declarations:
+        outcome = declaration["outcome"].split(":", 1)[0]
+        by_declaration_outcome[outcome] = \
+            by_declaration_outcome.get(outcome, 0) + 1
+
     files_scanned = summary.get("files")
     if files_scanned is None and manifests:
         files_scanned = len(manifests)
@@ -355,6 +373,7 @@ def build_inventory_view(config, project_name=None):
         "containers": containers,
         "unmapped": unmapped,
         "warnings": warnings,
+        "declarations": declarations,
         "summary": {
             "by_ecosystem": {k: by_ecosystem[k] for k in sorted(by_ecosystem)},
             "by_provider": {k: by_provider[k] for k in sorted(by_provider)},
@@ -364,6 +383,9 @@ def build_inventory_view(config, project_name=None):
                 "unmapped": len(unmapped),
             },
             "products_without_provenance": without_provenance,
+            "by_declaration_outcome": {
+                k: by_declaration_outcome[k]
+                for k in sorted(by_declaration_outcome)},
         },
     }
 
@@ -505,6 +527,22 @@ def render_markdown(view):
                 _md_cell(found),
                 _md_cell(row["details"]),
                 "yes" if row["inferred"] else "",
+            ))
+        lines.append("")
+
+    # Declarations: every parsed manifest declaration and what became of
+    # it. Absent from legacy configs, whose reports render as before.
+    if view["declarations"]:
+        lines.append("## Declarations")
+        lines.append("")
+        lines.append("| Declaration | File | Kind | Outcome |")
+        lines.append("| --- | --- | --- | --- |")
+        for declaration in view["declarations"]:
+            lines.append("| {} | {} | {} | {} |".format(
+                _md_cell(declaration["decl"]),
+                _md_cell(declaration["file"] or "not recorded"),
+                _md_cell(declaration["kind"]),
+                _md_cell(declaration["outcome"]),
             ))
         lines.append("")
 
@@ -653,6 +691,20 @@ def render_csv(view):
             "; ".join(part for part in (item["reason"], item["details"])
                       if part),
         ])
+    for declaration in view["declarations"]:
+        # The declaration's own kind is a provider-shaped column here: the
+        # first column names the record type the report consumer filters on.
+        write_row([
+            "declaration",
+            "",
+            declaration["kind"],
+            declaration["decl"],
+            "",
+            declaration["outcome"].split(":", 1)[0],
+            "",
+            declaration["file"],
+            declaration["outcome"],
+        ])
     return buf.getvalue()
 
 
@@ -702,6 +754,16 @@ def render_html(view):
                 esc(format_found_in(item["found_in"]) or "not recorded"),
                 esc("; ".join(part for part in
                     (item["reason"], item["details"]) if part))))
+    declaration_rows = "".join(
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            esc(d["decl"]), esc(d["file"] or "not recorded"),
+            esc(d["kind"]), esc(d["outcome"]))
+        for d in view["declarations"])
+    declarations_section = (
+        "<h2>Declarations</h2>\n<table><thead><tr><th>Declaration</th>"
+        "<th>File</th><th>Kind</th><th>Outcome</th></tr></thead>"
+        "<tbody>{}</tbody></table>\n".format(declaration_rows)
+        if declaration_rows else "")
     warning_items = "".join(
         "<li><strong>{}</strong> {}: {}</li>".format(
             esc(w["category"]), esc(w["path"]), esc(w["message"]))
@@ -713,12 +775,13 @@ def render_html(view):
 <body><h1>Dependency inventory: {project}</h1>
 <p>{meta_line}</p>
 <table><thead><tr><th>State</th><th>Ecosystem</th><th>Product</th><th>Version</th><th>Provider</th><th>Found in</th><th>Details</th></tr></thead><tbody>{rows}</tbody></table>
-<h2>Warnings</h2><ul>{warnings}</ul>
+{declarations}<h2>Warnings</h2><ul>{warnings}</ul>
 <h2>Manual review checklist</h2><ul><li>Review every untracked row and warning.</li><li>Confirm inferred lifecycle mappings before deployment.</li></ul>
 </body></html>
 """.format(project=esc(view["meta"]["project"]),
            meta_line=meta_line,
-           rows="".join(rows), warnings=warning_items)
+           rows="".join(rows), declarations=declarations_section,
+           warnings=warning_items)
 
 
 # ---------------------------------------------------------------------------

@@ -185,7 +185,14 @@ def test_config_unmapped_items_and_summary():
     ]
     assert config["_inventory"]["summary"] == {
         "files": 14, "records": 22, "products": 14, "unmapped": 4,
-        "warnings": 2, "indirect": 1}
+        "warnings": 2, "indirect": 1,
+        "declarations": {"total": 22, "by_outcome": {
+            "duplicate-of": 2, "skipped": 1, "tracked": 14, "unmapped": 4,
+            "unmapped-transitive (tracked in records only)": 1}}}
+    # Every record declares exactly once (the go module record is the
+    # single "skipped" declaration: it is the scanned project, not a
+    # dependency).
+    assert len(config["_inventory"]["declarations"]) == 22
     assert config["_inventory"]["include_transitive"] is False
     assert not config.get("_skipped_npm_packages")
 

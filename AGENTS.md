@@ -21,7 +21,6 @@ a verified manifest (see `docs/packaging.md`).
 | Generate or update a config with an AI coding agent | Invoke `manage-eol-config` in Codex/OpenCode or `eol-config` in Claude Code; canonical instructions: `.agents/skills/manage-eol-config/SKILL.md` |
 | Validate a config structurally (network-free) | `python lambda_function.py --validate <config.json>` |
 | Update Terraform providers, handle the lockfile, or roll back an S3 config | `terraform/README.md` |
-| Generate a config from dependency manifests (`pom.xml`, `*.gradle*`, package.json) | `python generate_config.py <folder> --name <project>`, then live-verify (norms below) |
 | Generate a config by scanning dependency manifests and container files | `python helper_scripts/generate_config.py <folder> --name <project>` (Java, Node, Python, Go, .NET, Dockerfile, GitLab CI images); render the Markdown/CSV/HTML inventory with `python helper_scripts/generate_inventory_report.py <config>`; novice guide: `helper_scripts/README.md` |
 | Generate a config from messy inputs (wiki/Confluence tables, spreadsheets, prose) | Follow the extraction spec in `eol_config_generation_prompt.md` |
 | Update an existing config after upgrades or inventory changes | `docs/updating-a-config.md` |
@@ -29,14 +28,6 @@ a verified manifest (see `docs/packaging.md`).
 | Repair a provider whose upstream page drifted | Use the same provider skill; canonical repair procedure: `docs/adding-a-provider.md` |
 | Make and commit repository changes | Follow `docs/commit-conventions.md`; commit each completed, verified batch |
 | Run a Codex task while conserving Codex allowance | Ask Codex to follow `docs/codex-usage-efficient-workflow.md` |
-
-Two config generators currently coexist on purpose: root `generate_config.py`
-(the plain manifest extractor, being extended by open PR #35) and
-`helper_scripts/generate_config.py` backed by `helper_scripts/eol_inventory/`
-(the multi-ecosystem inventory scanner with provenance, curation-preserving
-`--update`, and container-image scanning). Consolidating them into one tool is
-a follow-up decision, not yet made — do not delete or merge either one without
-an explicit instruction to do so.
 
 Universal norms, whichever workflow you are in:
 
@@ -74,14 +65,16 @@ eoltracker/
                           #   provider caches, never touching console/SNS/SES
   validation.py           # config JSON decode/parse + eoltracker.validation schema enforcement
 helper_scripts/
-  generate_config.py      # root-alternative CLI: folder scan -> eol_config.<project>.json (+ _inventory);
-                          #   extended by open PR #35 — see the coexistence note above
+  generate_config.py      # the config generator CLI: folder scan -> eol_config.<project>.json
+                          #   (+ _inventory)
   generate_inventory_report.py  # CLI: config -> Markdown/CSV/HTML inventory report
   generate_config.sh/.ps1, generate_inventory_report.sh/.ps1  # interactive wrappers
   eol_inventory/          # importable scan package: discovery.py, models.py, mappings.py,
                           #   config_writer.py, report_writer.py, config_io.py (bounded config
                           #   load, mirrors eoltracker/core.py's size/depth bounds), redact.py
-                          #   (URL/SSH/SCP secret redaction), parsers/ (per ecosystem)
+                          #   (URL/SSH/SCP secret redaction), resolvers.py (mvn/gradle runners —
+                          #   the only subprocess caller), parsers/ (per ecosystem, plus
+                          #   maven_repositories.py)
 ```
 
 ## Architecture: providers (the "parsers")
@@ -176,21 +169,22 @@ drifts). In brief:
   order, and real-world document patterns (strikethrough = skip, "was X now Y" =
   current version, multi-version cells, reference-URL slug hints). Any agent in
   any harness can follow it directly.
-- Root `generate_config.py` is the deterministic extractor for clean dependency
-  manifests (Maven / Gradle / npm) — no LLM required. `--resolve-transitive` resolves the full graph by shelling out to mvn/gradle and parsing npm lockfiles.
-- Generated configs carry `_discovered_dependencies` (every parsed declaration with its outcome) alongside the deduped runnable `products`.
-- `helper_scripts/generate_config.py` is the deterministic scanner — no LLM
-  required — for Java, Node, Python, Go, and .NET manifests plus Dockerfile and
-  GitLab CI image declarations. It emits per-entry `_found_in` provenance, an
-  ignored `_inventory` object (warnings, unmapped items, counts), explicit
-  `manual`/untracked rows for unmapped items, scans **direct dependencies
-  only** by default (`--include-transitive` opts into indirect/lockfile
-  records), refuses to overwrite an existing config unless `--update`
-  (curation-preserving merge) or `--replace` (explicit wholesale) is given,
-  and writes atomically as ASCII. Root `generate_config.py` (previous bullet)
-  is a separate extractor focused on Maven / Gradle / npm (see the coexistence
-  note under "Workflows index"); do not remove or modify it as part of
-  inventory-scanner work.
+- `helper_scripts/generate_config.py` is the repository's only config
+  generator: a deterministic scanner — no LLM required — for Java, Node,
+  Python, Go, and .NET manifests plus Dockerfile and GitLab CI image
+  declarations. It emits per-entry `_found_in` provenance, an ignored
+  `_inventory` object (warnings, unmapped items, counts, and `declarations`:
+  every parsed declaration with its outcome), explicit `manual`/untracked rows
+  for unmapped items, a top-level `maven_repositories` list, scans **direct
+  dependencies only** by default (`--include-transitive` opts into
+  indirect/lockfile records; `--resolve-transitive` additionally executes
+  `mvn`/`gradle` to resolve the Java graph — the only code path in the scanner
+  that runs external tools, degrading to a `transitive_unavailable` warning
+  when a tool is missing or fails), refuses to overwrite an existing config
+  unless `--update` (curation-preserving merge) or `--replace` (explicit
+  wholesale) is given, and writes atomically as ASCII. `--resolve-transitive`
+  executes the scanned repository's own build scripts and plugins via
+  `mvn`/`gradle`, so point it only at repositories you trust.
 - `helper_scripts/generate_inventory_report.py` renders a config locally (no
   network) as Markdown (default), CSV, and HTML under
   `reports/inventory/`, with a manual-review checklist; legacy configs and
@@ -317,8 +311,7 @@ canonical message format and detailed workflow.
 | `eoltracker/handler.py` | Config loading, `lambda_handler`, and `run_local` (local CLI body) |
 | `eol_config.<project>.json` | Per-project product lists (gitignored; `eol_config.sample.json` is the template) |
 | `eol_config_generation_prompt.md` | The canonical config-generation/extraction spec |
-| `generate_config.py` | Root-level manifest extractor CLI (one of two coexisting generators — see "Workflows index"); extended by open PR #35 |
-| `helper_scripts/` | Second, multi-ecosystem dependency scanner + inventory report CLIs, wrappers, and the `eol_inventory` package (provenance, curation-preserving `--update`, container scanning, `helper_scripts/eol_inventory/redact.py`, `helper_scripts/eol_inventory/config_io.py`); see `helper_scripts/README.md` |
+| `helper_scripts/` | The multi-ecosystem dependency scanner + inventory report CLIs, wrappers, and the `eol_inventory` package (provenance, curation-preserving `--update`, container scanning, `helper_scripts/eol_inventory/redact.py`, `helper_scripts/eol_inventory/config_io.py`); see `helper_scripts/README.md` |
 | `docs/adding-a-provider.md` | Step-by-step guide to adding (and repairing) a provider |
 | `docs/updating-a-config.md` | Curation-preserving config refresh workflow |
 | `docs/commit-conventions.md` | Batch boundaries, safe staging, and commit-message standard |
