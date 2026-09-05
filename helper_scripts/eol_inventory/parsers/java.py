@@ -7,9 +7,12 @@ Both parsers return (records, warnings):
               syntax, and unresolved property/gradle expressions
 
 Behavior notes preserved from the original generator:
-    - test/provided/system-scoped Maven dependencies are skipped entirely;
-    - versionless dependencies (managed by a parent/BOM) are skipped
-      silently — the parent or BOM entry already carries the platform;
+    - test/provided/system-scoped Maven dependencies never become tracker
+      candidates, but are recorded with kind "<scope>-scope-dep" so the
+      config declares them (config_writer._SKIPPED_KINDS);
+    - versionless dependencies (managed by a parent/BOM) never become
+      tracker candidates either — the parent or BOM entry already carries
+      the platform — and are recorded with kind "unversioned-dep";
     - Gradle declarations match in both quote styles: the quoted
       "g:a:v" form (optionally wrapped in platform(...)), Groovy map
       notation (group: 'g', name: 'a', version: 'v'), the Kotlin DSL
@@ -123,17 +126,44 @@ def parse_pom_records(path, rel_path):
         if pg and pa and pv:
             emit(resolve(pg), resolve(pa), resolve(pv), "parent", "parent")
 
+    def declare_only(group, artifact, version, kind, scope, locator):
+        """A parsed declaration that never becomes a tracker candidate.
+
+        Test/provided/system-scope dependencies and dependencies without a
+        <version> are recorded so the config's declaration list stays a
+        complete picture of the pom, but they carry a kind that config
+        assembly declares and then drops: no product row, no unmapped
+        item, and no `unresolved_version` warning (there is nothing
+        unresolved about a deliberately BOM-managed or test-only
+        dependency).
+        """
+        record = new_record(
+            "java", f"{group}:{artifact}",
+            version=redact_urls(version) if version else None,
+            scope=scope, kind=kind, group=group, artifact=artifact,
+        )
+        add_location(record, rel_path, "maven", locator=locator)
+        records.append(record)
+
     # Walk all <dependencies> blocks (both top-level and inside <dependencyManagement>)
     for deps_node in root.iter(f"{ns}dependencies"):
         for dep in deps_node.findall(f"{ns}dependency"):
             g, a, v = t(dep, "groupId"), t(dep, "artifactId"), t(dep, "version")
             scope = t(dep, "scope") or "compile"
-            if scope in ("test", "provided", "system"):
+            if not (g and a):
                 continue
-            if g and a and v:
-                group, artifact = resolve(g), resolve(a)
-                emit(group, artifact, resolve(v), "dependency",
-                     f"dependency:{group}:{artifact}")
+            group, artifact = resolve(g), resolve(a)
+            locator = f"dependency:{group}:{artifact}"
+            if scope in ("test", "provided", "system"):
+                declare_only(group, artifact, resolve(v) if v else None,
+                             f"{scope}-scope-dep", scope, locator)
+                continue
+            if not v:
+                # Version supplied by the parent or an imported BOM.
+                declare_only(group, artifact, None, "unversioned-dep",
+                             scope, locator)
+                continue
+            emit(group, artifact, resolve(v), "dependency", locator)
 
     # Platform properties pinned via <properties> — only names with a
     # mapping become records; everything else stays invisible, as before.

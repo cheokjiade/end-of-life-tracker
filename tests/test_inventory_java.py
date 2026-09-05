@@ -95,9 +95,9 @@ POM_NAMESPACED = """<?xml version="1.0" encoding="UTF-8"?>
 def test_pom_namespaced_kinds():
     """RETARGETED: parse_pom(p) -> (deps, props, repos) tuples became
     parse_pom_records(p, rel) -> (records, warnings). The consolidated parser
-    has no managed-dep / unversioned-dep / test-scope-dep kinds: managed
-    dependencies are ordinary "dependency" records, and versionless or
-    test-scoped dependencies are skipped entirely (java.py docstring)."""
+    has no managed-dep kind (managed dependencies are ordinary "dependency"
+    records), but scope-skipped and versionless dependencies keep the root
+    kinds so every parsed declaration still gets an outcome."""
     with tempfile.TemporaryDirectory() as tmp:
         p = _write(tmp, "pom.xml", POM_NAMESPACED)
         records, warnings = parse_pom_records(p, "pom.xml")
@@ -105,9 +105,12 @@ def test_pom_namespaced_kinds():
     deps = [(r["group"], r["artifact"], r["version"], r["kind"]) for r in records]
     assert ("org.springframework.boot", "spring-boot-starter-parent", "3.3.4", "parent") in deps, deps
     assert ("com.fasterxml.jackson", "jackson-bom", "2.17.0", "dependency") in deps, deps
-    assert not any(r["artifact"] == "spring-boot-starter-web" for r in records), deps
+    assert ("org.springframework.boot", "spring-boot-starter-web", None,
+            "unversioned-dep") in deps, deps
     assert ("commons-io", "commons-io", "2.16.1", "dependency") in deps, deps
-    assert not any(r["artifact"] == "junit" for r in records), deps
+    assert ("junit", "junit", "4.13.2", "test-scope-dep") in deps, deps
+    junit = next(r for r in records if r["artifact"] == "junit")
+    assert junit["scope"] == "test" and junit["version_spec"] is None, junit
     print("OK namespaced pom: parent/managed-dep/unversioned-dep/dep kinds, test scope recorded")
 
 
@@ -139,7 +142,8 @@ def test_pom_plain_kinds():
     assert warnings == [], warnings
     deps = [(r["group"], r["artifact"], r["version"], r["kind"]) for r in records]
     assert ("io.netty", "netty-bom", "4.1.111.Final", "dependency") in deps, deps
-    assert not any(r["artifact"] == "logback-classic" for r in records), deps
+    assert ("ch.qos.logback", "logback-classic", None,
+            "unversioned-dep") in deps, deps
     print("OK non-namespaced pom: managed-dep and unversioned-dep kinds")
 
 

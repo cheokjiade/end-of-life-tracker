@@ -233,9 +233,14 @@ def test_parse_pom_records():
         "path": "pom.xml", "manifest": "maven",
         "locator": "dependency:io.netty:netty-codec-http"}]
     assert "com.fasterxml.jackson:jackson-bom" in by_name  # depMgmt kept
-    # versionless (managed) and test-scoped deps are skipped
-    assert "org.springframework.boot:spring-boot-starter-web" not in by_name
-    assert "junit:junit" not in by_name
+    # RETARGETED: versionless (managed) and test-scoped deps are recorded
+    # as declaration-only kinds instead of being dropped at parse time;
+    # config assembly declares and drops them (config_writer._SKIPPED_KINDS).
+    web = by_name["org.springframework.boot:spring-boot-starter-web"]
+    assert (web["kind"], web["version"], web["version_spec"]) == (
+        "unversioned-dep", None, None), web
+    junit = by_name["junit:junit"]
+    assert (junit["kind"], junit["scope"]) == ("test-scope-dep", "test"), junit
     props = {r["name"]: r["version"] for r in records if r["kind"] == "property"}
     assert props == {"java.version": "17", "tomcat.version": "10.1.54",
                      "netty.version": "4.1.111.Final",
@@ -297,8 +302,10 @@ def test_parse_pom_records_unresolved():
     parent = by_name["com.example:parent-pom"]
     assert parent["version"] is None
     assert parent["version_spec"] == "${parent.rev}"
-    # versionless (managed elsewhere) dep never becomes a record
-    assert "org.acme:managed" not in by_name
+    # RETARGETED: a versionless (managed elsewhere) dep is now recorded as
+    # an "unversioned-dep" declaration, and raises no warning of its own.
+    managed = by_name["org.acme:managed"]
+    assert (managed["kind"], managed["version"]) == ("unversioned-dep", None)
     categories = [w["category"] for w in warnings]
     assert categories == ["unresolved_version", "unresolved_version"]
     assert all(w["path"] == "samples/pom_unresolved.xml" for w in warnings)
@@ -510,8 +517,10 @@ def test_scan_folder_maven_multi():
     scan = _scan("maven_multi")
     assert scan["root_name"] == "maven_multi"
     assert scan["files"] == ["pom.xml", "service/pom.xml"]
-    # 8 root-POM records + 4 property records + 3 service-POM records
-    assert len(scan["records"]) == 15
+    # RETARGETED: 15 -> 17. 10 root-POM records (8 mapped candidates plus
+    # the test-scope and unversioned declaration-only records) + 4 property
+    # records + 3 service-POM records
+    assert len(scan["records"]) == 17
     assert scan["warnings"] == []
     first = scan["records"][0]
     assert first["name"] == "org.springframework.boot:spring-boot-starter-parent"
@@ -864,11 +873,14 @@ def test_generate_config_maven_multi():
     assert inv["warnings"] == []
     # RETARGETED: 11 products, not 10 - jackson-bom and jackson-databind are
     # separate per-artifact jackson_lifecycle rows now.
+    # RETARGETED: records 15 -> 17 and two "skipped" declarations, for the
+    # test-scope and unversioned pom dependencies now recorded; products
+    # and unmapped are unchanged.
     assert inv["summary"] == {
-        "files": 2, "records": 15, "products": 11, "unmapped": 3,
+        "files": 2, "records": 17, "products": 11, "unmapped": 3,
         "warnings": 0, "indirect": 0,
-        "declarations": {"total": 15, "by_outcome": {
-            "duplicate-of": 2, "tracked": 10, "unmapped": 3}}}
+        "declarations": {"total": 17, "by_outcome": {
+            "duplicate-of": 2, "skipped": 2, "tracked": 10, "unmapped": 3}}}
     # unmapped items keep their declaration sites and explicit reasons
     assert [(u["name"], u["reason"]) for u in inv["unmapped"]] == [
         ("com.example:inflight",
@@ -2602,6 +2614,8 @@ DECL_PACKAGE_JSON = """{
 DECL_KINDS = {
     "parent", "dep", "gradle", "gradle-plugin", "property", "npm",
     "npm-lock", "transitive-maven", "transitive-gradle",
+    "test-scope-dep", "provided-scope-dep", "system-scope-dep",
+    "unversioned-dep",
 }
 
 
@@ -2701,15 +2715,27 @@ def test_declaration_outcome_vocabulary():
     reasons = {item["reason"] for item in config["_inventory"]["unmapped"]}
     assert "unresolved version expression" in reasons, reasons
 
-    # Note (divergence): pom dependencies with a test/provided/system
-    # <scope> and dependencies without a <version> are skipped at parse
-    # time (parsers/java.py), so they are never records and never
-    # declarations; the root script recorded them as
-    # "skipped: test scope" / "skipped: no version (parent/BOM-managed)".
-    for absent in ("junit:junit:4.13.2",
-                   "javax.servlet:javax.servlet-api:4.0.1",
-                   "org.springframework:spring-core:"):
-        assert not [d for d in declarations if d["decl"] == absent], absent
+    # skipped: declaration-only records. A test/provided/system-scope or
+    # version-less pom dependency is parsed, declared, and dropped before
+    # mapping - it never reaches products, _inventory.unmapped or
+    # _skipped_npm_packages.
+    # RETARGETED: the root's "skipped: no version (parent/BOM-managed)"
+    # wording is "skipped: no version" here.
+    for decl, kind, outcome in (
+            ("junit:junit:4.13.2", "test-scope-dep", "skipped: test scope"),
+            ("javax.servlet:javax.servlet-api:4.0.1", "provided-scope-dep",
+             "skipped: provided scope"),
+            ("org.springframework:spring-core:", "unversioned-dep",
+             "skipped: no version")):
+        d = _decl_one(declarations, decl)
+        assert (d["kind"], d["outcome"], d["file"]) == (
+            kind, outcome, "pom.xml"), d
+    declared_names = {"junit:junit", "javax.servlet:javax.servlet-api",
+                      "org.springframework:spring-core"}
+    assert not [item for item in config["_inventory"]["unmapped"]
+                if item["name"] in declared_names], config["_inventory"]
+    assert not [p for p in _products(config)
+                if p.get("label") in declared_names], _products(config)
 
     # Gradle version-catalog library: declared through the build file.
     d = _decl_one(declarations, "commons-io:commons-io:2.16.1")
@@ -2735,10 +2761,23 @@ def test_declaration_outcome_vocabulary():
 
     # products stays the deduped runnable set: one row per tracked
     # declaration, plus the generated manual rows for unmapped items.
+    # RETARGETED: the root's six tracked labels are seven here - lodash
+    # has no lifecycle mapping, so the consolidated scanner tracks its
+    # release recency through npm_registry instead of skipping it.
     tracked = [d for d in declarations if d["outcome"].startswith("tracked: ")]
     rows = [p for p in _products(config)
             if p.get("_inventory_generated") != "unmapped"]
+    assert len(tracked) == 7, tracked
     assert len(rows) == len(tracked), (rows, tracked)
+    assert sorted(p["label"] for p in rows) == [
+        "Apache Tomcat 10.1",
+        "Jackson BOM 2.17",
+        "Jackson Databind 2.17",
+        "React 18",
+        "commons-io 2.16.1",
+        "lodash 4.17.21",
+        "netty-codec-http 4.1.111.Final",
+    ], rows
 
 
 def test_declarations_record_unavailable_transitive_resolution():

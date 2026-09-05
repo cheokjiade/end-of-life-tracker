@@ -123,11 +123,10 @@ def _helper_config(fixture, out):
 #    package-lock.json, not two declarations, so npm identities compare
 #    without the file. Packages only the lock names still have their own
 #    declaration and must be present.
-# 4. Kinds the consolidated scanner never records at all: pom
-#    dependencies with a test/provided/system <scope> and pom
-#    dependencies without a <version> are skipped in
-#    eol_inventory/parsers/java.py, so they are never records. They are
-#    listed in SKIPPED_ROOT_KINDS with the reason.
+#
+# Nothing is excused silently: every root declaration that matches only
+# after a translation is printed as a `translated[...]` line, and any root
+# declaration with no match at all is a hard failure.
 _KIND_CLASS = {
     "dep": "java-dependency",
     "managed-dep": "java-dependency",
@@ -142,17 +141,6 @@ _KIND_CLASS = {
     "npm-lock": "npm",
 }
 
-SKIPPED_ROOT_KINDS = {
-    "test-scope-dep": "pom test-scope dependencies are skipped at parse time",
-    "provided-scope-dep":
-        "pom provided-scope dependencies are skipped at parse time",
-    "system-scope-dep":
-        "pom system-scope dependencies are skipped at parse time",
-    "unversioned-dep":
-        "pom dependencies without a <version> are skipped at parse time",
-}
-
-
 def _declaration_identity(declaration):
     """Comparable identity of one declaration (see the notes above)."""
     kind = _KIND_CLASS.get(declaration.get("kind"), declaration.get("kind"))
@@ -163,10 +151,34 @@ def _declaration_identity(declaration):
     return (decl, path.rsplit("/", 1)[-1], kind)
 
 
-def _declarations(declarations):
-    return {_declaration_identity(d) for d in declarations or []
-            if isinstance(d, dict)
-            and d.get("kind") not in SKIPPED_ROOT_KINDS}
+def _exact(declaration):
+    return (declaration.get("decl"), declaration.get("file"),
+            declaration.get("kind"))
+
+
+def _compare_declarations(root_declarations, helper_declarations):
+    """(missing, translated) root declarations.
+
+    A root declaration matches exactly, matches through the translation
+    above (and is then reported so the excuse is visible), or is missing.
+    """
+    helper = [d for d in helper_declarations or [] if isinstance(d, dict)]
+    helper_exact = {_exact(d) for d in helper}
+    helper_by_identity = {}
+    for d in helper:
+        helper_by_identity.setdefault(_declaration_identity(d), d)
+    missing, translated = [], []
+    for d in root_declarations or []:
+        if not isinstance(d, dict):
+            continue
+        if _exact(d) in helper_exact:
+            continue
+        match = helper_by_identity.get(_declaration_identity(d))
+        if match is None:
+            missing.append(str(_exact(d)))
+        else:
+            translated.append(f"{_exact(d)} matched {_exact(match)}")
+    return sorted(missing), sorted(translated)
 
 
 def _identity(entry):
@@ -263,15 +275,15 @@ def compare(fixture_dir):
             continue
         missing_skipped.append(str((name, version)))
     missing_skipped = sorted(missing_skipped)
-    decl_root = _declarations(root.get("_discovered_dependencies"))
-    decl_helper = _declarations(
+    missing_declarations, translated_declarations = _compare_declarations(
+        root.get("_discovered_dependencies"),
         (helper.get("_inventory") or {}).get("declarations"))
     return {
         "missing_products": missing_products,
         "missing_repositories": missing_repos,
         "missing_skipped": missing_skipped,
-        "missing_declarations": sorted(str(d) for d in decl_root - decl_helper),
-    }
+        "missing_declarations": missing_declarations,
+    }, translated_declarations
 
 
 def catalog_artifacts(fixture_dir):
@@ -307,7 +319,11 @@ def main():
         p for p in FIXTURES.iterdir() if p.is_dir() and p.name not in SKIP_FIXTURES
     ):
         catalog_names = catalog_artifacts(fixture)
-        result = compare(fixture)
+        result, translated = compare(fixture)
+        for item in translated:
+            # Not a gap: a root declaration the consolidated scanner spells
+            # differently. Printed so no difference is excused silently.
+            print(f"translated {fixture.name}: {item}")
         buckets = {}
         for key, items in result.items():
             for item in items:

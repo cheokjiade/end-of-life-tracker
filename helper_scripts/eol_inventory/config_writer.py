@@ -143,6 +143,18 @@ def _dotnet_entry(record):
 # --include-transitive): the root generator's wording, kept verbatim.
 _TRANSITIVE_ONLY = "unmapped-transitive (tracked in records only)"
 
+# Record kinds that are declarations only: the pom declared them, but they
+# are never tracker candidates, so they are declared with the outcome
+# below and then dropped before any mapping. They never reach `add` or
+# `add_unmapped`, so they produce no product row, no unmapped item, no
+# manual-review row and no `_skipped_npm_packages` entry.
+_SKIPPED_KINDS = {
+    "test-scope-dep": "skipped: test scope",
+    "provided-scope-dep": "skipped: provided scope",
+    "system-scope-dep": "skipped: system scope",
+    "unversioned-dep": "skipped: no version",
+}
+
 
 def _declaration_tally(declarations):
     """Declaration counts by outcome class (the text before the first ':')."""
@@ -183,8 +195,9 @@ def _entry_label(entry):
 # container) declare with their own record kind.
 def _declaration_kind(record):
     """The root generator's declaration kind for a normalized record."""
-    if record["kind"] == "property":
-        return "property"
+    if record["kind"] == "property" or record["kind"] in _SKIPPED_KINDS:
+        # Declaration-only kinds already carry the root's spelling.
+        return record["kind"]
     location = record["found_in"][0] if record["found_in"] else {}
     manifest = location.get("manifest") or ""
     if record["ecosystem"] == "java":
@@ -342,8 +355,15 @@ def generate_config(scan, project_name, include_transitive=False):
     # "plugin" records from Gradle plugins blocks (synthesized plugin
     # artifact coordinates are mapped exactly like declared dependencies,
     # as the root generator did for its "gradle-plugin" kind).
-    java_records = [r for r in records
-                    if r["ecosystem"] == "java" and r["kind"] != "property"]
+    java_records = []
+    for record in records:
+        if record["ecosystem"] != "java" or record["kind"] == "property":
+            continue
+        outcome = _SKIPPED_KINDS.get(record["kind"])
+        if outcome is not None:
+            _declare(record, outcome)
+            continue
+        java_records.append(record)
     if java_records:
         added_section = False
         for record in java_records:
