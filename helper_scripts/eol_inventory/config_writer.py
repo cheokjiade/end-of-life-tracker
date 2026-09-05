@@ -234,6 +234,12 @@ def generate_config(scan, project_name, include_transitive=False):
     if java_records:
         added_section = False
         for record in java_records:
+            # Resolver-produced graph records carry direct=False (mvn/gradle
+            # resolved the tree, like a lockfile does): excluded from
+            # products unless --include-transitive, counted in the summary.
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
+                continue
             if record["version"] is None:
                 add_unmapped(record, "unresolved version expression")
                 continue

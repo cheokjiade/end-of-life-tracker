@@ -185,7 +185,10 @@ drifts). In brief:
   ignored `_inventory` object (warnings, unmapped items, counts), explicit
   `manual`/untracked rows for unmapped items, scans **direct dependencies
   only** by default (`--include-transitive` opts into indirect/lockfile
-  records), refuses to overwrite an existing config unless `--update`
+  records; `--resolve-transitive` additionally executes `mvn`/`gradle` to
+  resolve the Java graph — the only code path in the scanner that runs
+  external tools, degrading to a `transitive_unavailable` warning when a
+  tool is missing or fails), refuses to overwrite an existing config unless `--update`
   (curation-preserving merge) or `--replace` (explicit wholesale) is given,
   and writes atomically as ASCII. Root `generate_config.py` (previous bullet)
   is a separate extractor focused on Maven / Gradle / npm (see the coexistence

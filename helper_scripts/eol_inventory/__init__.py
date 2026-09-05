@@ -2,7 +2,9 @@
 
 Everything the project scanner needs lives here as importable, network-free
 modules so standalone assertion tests can exercise parsing, mapping, and
-config generation without subprocesses:
+config generation without subprocesses. The one exception is resolvers.py,
+which runs mvn/gradle and is reached only behind the CLI's
+--resolve-transitive flag:
 
     models         normalized records, provenance, warnings, exclusions
     mappings       version helpers and the provider mapping tables
@@ -15,6 +17,8 @@ config generation without subprocesses:
     parsers.dotnet csproj/fsproj/vbproj, central versions, global.json
     parsers.docker Dockerfile FROM instructions
     parsers.gitlab_ci  GitLab CI images and services
+    resolvers      mvn/gradle transitive resolution (the only module that
+                   starts a subprocess; opt-in via --resolve-transitive)
 
 The command-line entry point is the sibling generate_config.py script; this
 package holds no CLI.

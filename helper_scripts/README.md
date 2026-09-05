@@ -166,6 +166,14 @@ explicitly marked indirect. Node and .NET lock files still resolve exact
 versions for direct declarations; `packages.lock.json` transitive graph
 entries are not emitted.
 
+Pass `--resolve-transitive` to additionally resolve the **Java** graph by
+running `mvn dependency:list` per `pom*.xml` and a Gradle init-script task
+per project directory. This is the only option that executes external
+tools: everything else is pure file parsing, with no subprocess and no
+network. It implies `--include-transitive`, and when a tool is missing,
+exits non-zero, or times out the scan continues and records a
+`transitive_unavailable` warning for that manifest.
+
 ---
 
 ## Updating an existing config safely
@@ -244,7 +252,8 @@ one for you and version-check it).
 ```
 python helper_scripts/generate_config.py <folder> [--name PROJECT] [--output FILE]
                                          [--exclude PATTERN] [--update | --replace]
-                                         [--include-transitive] [--strict]
+                                         [--include-transitive]
+                                         [--resolve-transitive] [--strict]
 ```
 
 | Option | Meaning |
@@ -256,6 +265,7 @@ python helper_scripts/generate_config.py <folder> [--name PROJECT] [--output FIL
 | `--update` | Merge into an existing config, preserving curation (see above) |
 | `--replace` | Replace an existing config wholesale (explicit) |
 | `--include-transitive` | Also include indirect/lockfile dependencies |
+| `--resolve-transitive` | Also run `mvn`/`gradle` to resolve the Java dependency graph (implies `--include-transitive`; the only option that executes external tools) |
 | `--strict` | Exit non-zero if any scan warning was emitted (useful in CI) |
 
 Exit codes: `0` success; `1` `--strict` warnings; `2` refused to overwrite,

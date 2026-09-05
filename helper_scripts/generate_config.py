@@ -44,6 +44,7 @@ from eol_inventory.config_io import (
 )
 from eol_inventory.parsers.docker import split_image_reference
 from eol_inventory.redact import redact_image_reference, redact_urls
+from eol_inventory.resolvers import resolve_transitive
 
 
 def _live_smoke_command(output, executable=None, platform=None):
@@ -413,6 +414,10 @@ def main(argv=None):
                              help="Replace an existing config wholesale")
     parser.add_argument("--include-transitive", action="store_true",
                         help="Include indirect/lockfile dependencies (direct only by default)")
+    parser.add_argument("--resolve-transitive", action="store_true",
+                        help="Additionally run mvn/gradle to resolve the Java "
+                             "dependency graph (the only option that executes "
+                             "external tools); implies --include-transitive")
     parser.add_argument("--strict", action="store_true",
                         help="Exit non-zero when any scan warning is emitted (for CI)")
     args = parser.parse_args(argv)
@@ -428,8 +433,15 @@ def main(argv=None):
               file=sys.stderr)
         return 2
 
+    if args.resolve_transitive:
+        args.include_transitive = True
+
     print(f"Scanning {folder!r}...")
     scan = scan_folder(folder, exclude=args.exclude)
+    if args.resolve_transitive:
+        resolved, resolver_warnings = resolve_transitive(scan, folder)
+        scan["records"].extend(resolved)
+        scan["warnings"].extend(resolver_warnings)
 
     print(f"  Files scanned        : {len(scan['files'])}")
     print(f"  Dependency records   : {len(scan['records'])}")
