@@ -30,6 +30,11 @@ from .parsers import (
     parse_package_json_records,
     parse_pom_records,
 )
+from .parsers.maven_repositories import (
+    parse_gradle_repositories,
+    parse_pom_repositories,
+    parse_settings_gradle,
+)
 from .parsers.node import parse_nvmrc_records
 from .parsers.dotnet import parse_csproj_records, parse_global_json_records
 from .parsers.python import (
@@ -121,6 +126,14 @@ def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
 # sidecar tracking.
 _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False, False),
+    # settings.gradle(.kts) declares repositories, never dependencies; its
+    # row precedes the gradle row so the settings spellings dispatch here
+    # (the first matching row wins). The ecosystem key is the dispatch
+    # bucket and must be unique per row, hence "gradle_settings" rather
+    # than a second "gradle" row: two rows sharing a key would parse every
+    # gradle file twice.
+    ("gradle_settings", ("settings.gradle", "settings.gradle.kts"),
+     parse_settings_gradle, True, True),
     ("gradle", ("*.gradle.kts", "*.gradle"), parse_gradle_records,
      False, False),
     ("npm", ("package.json", ".nvmrc"), _parse_node_manifest, True, True),
@@ -172,6 +185,9 @@ def scan_folder(folder, exclude=None):
         files       sorted manifest paths relative to the root, "/"-separated
         records     normalized dependency records (deterministic order)
         warnings    structured warnings (deterministic order)
+        maven_repositories
+                    declared artifact-repository URLs (discovery order,
+                    deduplicated)
 
     exclude: optional extra exclusion patterns (same syntax as .eolignore).
     """
@@ -222,7 +238,7 @@ def scan_folder(folder, exclude=None):
     for eco, _, parser, wants_root, wants_state in _MANIFEST_PATTERNS:
         for rel in sorted(by_ecosystem[eco]):
             candidates.append(
-                (rel, root / rel, parser, wants_root, wants_state))
+                (eco, rel, root / rel, parser, wants_root, wants_state))
 
     if len(candidates) > MAX_FILES:
         raise SystemExit(
@@ -230,7 +246,8 @@ def scan_folder(folder, exclude=None):
             f"(limit {MAX_FILES}). Add excludes or scan a narrower folder.")
 
     scan_state = {}
-    for rel, abs_path, parser, wants_root, wants_state in candidates:
+    maven_repositories = []
+    for eco, rel, abs_path, parser, wants_root, wants_state in candidates:
         try:
             size = abs_path.stat().st_size
         except OSError as exc:
@@ -273,6 +290,19 @@ def scan_folder(folder, exclude=None):
         warnings.extend(file_warnings)
         files.append(rel)
 
+        # Declared artifact repositories: the runtime's fallback hosts for
+        # artifacts that are not on Maven Central. Collected from the same
+        # (path, rel_path) pair the record parser just read; settings files
+        # report theirs through scan_state instead (see parse_settings_gradle).
+        if eco in ("maven", "gradle"):
+            repo_urls, repo_warnings = (
+                parse_pom_repositories(abs_path, rel) if eco == "maven"
+                else parse_gradle_repositories(abs_path, rel))
+            warnings.extend(repo_warnings)
+            for url in repo_urls:
+                if url not in maven_repositories:
+                    maven_repositories.append(url)
+
     # Sidecar manifests the scan consumed while resolving or enriching
     # declarations (requirements includes, sibling Pipfile/npm lock
     # files, .NET central/lock sidecars, followed GitLab CI local
@@ -286,10 +316,14 @@ def scan_folder(folder, exclude=None):
         for field in ("manifests", "locks", "sidecars"):
             consumed.update(state.get(field, ()))
     files = sorted(set(files) | consumed)
+    for url in scan_state.get("gradle", {}).get("repositories", ()):
+        if url not in maven_repositories:
+            maven_repositories.append(url)
     return {
         "root": str(root.resolve()),
         "root_name": root.resolve().name or root.name,
         "files": files,
         "records": records,
         "warnings": warnings,
+        "maven_repositories": maven_repositories,
     }

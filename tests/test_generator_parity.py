@@ -18,7 +18,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "tests" / "fixtures" / "generate_config"
-PENDING_CATEGORIES = {"repositories", "catalogs", "npm_graph", "declarations"}
+PENDING_CATEGORIES = {"catalogs", "npm_graph", "declarations"}
 
 # `samples/` holds loose pom files, not project directories; neither generator
 # is meant to scan it as a project root.

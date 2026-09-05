@@ -320,7 +320,10 @@ def _merge_existing_config(existing, generated):
 
     merged = dict(generated)
     for key, value in existing.items():
-        if key not in ("products", "_inventory", "_skipped_npm_packages"):
+        # maven_repositories is regenerated, not curated: a fresh scan is
+        # the truth about which repositories the project declares today.
+        if key not in ("products", "_inventory", "_skipped_npm_packages",
+                       "maven_repositories"):
             merged[key] = value
     merged["products"] = products
     # Deep-copy the _inventory dict so the caller's generated dict is

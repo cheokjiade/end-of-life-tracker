@@ -444,6 +444,11 @@ def generate_config(scan, project_name, include_transitive=False):
         "products": products,
     }
 
+    if scan.get("maven_repositories"):
+        # Config-level, not per-entry: handler.py stamps this list onto
+        # maven_central entries lacking an explicit 'repository' at load
+        # time (single source of truth, capped there).
+        config["maven_repositories"] = list(scan["maven_repositories"])
     if skipped_npm:
         config["_skipped_npm_packages"] = skipped_npm
 
