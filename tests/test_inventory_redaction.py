@@ -35,6 +35,7 @@ import eol_inventory.parsers.python as python_parser
 from eol_inventory import generate_config, scan_folder
 from eol_inventory.redact import (
     _COMPOSED_CREDENTIAL_RE,
+    clean_repository_url,
     hosted_git_placeholder,
     redact_dependency_ref,
     redact_display_reference,
@@ -42,6 +43,7 @@ from eol_inventory.redact import (
     redact_image_reference,
     redact_urls,
     ssh_placeholder,
+    strip_url_userinfo,
 )
 from eol_inventory.report_writer import (
     build_inventory_view,
@@ -1650,6 +1652,63 @@ def test_maven_repository_credential_warning_renders_without_secret():
     assert "credential_in_url" in html and "nexus.example.invalid" in html
 
 
+CLEAN_REPO_URL_CASES = [
+    # (input, expected clean url, expected removed set)
+    ("https://repo.example.invalid/m2",
+     "https://repo.example.invalid/m2", set()),
+    ("https://user:%s@repo.example.invalid/m2" % SECRET,
+     "https://repo.example.invalid/m2", {"userinfo"}),
+    ("https://h.example.invalid/m2?token=%s" % SECRET,
+     "https://h.example.invalid/m2", {"query"}),
+    ("https://h.example.invalid/m2#%s" % SECRET,
+     "https://h.example.invalid/m2", {"fragment"}),
+    ("https://h.example.invalid/m2?a=1#%s" % SECRET,
+     "https://h.example.invalid/m2", {"query", "fragment"}),
+    ("//u:%s@h.example.invalid/m2" % SECRET,
+     "//h.example.invalid/m2", {"userinfo"}),
+    ("//h.example.invalid/m2", "//h.example.invalid/m2", set()),
+    ("u:%s@h.example.invalid/m2" % SECRET,
+     "h.example.invalid/m2", {"userinfo"}),
+    ("https://u:%s@h.example.invalid/m2?t=%s#%s" % (SECRET, SECRET, SECRET),
+     "https://h.example.invalid/m2", {"userinfo", "query", "fragment"}),
+    ("https://[2001:db8::1]:8443/m2", "https://[2001:db8::1]:8443/m2", set()),
+    ("https://t:%s@[2001:db8::1]:8443/m2" % SECRET,
+     "https://[2001:db8::1]:8443/m2", {"userinfo"}),
+    ("", "", set()),
+]
+
+
+def test_clean_repository_url_matrix():
+    """Userinfo, query strings, and fragments are removed from declared
+    repository URLs; scheme, host, port, and path survive."""
+    for raw, expected, removed in CLEAN_REPO_URL_CASES:
+        clean, got = clean_repository_url(raw)
+        assert clean == expected, (raw, clean, expected)
+        assert set(got) == removed, (raw, got, removed)
+        assert SECRET not in clean, (raw, clean)
+
+
+def test_clean_repository_url_is_idempotent():
+    """f(f(x)) == f(x): a cleaned URL is a fixed point and reports nothing
+    further removed."""
+    for raw, _expected, _removed in CLEAN_REPO_URL_CASES:
+        once, _ = clean_repository_url(raw)
+        twice, removed_again = clean_repository_url(once)
+        assert twice == once, (raw, once, twice)
+        assert set(removed_again) == set(), (raw, removed_again)
+
+
+def test_strip_url_userinfo_handles_scheme_relative_authority():
+    """A scheme-relative //user:pass@host/path authority is stripped and
+    keeps its leading slashes; no scheme is invented."""
+    clean, had = strip_url_userinfo("//u:%s@h.example.invalid/m2" % SECRET)
+    assert clean == "//h.example.invalid/m2", clean
+    assert had is True
+    clean, had = strip_url_userinfo("//h.example.invalid/m2")
+    assert clean == "//h.example.invalid/m2", clean
+    assert had is False
+
+
 TESTS = [
     test_redact_urls_userinfo_query_fragment_matrix,
     test_redact_dependency_ref_matrix,
@@ -1696,6 +1755,9 @@ TESTS = [
     test_python_runtime_constraints_redacted,
     test_report_view_and_scan_preserve_npm_alias_versions,
     test_maven_repository_credential_warning_renders_without_secret,
+    test_clean_repository_url_matrix,
+    test_clean_repository_url_is_idempotent,
+    test_strip_url_userinfo_handles_scheme_relative_authority,
 ]
 
 

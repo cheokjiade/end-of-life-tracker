@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 from ..models import load_safe_xml, new_warning
-from ..redact import strip_url_userinfo
+from ..redact import clean_repository_url
 from .java import nearest_catalog, parse_gradle_records
 
 # Repository URL declarations inside a `repositories { ... }` block, in the
@@ -39,7 +39,12 @@ def _authority(url):
     """The authority (host and optional port) of an already-stripped URL;
     non-secret structural text safe to name in a warning message."""
     match = _URL_SCHEME_RE.match(url)
-    body = url[match.end():] if match else url
+    if match:
+        body = url[match.end():]
+    elif url.startswith("//"):
+        body = url[2:]
+    else:
+        body = url
     cut = len(body)
     for ch in "/?#":
         pos = body.find(ch)
@@ -48,33 +53,51 @@ def _authority(url):
     return body[:cut] or "(no host)"
 
 
+# What a removal class is called in the warning message, in message order.
+_REMOVAL_LABELS = (
+    ("userinfo", "embedded credentials"),
+    ("query", "the query string"),
+    ("fragment", "the fragment"),
+)
+
+
+def _removal_phrase(removed):
+    """Human phrase for the set of removed URL parts ("embedded
+    credentials and the query string"); never includes removed text."""
+    labels = [label for key, label in _REMOVAL_LABELS if key in removed]
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
 def sanitize_repo_urls(urls, rel_path):
     """Return ``(clean_urls, warnings)`` for raw collected repository URLs.
 
     The single choke point every repository collector (pom, build.gradle,
     settings.gradle) passes through, so no path can emit a credential.
     A declared repository may carry userinfo
-    (``https://user:token@nexus.example/m2``); the generated config is
-    published (S3) and read by the runtime, which never sends URL
-    credentials, so the userinfo is REMOVED while scheme, host, port and
-    path survive — the fallback still targets the right repository. Each
-    affected URL raises one ``credential_in_url`` warning naming the host
-    only, never the secret. Deduplication happens after stripping, so a
-    repository declared both with and without credentials collapses to one
-    entry.
+    (``https://user:token@nexus.example/m2``), a query-string token
+    (``https://nexus.example/m2?token=...``), or a fragment; the generated
+    config is published (S3) and read by the runtime, which never sends URL
+    credentials and joins artifact paths onto the base URL, so all three are
+    REMOVED while scheme, host, port and path survive - the fallback still
+    targets the right repository. Each affected URL raises one
+    ``credential_in_url`` warning naming the host and what was removed,
+    never the secret. Deduplication happens after cleaning, so a repository
+    declared both with and without credentials collapses to one entry.
     """
     clean = []
     warnings = []
     for url in urls:
-        stripped, had_userinfo = strip_url_userinfo(url)
-        if had_userinfo:
+        cleaned, removed = clean_repository_url(url)
+        if removed:
             warnings.append(new_warning(
                 "credential_in_url", rel_path,
-                f"removed embedded credentials from the declared repository "
-                f"URL for {_authority(stripped)}; keep them in "
-                f"~/.m2/settings.xml or Gradle credentials instead"))
-        if stripped and stripped not in clean:
-            clean.append(stripped)
+                f"removed {_removal_phrase(removed)} from the declared "
+                f"repository URL for {_authority(cleaned)}; keep credentials "
+                f"in ~/.m2/settings.xml or Gradle credentials instead"))
+        if cleaned and cleaned not in clean:
+            clean.append(cleaned)
     return clean, warnings
 
 

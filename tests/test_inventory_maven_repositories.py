@@ -750,6 +750,122 @@ def test_repository_url_without_userinfo_unchanged():
                     if w["category"] == "credential_in_url"], warnings
 
 
+# --- Query strings, fragments, and scheme-relative credentials ---------------
+
+RESIDUAL = "SENTINELRESIDUALSECRET"
+
+RESIDUAL_POM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <repositories>
+    <repository>
+      <id>query</id>
+      <url>https://q.example.invalid/m2?token=%(s)s</url>
+    </repository>
+    <repository>
+      <id>fragment</id>
+      <url>https://f.example.invalid/m2#%(s)s</url>
+    </repository>
+    <repository>
+      <id>query-and-fragment</id>
+      <url>https://qf.example.invalid/m2?a=1#%(s)s</url>
+    </repository>
+    <repository>
+      <id>scheme-relative-credentials</id>
+      <url>//u:%(s)s@rel.example.invalid/m2</url>
+    </repository>
+    <repository>
+      <id>scheme-relative-clean</id>
+      <url>//plain.example.invalid/m2</url>
+    </repository>
+    <repository>
+      <id>clean</id>
+      <url>https://clean.example.invalid/maven2</url>
+    </repository>
+  </repositories>
+</project>
+""" % {"s": RESIDUAL}
+
+RESIDUAL_GRADLE = """
+repositories {
+    maven { url "https://gq.example.invalid/m2?token=%(s)s" }
+    maven { url "https://gf.example.invalid/m2#%(s)s" }
+    maven { url "https://gqf.example.invalid/m2?a=1#%(s)s" }
+    maven { url "//gu:%(s)s@grel.example.invalid/m2" }
+    maven { url "//gplain.example.invalid/m2" }
+    maven { url "https://gclean.example.invalid/m2" }
+}
+""" % {"s": RESIDUAL}
+
+
+def test_pom_repository_query_fragment_and_relative_credentials_stripped():
+    """Query strings, fragments, and scheme-relative userinfo are removed
+    from declared POM repository URLs; the host survives, the secret does
+    not."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "pom.xml", RESIDUAL_POM_XML)
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://q.example.invalid/m2",
+            "https://f.example.invalid/m2",
+            "https://qf.example.invalid/m2",
+            "//rel.example.invalid/m2",
+            "//plain.example.invalid/m2",
+            "https://clean.example.invalid/maven2",
+        ], scan["maven_repositories"]
+        _assert_no_sentinel(scan, RESIDUAL, "residual-pom")
+        creds = _credential_warnings(scan)
+        assert len(creds) == 4, creds
+        assert all(w["path"] == "pom.xml" for w in creds), creds
+        hosts = " ".join(w["message"] for w in creds)
+        for host in ("q.example.invalid", "f.example.invalid",
+                     "qf.example.invalid", "rel.example.invalid"):
+            assert host in hosts, hosts
+        assert "plain.example.invalid" not in hosts, hosts
+        assert "clean.example.invalid" not in hosts, hosts
+
+
+def test_gradle_repository_query_fragment_and_relative_credentials_stripped():
+    """Same residual shapes through a build.gradle collector."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "build.gradle", RESIDUAL_GRADLE)
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://gq.example.invalid/m2",
+            "https://gf.example.invalid/m2",
+            "https://gqf.example.invalid/m2",
+            "//grel.example.invalid/m2",
+            "//gplain.example.invalid/m2",
+            "https://gclean.example.invalid/m2",
+        ], scan["maven_repositories"]
+        _assert_no_sentinel(scan, RESIDUAL, "residual-gradle")
+        creds = _credential_warnings(scan)
+        assert len(creds) == 4, creds
+        assert all(w["path"] == "build.gradle" for w in creds), creds
+        assert all(w["category"] == "credential_in_url" for w in creds), creds
+        hosts = " ".join(w["message"] for w in creds)
+        for host in ("gq.example.invalid", "gf.example.invalid",
+                     "gqf.example.invalid", "grel.example.invalid"):
+            assert host in hosts, hosts
+
+
+def test_residual_shapes_dedupe_after_cleaning():
+    """The same repository declared with a token query, a fragment, and
+    plainly collapses to one entry."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "build.gradle", """
+repositories {
+    maven { url "https://dedupe.example.invalid/m2?token=%(s)s" }
+    maven { url "https://dedupe.example.invalid/m2#%(s)s" }
+    maven { url "https://dedupe.example.invalid/m2" }
+}
+""" % {"s": RESIDUAL})
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://dedupe.example.invalid/m2"],             scan["maven_repositories"]
+        _assert_no_sentinel(scan, RESIDUAL, "residual-dedupe")
+        assert len(_credential_warnings(scan)) == 2, scan["warnings"]
+
+
 TESTS = [
     test_pom_root_level_repositories,
     test_pom_dependencies_still_parsed,
@@ -780,6 +896,9 @@ TESTS = [
     test_gradle_repository_credentials_stripped,
     test_settings_gradle_repository_credentials_stripped,
     test_repository_url_without_userinfo_unchanged,
+    test_pom_repository_query_fragment_and_relative_credentials_stripped,
+    test_gradle_repository_query_fragment_and_relative_credentials_stripped,
+    test_residual_shapes_dedupe_after_cleaning,
 ]
 
 
