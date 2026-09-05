@@ -443,10 +443,10 @@ def test_lock_present_without_package_json_is_never_listed():
 # parse_npm_lockfile is now node_parser.lock_graph_records)
 # ---------------------------------------------------------------------------
 
-def _graph(data, direct_names=()):
+def _graph(data, direct_versions=()):
     """(name, version) pairs of lock_graph_records, in record order."""
     records = node_parser.lock_graph_records(
-        data, "package-lock.json", set(direct_names))
+        data, "package-lock.json", set(direct_versions))
     for record in records:
         # RETARGETED: the root parser returned bare (name, version) tuples;
         # the inventory returns normalized indirect records, so every moved
@@ -488,11 +488,11 @@ def test_lock_graph_v3_packages_map():
     print("OK npm lock v3: scoped names kept, nested installs, root skipped")
     print("OK npm lock v3: link:/file: and version-less entries skipped")
 
-    # New: names already declared in package.json keep their direct record
-    # and are not repeated as indirect ones.
-    assert _graph(v3, {"react", "@angular/core"}) == [
+    # New: package.json declarations already recorded at the resolved
+    # version keep their direct record and are not repeated as indirect ones.
+    assert _graph(v3, {("react", "18.3.1"), ("@angular/core", "17.3.0")}) == [
         ("@scope/thing", "1.2.3"), ("react-dom", "18.3.1")]
-    print("OK npm lock: direct package.json names excluded from the graph")
+    print("OK npm lock: direct (name, version) pairs excluded from the graph")
 
 
 def test_lock_graph_v2_prefers_packages_over_legacy_tree():
@@ -647,6 +647,65 @@ def test_generate_config_node_fixture_transitive_package():
     print("OK generate_config/node: the lock's transitive package is indirect")
 
 
+def test_nested_copy_of_a_direct_package_is_kept_as_indirect():
+    # A nested install of a direct dependency at a DIFFERENT version is a
+    # second package on disk; the root parse_npm_lockfile returned both, so
+    # the name-only exclusion must not swallow it.
+    lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"version": "18.2.0"},
+            "node_modules/some-pkg": {"version": "1.0.0"},
+            "node_modules/some-pkg/node_modules/react": {"version": "17.0.2"},
+        },
+    }
+    assert _graph(lock, {("react", "18.2.0")}) == [
+        ("some-pkg", "1.0.0"), ("react", "17.0.2")], _graph(
+            lock, {("react", "18.2.0")})
+    print("OK npm lock: a nested copy at another version stays indirect")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps(lock),
+                                                encoding="utf-8")
+        records, warnings = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+    assert warnings == [], warnings
+    direct = [r for r in records if r["direct"]]
+    assert [(r["name"], r["version"]) for r in direct] == [("react", "18.2.0")]
+    indirect = [r for r in records if r["direct"] is False]
+    assert [(r["name"], r["version"]) for r in indirect] == [
+        ("some-pkg", "1.0.0"), ("react", "17.0.2")], indirect
+    assert _locators(indirect[1]) == ["lock:react"]
+    print("OK package.json + lock: the nested react 17.0.2 is recorded")
+
+
+def test_lock_copy_of_a_direct_package_at_the_same_version_is_not_repeated():
+    lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app"},
+            "node_modules/react": {"version": "18.2.0"},
+            "node_modules/some-pkg/node_modules/react": {"version": "18.2.0"},
+        },
+    }
+    assert _graph(lock, {("react", "18.2.0")}) == []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "package.json").write_text(json.dumps({
+            "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")
+        (root / "package-lock.json").write_text(json.dumps(lock),
+                                                encoding="utf-8")
+        records, _ = node_parser.parse_package_json_records(
+            root / "package.json", "package.json", root=root)
+    react = _one(records, "react")
+    assert react["direct"] is True and react["version"] == "18.2.0"
+    print("OK npm lock: a same-version copy adds no duplicate record")
+
+
 TESTS = [
     test_exact_spec_passthrough_never_touches_lock,
     test_lock_resolution_v3_provenance_and_scoped_packages,
@@ -672,6 +731,8 @@ TESTS = [
     test_utf8_bom_manifest_and_lockfile_are_tolerated,
     test_transitive_lock_packages_reach_products_only_when_asked,
     test_generate_config_node_fixture_transitive_package,
+    test_nested_copy_of_a_direct_package_is_kept_as_indirect,
+    test_lock_copy_of_a_direct_package_at_the_same_version_is_not_repeated,
 ]
 
 

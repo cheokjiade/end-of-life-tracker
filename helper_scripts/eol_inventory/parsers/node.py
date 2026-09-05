@@ -134,13 +134,17 @@ def _lock_lookup(data, name):
     return None
 
 
-def lock_graph_records(data, rel_lock_path, direct_names):
+def lock_graph_records(data, rel_lock_path, direct_versions):
     """Indirect records for every package a lockfile resolves.
 
     *data* is a parsed lock document (see :func:`_read_lock`),
-    *rel_lock_path* its scan-root-relative path, *direct_names* the names
-    already recorded from package.json (they keep their direct records and
-    are not repeated here).
+    *rel_lock_path* its scan-root-relative path, *direct_versions* the
+    ``(name, version)`` pairs already recorded from package.json (those
+    keep their direct records and are not repeated here). The exclusion is
+    version-aware on purpose: a nested install of a direct dependency at a
+    different version (``node_modules/pkg/node_modules/react``) is a second
+    package on disk with its own lifecycle, so it becomes an indirect
+    record like any other.
 
     Supports lockfileVersion 2/3 (the "packages" mapping keyed by
     "node_modules/..." paths -- the package name is the last path segment,
@@ -164,7 +168,7 @@ def lock_graph_records(data, rel_lock_path, direct_names):
             return
         if ":" in version or version.startswith(("link:", "file:")):
             return
-        if name in direct_names or (name, version) in seen:
+        if (name, version) in direct_versions or (name, version) in seen:
             return
         seen.add((name, version))
         record = new_record("node", name, version=version, direct=False,
@@ -360,7 +364,7 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
         # The lock is a resolved graph: everything it names that the
         # manifest did not declare is an indirect (direct=False) record.
         records.extend(lock_graph_records(
-            lock, lock_rel, {r["name"] for r in records}))
+            lock, lock_rel, {(r["name"], r["version"]) for r in records}))
     return records, warnings
 
 
