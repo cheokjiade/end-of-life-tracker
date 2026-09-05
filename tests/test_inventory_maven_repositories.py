@@ -402,9 +402,9 @@ rootProject.name = 'demo'
 
 def test_settings_kts_plugin_block_repositories():
     """RETARGETED: the root script synthesized a gradle-plugin row from the
-    pluginManagement `id(...) version` declaration; the inventory scanner does
-    not parse plugin ids at all (no such record in either spelling), so the
-    assertion pins the repository half plus the no-record shape."""
+    pluginManagement `id(...) version` declaration; plugin-id parsing is
+    pending Task 4 in the consolidation plan, so the assertion pins the
+    repository half plus today's no-record shape."""
     with tempfile.TemporaryDirectory() as tmp:
         _write(tmp, "settings.gradle.kts", SETTINGS_KTS_PLUGINS)
         scan = scan_folder(tmp)
@@ -420,6 +420,62 @@ def test_settings_groovy_plugin_block_repositories():
     assert scan["records"] == [], scan["records"]
     assert scan["maven_repositories"] == [
         "https://settings-deps.example/maven2"], scan["maven_repositories"]
+
+
+SETTINGS_KTS_PLUGIN = """pluginManagement {
+    plugins {
+        id("io.spring.dependency-management") version "1.1.7"
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://build.shibboleth.net/nexus/content/repositories/releases/")
+        }
+    }
+}
+"""
+
+
+def test_settings_kts_multiline_uri_repository():
+    """RETARGETED: the root script's plugin-coordinate-alias assertions on this
+    settings file have no successor while plugin-id parsing is pending Task 4;
+    its repository half - the multi-line `maven { url = uri(
+ "..." 
+) }`
+    spelling - is pinned here."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "settings.gradle.kts", SETTINGS_KTS_PLUGIN)
+        scan = scan_folder(tmp)
+    assert scan["maven_repositories"] == [SHIB], scan["maven_repositories"]
+    config = generate_config(scan, "settings-plugin-probe")
+    assert config["maven_repositories"] == [SHIB], config["maven_repositories"]
+
+
+SETTINGS_KTS_CLASSPATH = """
+buildscript {
+    repositories {
+        maven { url = uri("https://settings-buildscript.example/m2") }
+    }
+    dependencies {
+        classpath "org.foo:bar:1.2.3"
+    }
+}
+rootProject.name = "demo"
+"""
+
+
+def test_settings_file_dependency_records_kept():
+    """A settings file that does declare a dependency (a buildscript classpath)
+    keeps producing its record: the settings row collects repositories *in
+    addition to* the ordinary gradle record scan, never instead of it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "settings.gradle.kts", SETTINGS_KTS_CLASSPATH)
+        scan = scan_folder(tmp)
+    names = {(r["name"], r["version"]) for r in scan["records"]}
+    assert ("org.foo:bar", "1.2.3") in names, scan["records"]
+    assert scan["maven_repositories"] == [
+        "https://settings-buildscript.example/m2"], scan["maven_repositories"]
 
 
 UNTERMINATED = """
@@ -574,6 +630,8 @@ TESTS = [
     test_settings_files_yield_no_dependency_records,
     test_settings_kts_plugin_block_repositories,
     test_settings_groovy_plugin_block_repositories,
+    test_settings_kts_multiline_uri_repository,
+    test_settings_file_dependency_records_kept,
     test_unterminated_block_yields_nothing,
     test_scan_folder_aggregates_and_dedupes,
     test_empty_scan_omits_maven_repositories,

@@ -126,9 +126,11 @@ def _parse_gitlab_manifest(path, rel_path, root, scan_state=None):
 # sidecar tracking.
 _MANIFEST_PATTERNS = (
     ("maven", ("pom*.xml",), parse_pom_records, False, False),
-    # settings.gradle(.kts) declares repositories, never dependencies; its
-    # row precedes the gradle row so the settings spellings dispatch here
-    # (the first matching row wins). The ecosystem key is the dispatch
+    # settings.gradle(.kts) declares dependency repositories (and, rarely,
+    # buildscript classpath dependencies); its row precedes the gradle row
+    # so the settings spellings dispatch here (the first matching row
+    # wins) and parse_settings_gradle runs the ordinary Gradle record scan
+    # in addition to the repository scan. The ecosystem key is the dispatch
     # bucket and must be unique per row, hence "gradle_settings" rather
     # than a second "gradle" row: two rows sharing a key would parse every
     # gradle file twice.

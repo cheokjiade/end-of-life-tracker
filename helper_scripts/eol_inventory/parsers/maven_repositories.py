@@ -15,8 +15,7 @@ import re
 from pathlib import Path
 
 from ..models import load_safe_xml, new_warning
-
-_POM_NS = "{http://maven.apache.org/POM/4.0.0}"
+from .java import parse_gradle_records
 
 # Repository URL declarations inside a `repositories { ... }` block, in the
 # three forms Gradle accepts: `url = uri("...")` (Kotlin DSL and Groovy),
@@ -211,20 +210,26 @@ def parse_pom_repositories(path, rel_path):
 
 
 def parse_settings_gradle(path, rel_path, root=None, scan_state=None):
-    """Discovery hook for ``settings.gradle(.kts)``: repositories only.
+    """Discovery hook for ``settings.gradle(.kts)``: repositories + records.
 
     Modern Gradle declares dependency repositories in the settings file
     under ``dependencyResolutionManagement { repositories { ... } }``
     (``pluginManagement`` repositories are plugin repos and stay
-    excluded). Settings files declare no dependencies, so this parser
-    returns no records; the URLs it finds are recorded in *scan_state*
-    for :func:`eol_inventory.discovery.scan_folder` to aggregate.
+    excluded). The URLs are recorded in *scan_state* for
+    :func:`eol_inventory.discovery.scan_folder` to aggregate.
+
+    Settings files rarely declare dependencies, but they can (a
+    ``buildscript { dependencies { classpath ... } }`` block), so the
+    ordinary Gradle record scan still runs: this row collects
+    repositories *in addition to* the records, never instead of them.
     """
     urls, warnings = parse_gradle_repositories(path, rel_path)
+    records, record_warnings = parse_gradle_records(path, rel_path)
+    warnings = list(warnings) + list(record_warnings)
     if scan_state is not None:
         state = scan_state.setdefault("gradle", {})
         collected = state.setdefault("repositories", [])
         for url in urls:
             if url not in collected:
                 collected.append(url)
-    return [], warnings
+    return records, warnings
