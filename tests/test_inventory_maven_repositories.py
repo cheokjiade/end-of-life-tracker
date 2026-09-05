@@ -400,24 +400,39 @@ rootProject.name = 'demo'
 """
 
 
+def _plugin_records(scan):
+    return [(r["group"], r["artifact"], r["version"], r["kind"])
+            for r in scan["records"]]
+
+
 def test_settings_kts_plugin_block_repositories():
-    """RETARGETED: the root script synthesized a gradle-plugin row from the
-    pluginManagement `id(...) version` declaration; plugin-id parsing is
-    pending Task 4 in the consolidation plan, so the assertion pins the
-    repository half plus today's no-record shape."""
+    """RETARGETED: the root script's (g, a, v, "gradle-plugin") tuple from
+    the pluginManagement `id(...) version` declaration is a record with
+    kind "plugin" now that Task 4 ported plugins-block parsing."""
     with tempfile.TemporaryDirectory() as tmp:
         _write(tmp, "settings.gradle.kts", SETTINGS_KTS_PLUGINS)
         scan = scan_folder(tmp)
-    assert scan["records"] == [], scan["records"]
+    assert _plugin_records(scan) == [
+        ("com.example.some-plugin", "some-plugin-gradle-plugin", "1.0.0",
+         "plugin"),
+    ], scan["records"]
     assert scan["maven_repositories"] == [
         "https://settings-deps.example/maven2"], scan["maven_repositories"]
 
 
 def test_settings_groovy_plugin_block_repositories():
+    """RETARGETED: the root asserted scan["java"] == [] only because it never
+    scanned settings.gradle for records (its dependency globs were
+    *.gradle.kts and build.gradle); the consolidated settings row treats
+    both spellings alike, so the Groovy file yields the same plugin record
+    as its kts twin."""
     with tempfile.TemporaryDirectory() as tmp:
         _write(tmp, "settings.gradle", SETTINGS_GROOVY_PLUGINS)
         scan = scan_folder(tmp)
-    assert scan["records"] == [], scan["records"]
+    assert _plugin_records(scan) == [
+        ("com.example.some-plugin", "some-plugin-gradle-plugin", "1.0.0",
+         "plugin"),
+    ], scan["records"]
     assert scan["maven_repositories"] == [
         "https://settings-deps.example/maven2"], scan["maven_repositories"]
 

@@ -334,6 +334,9 @@ def test_parse_gradle_records():
         ("org.jetbrains.kotlin", "kotlin-stdlib", "2.0.0", 12),
         ("com.h2database", "h2", "2.2.224", 13),
         ("org.acme", "single-quoted", "1.0.0", 15),
+        # RETARGETED: the fixture gained a Groovy map-notation declaration
+        # (group: 'org.slf4j', name: 'slf4j-api', version: '2.0.13').
+        ("org.slf4j", "slf4j-api", "2.0.13", 16),
     ]
     assert all(r["found_in"][0]["manifest"] == "gradle" for r in records)
     assert all(r["found_in"][0]["path"] == "gradle/build.gradle"
@@ -341,12 +344,20 @@ def test_parse_gradle_records():
     kts, warnings_kts = gc.parse_gradle_records(
         FIX / "gradle" / "build.gradle.kts", "gradle/build.gradle.kts")
     assert warnings_kts == []
-    assert [(r["artifact"], r["version"], r["found_in"][0]["line"])
+    # RETARGETED: the fixture's plugins block gained id("org.jetbrains.kotlin.jvm")
+    # version "1.9.22" (every dependency line moved down by one) and a
+    # platform("org.springframework.boot:spring-boot-dependencies:3.2.0")
+    # line; pass order is quoted, map/named, plugins, catalog references (the
+    # libs.commons.lang3 reference needs the catalog, so it is absent here).
+    assert [(r["artifact"], r["version"], r["kind"], r["found_in"][0]["line"])
             for r in kts] == [
-        ("kotlinx-coroutines-core", "1.8.1", 6),
-        ("spring-boot-gradle-plugin", "3.3.4", 8),
-        ("guava", "33.2.1-jre", 7),   # named form parsed in its own pass
+        ("kotlinx-coroutines-core", "1.8.1", "dependency", 7),
+        ("spring-boot-gradle-plugin", "3.3.4", "dependency", 9),
+        ("spring-boot-dependencies", "3.2.0", "dependency", 10),
+        ("guava", "33.2.1-jre", "dependency", 8),   # named form parsed in its own pass
+        ("kotlin-gradle-plugin", "1.9.22", "plugin", 3),
     ]
+    assert kts[-1]["found_in"][0]["locator"] == "plugin:org.jetbrains.kotlin.jvm"
     missing_rec, missing_warn = gc.parse_gradle_records(
         FIX / "gradle" / "nope.gradle", "gradle/nope.gradle")
     assert missing_rec == []
@@ -922,22 +933,38 @@ def test_generate_config_gradle():
         ("kotlin", "2.0"),          # kotlin-stdlib
         ("h2", "2.2.224"),
         ("single-quoted", "1.0.0"),
+        # RETARGETED: Groovy map-notation declaration added to build.gradle.
+        ("slf4j-api", "2.0.13"),
         # RETARGETED: org.jetbrains.kotlinx is not the kotlin language group;
         # it falls through to the Maven Central staleness fallback.
         ("kotlinx-coroutines-core", "1.8.1"),
         ("spring-boot", "3.3"),     # spring-boot-gradle-plugin via classpath
+        # RETARGETED: platform(...) BOM wrapper added to build.gradle.kts.
+        ("spring-boot", "3.2"),     # spring-boot-dependencies via platform()
         ("guava", "33.2.1-jre"),    # named form in the kts file
+        # RETARGETED: plugins-block id("org.jetbrains.kotlin.jvm") version
+        # "1.9.22" synthesizes org.jetbrains.kotlin:kotlin-gradle-plugin,
+        # which maps to the kotlin lifecycle like any dependency.
+        ("kotlin", "1.9"),
         # RETARGETED: the fixture gained gradle/libs.versions.toml and a
         # libs.commons.lang3 reference in the kts file, resolved through the
         # catalog into an ordinary Maven Central row.
         ("commons-lang3", "3.14.0"),
         ("spring-security", "6.3"),
     ]
+    kotlin_plugin = [p for p in prods
+                     if p.get("product") == "kotlin" and p["version"] == "1.9"]
+    assert kotlin_plugin[0]["_comment"] == (
+        "From build.gradle.kts (org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22)")
+    assert kotlin_plugin[0]["_found_in"] == [{
+        "path": "build.gradle.kts", "manifest": "gradle", "line": 3,
+        "locator": "plugin:org.jetbrains.kotlin.jvm"}]
     lang3 = [p for p in prods if p.get("artifact") == "commons-lang3"]
     assert lang3[0]["_comment"] == (
         "From build.gradle.kts (org.apache.commons:commons-lang3:3.14.0)")
     assert lang3[0]["_found_in"] == [{
-        "path": "build.gradle.kts", "manifest": "gradle", "line": 9,
+        # RETARGETED: line 9 -> 11 after the plugins-block and platform() lines.
+        "path": "build.gradle.kts", "manifest": "gradle", "line": 11,
         "locator": "dependency:org.apache.commons:commons-lang3"}]
     assert config["_inventory"]["manifests"] == [
         "build.gradle", "build.gradle.kts", "gradle/libs.versions.toml"]
@@ -945,7 +972,8 @@ def test_generate_config_gradle():
     assert guava[0]["_comment"] == (
         "From build.gradle.kts (com.google.guava:guava:33.2.1-jre)")
     assert guava[0]["_found_in"] == [{
-        "path": "build.gradle.kts", "manifest": "gradle", "line": 7,
+        # RETARGETED: line 7 -> 8 after the plugins-block line.
+        "path": "build.gradle.kts", "manifest": "gradle", "line": 8,
         "locator": "dependency:com.google.guava:guava"}]
     boot = [p for p in prods if p.get("product") == "spring-boot"]
     assert boot[0]["_comment"] == (
@@ -957,7 +985,8 @@ def test_generate_config_gradle():
     assert kotlinx[0]["source"] == "maven_central"
     assert kotlinx[0]["version"] == "1.8.1"
     assert kotlinx[0]["_found_in"] == [{
-        "path": "build.gradle.kts", "manifest": "gradle", "line": 6,
+        # RETARGETED: line 6 -> 7 after the plugins-block line.
+        "path": "build.gradle.kts", "manifest": "gradle", "line": 7,
         "locator": "dependency:org.jetbrains.kotlinx:kotlinx-coroutines-core"}]
     mc = [(p["group"], p["artifact"], p["version"]) for p in prods
           if p.get("source") == "maven_central"]

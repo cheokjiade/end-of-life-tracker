@@ -224,6 +224,11 @@ def generate_config(scan, project_name, include_transitive=False):
                 f"(<{record['name']}>{v}</{record['name']}>)"))
 
     # --- Java/Maven dependencies ---------------------------------------------
+    # Every non-property java record maps through the coordinate rules:
+    # "dependency" and "parent" records from POM and Gradle files, and
+    # "plugin" records from Gradle plugins blocks (synthesized plugin
+    # artifact coordinates are mapped exactly like declared dependencies,
+    # as the root generator did for its "gradle-plugin" kind).
     java_records = [r for r in records
                     if r["ecosystem"] == "java" and r["kind"] != "property"]
     if java_records:

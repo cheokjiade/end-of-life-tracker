@@ -10,8 +10,11 @@ Behavior notes preserved from the original generator:
     - test/provided/system-scoped Maven dependencies are skipped entirely;
     - versionless dependencies (managed by a parent/BOM) are skipped
       silently — the parent or BOM entry already carries the platform;
-    - Gradle declarations are only matched when double-quoted, and the
-      named form only with `group = "..."` syntax.
+    - Gradle declarations match in both quote styles: the quoted
+      "g:a:v" form (optionally wrapped in platform(...)), Groovy map
+      notation (group: 'g', name: 'a', version: 'v'), the Kotlin DSL
+      named-argument form (group = "g", ...), plugins-block entries
+      (kind "plugin"), and libs.* version-catalog references.
 """
 
 import re
@@ -160,16 +163,87 @@ def parse_pom_records(path, rel_path):
 # Gradle parser (regex — covers the common patterns, not every edge case)
 # ---------------------------------------------------------------------------
 
+# The (?<!\w) guard pins configuration-name matching to word starts, so test
+# configurations (testImplementation, testApi, ...) and any longer word that
+# merely contains a configuration name never match — independent of case.
 _GRADLE_PATTERN_QUOTED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
-    r'(?P<quote>["\'])(?P<group>[^:"\'\s]+):'
-    r'(?P<artifact>[^:"\'\s]+):(?P<version>[^"\'\s]+)(?P=quote)'
+    r'(?<!\w)(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*'
+    r'(?:\(\s*)?(?:platform\s*\(\s*)?([\'"])'
+    r'([^:\'"\s]+):([^:\'"\s]+):([^\'"\s]+)\1'
 )
-_GRADLE_PATTERN_NAMED = re.compile(
-    r'(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*'
-    r'group\s*=\s*"([^"]+)"\s*,\s*name\s*=\s*"([^"]+)"\s*,\s*version\s*=\s*"([^"]+)"',
+# Groovy map notation (`group: 'g', name: 'a', version: 'v'`) and the Kotlin
+# DSL named-args form (`group = "g", ...`) share a field grammar; match the
+# whole three-field statement, then extract the fields by name. classpath
+# (buildscript blocks) uses the same notation as the dependency
+# configurations.
+_GRADLE_PATTERN_MAP = re.compile(
+    r'(?<!\w)(?:implementation|api|compileOnly|runtimeOnly|classpath)\s*\(?\s*'
+    r'(?:(?:group|name|version)\s*[:=]\s*[\'"][^\'"]*[\'"]\s*,?\s*){3}',
     re.DOTALL,
 )
+_GRADLE_MAP_FIELD = re.compile(r'(group|name|version)\s*[:=]\s*[\'"]([^\'"]*)[\'"]')
+# Plugins blocks: id("g.a") version "v" / id "g.a" version "v" — the id must
+# contain a dot so bare plugin ids like `id 'java'` are ignored — and the
+# Kotlin alias form kotlin("jvm") version "v".
+_GRADLE_PATTERN_PLUGIN_ID = re.compile(
+    r'\bid\s*\(?\s*([\'"])([^\'"\s]*\.[^\'"\s]*)\1\s*\)?\s*'
+    r'version\s*([\'"])([^\'"\s]+)\3'
+)
+_GRADLE_PATTERN_PLUGIN_KOTLIN = re.compile(
+    r'\bkotlin\s*\(\s*([\'"])([^\'"\s]+)\1\s*\)\s*'
+    r'version\s*([\'"])([^\'"\s]+)\3'
+)
+
+
+# Known-exception table for plugin ids whose published Maven coordinates do
+# NOT follow the generic rule (group = full plugin id, artifact = last
+# segment + "-gradle-plugin"). Checked before the generic synthesis; the
+# generic rule stays the best-effort fallback for unknown ids, so a wrong
+# guess surfaces as a visible tracker-health error row ("Artifact ... not
+# found on Maven Central or the declared repositories") on every run - the
+# repo's fail-loud philosophy treats that as review signal; add newly
+# diverged ids here.
+_GRADLE_PLUGIN_COORD_ALIASES = {
+    # id("io.spring.dependency-management") publishes as
+    # io.spring.gradle:dependency-management-plugin (verified live); the
+    # generic guess is a permanent not-found error row.
+    "io.spring.dependency-management": ("io.spring.gradle",
+                                        "dependency-management-plugin"),
+}
+
+
+def _gradle_plugin_coords(plugin_id):
+    """Best-effort Maven coordinates for a Gradle plugin id.
+
+    The full plugin id conventionally names the real plugin artifact's group
+    (org.springframework.boot:spring-boot-gradle-plugin,
+    io.gitlab.arturbosch.detekt:detekt-gradle-plugin, ...); Kotlin plugin ids
+    and aliases all ship inside org.jetbrains.kotlin:kotlin-gradle-plugin.
+    Ids in _GRADLE_PLUGIN_COORD_ALIASES publish elsewhere and map through
+    that table first; every other id keeps the generic best-effort synthesis
+    below, so a mismatching guess becomes a visible tracker-health error row
+    to review rather than a silently wrong date.
+    """
+    if plugin_id == "org.jetbrains.kotlin" or plugin_id.startswith("org.jetbrains.kotlin."):
+        return "org.jetbrains.kotlin", "kotlin-gradle-plugin"
+    if plugin_id in _GRADLE_PLUGIN_COORD_ALIASES:
+        return _GRADLE_PLUGIN_COORD_ALIASES[plugin_id]
+    return plugin_id, plugin_id.rsplit(".", 1)[-1] + "-gradle-plugin"
+
+
+def _split_gradle_version_suffix(version):
+    """Split a Gradle version token into (base, suffix).
+
+    A 4th colon field is a classifier ('1.0.0:jar' -> ('1.0.0', ':jar'))
+    and '@ext' names an artifact extension ('1.0@jar' -> ('1.0', '@jar'));
+    both describe the same published version as the base. Anything else
+    returns (version, '').
+    """
+    for separator in (":", "@"):
+        if separator in version:
+            base, tail = version.split(separator, 1)
+            return base, separator + tail
+    return version, ""
 
 
 def _has_gradle_interpolation(value):
@@ -253,16 +327,23 @@ def parse_gradle_records(path, rel_path, catalog=None):
     warnings = []
 
     def emit(group, artifact, version, line, interpolates=True,
-             version_spec=None):
+             version_spec=None, kind="dependency", locator=None):
         # A Groovy/Kotlin string interpolation is retained as a warning and
         # a versionless record; it is never emitted as an exact product.
         # *version_spec* (a resolved catalog reference) is kept on the
         # exact record as provenance of where the version came from.
         version = redact_urls(version)
-        if ((interpolates and _has_gradle_interpolation(version))
-                or not _is_exact_java_version(version)):
+        # A trailing :classifier or @ext names the same published version
+        # as its base; the base alone is the record's version when it is
+        # exact (an interpolated or otherwise inexact base keeps the whole
+        # token as the unresolved spec).
+        base, _suffix = _split_gradle_version_suffix(version)
+        interpolated = interpolates and _has_gradle_interpolation(base)
+        if not interpolated and _is_exact_java_version(base):
+            version = base
+        if interpolated or not _is_exact_java_version(version):
             record = new_record(
-                "java", f"{group}:{artifact}", version=None,
+                "java", f"{group}:{artifact}", version=None, kind=kind,
                 group=group, artifact=artifact, version_spec=version,
             )
             warnings.append(new_warning(
@@ -273,20 +354,40 @@ def parse_gradle_records(path, rel_path, catalog=None):
             if interpolates:
                 version = version.replace("\\$", "$")
             record = new_record(
-                "java", f"{group}:{artifact}", version=version,
+                "java", f"{group}:{artifact}", version=version, kind=kind,
                 group=group, artifact=artifact, version_spec=version_spec,
             )
-        add_location(record, rel_path, "gradle",
-                     line=line, locator=f"dependency:{group}:{artifact}")
+        add_location(record, rel_path, "gradle", line=line,
+                     locator=locator or f"dependency:{group}:{artifact}")
         records.append(record)
 
+    # Pass order mirrors the root generator: quoted, map/named, plugins-block
+    # ids, kotlin(...) plugin aliases, then catalog references.
     for m in _GRADLE_PATTERN_QUOTED.finditer(scan_text):
         line = scan_text.count("\n", 0, m.start()) + 1
-        emit(m.group("group"), m.group("artifact"), m.group("version"),
-             line, interpolates=m.group("quote") == '"')
-    for m in _GRADLE_PATTERN_NAMED.finditer(scan_text):
+        emit(m.group(2), m.group(3), m.group(4), line,
+             interpolates=m.group(1) == '"')
+    for m in _GRADLE_PATTERN_MAP.finditer(scan_text):
+        fields = {}
+        version_quote = None
+        for field in _GRADLE_MAP_FIELD.finditer(m.group(0)):
+            fields[field.group(1)] = field.group(2)
+            if field.group(1) == "version":
+                version_quote = field.group(0)[-1]
+        if len(fields) == 3:
+            line = scan_text.count("\n", 0, m.start()) + 1
+            emit(fields["group"], fields["name"], fields["version"], line,
+                 interpolates=version_quote == '"')
+    for m in _GRADLE_PATTERN_PLUGIN_ID.finditer(scan_text):
         line = scan_text.count("\n", 0, m.start()) + 1
-        emit(m.group(1), m.group(2), m.group(3), line)
+        group, artifact = _gradle_plugin_coords(m.group(2))
+        emit(group, artifact, m.group(4), line, interpolates=m.group(3) == '"',
+             kind="plugin", locator=f"plugin:{m.group(2)}")
+    for m in _GRADLE_PATTERN_PLUGIN_KOTLIN.finditer(scan_text):
+        line = scan_text.count("\n", 0, m.start()) + 1
+        emit("org.jetbrains.kotlin", "kotlin-gradle-plugin", m.group(4), line,
+             interpolates=m.group(3) == '"', kind="plugin",
+             locator=f"plugin:org.jetbrains.kotlin.{m.group(2)}")
     if catalog is not None:
         aliases, bundles = catalog
         for m in _CATALOG_REF_RE.finditer(scan_text):
