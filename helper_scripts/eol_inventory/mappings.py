@@ -257,8 +257,6 @@ _NPM_MAPPINGS = {
                                                         f"Next.js {_major(v)}"),
     "nuxt":                        lambda v: _eol_entry("nuxt", _major(v),
                                                         f"Nuxt {_major(v)}"),
-    "typescript":                  lambda v: _eol_entry("typescript", _major_minor(v),
-                                                        f"TypeScript {_major_minor(v)}"),
     "node":                        lambda v: _eol_entry("nodejs", _major(v),
                                                         f"Node.js {_major(v)}"),
     "express":                     lambda v: _eol_entry("express", _major(v),

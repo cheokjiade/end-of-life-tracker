@@ -131,26 +131,26 @@ def test_java_mappings():
 # ---------------------------------------------------------------------------
 
 def test_npm_mappings():
-    # RETARGETED: the root generator dropped `typescript` from its table
-    # (endoflife.date has no typescript product) and asserted
-    # `"typescript" not in _NPM_MAPPINGS`. The inventory table keeps its own
-    # typescript rule, so the assertion is retargeted to pin that rule.
-    assert "typescript" in _NPM_MAPPINGS, sorted(_NPM_MAPPINGS)
-    entry = _map_npm_dep("typescript", "5.9.2")
-    assert entry["product"] == "typescript" and entry["version"] == "5.9", entry
-    print("OK typescript keeps the inventory table's own mapping")
+    # RETARGETED (Task 5 ruling): `typescript` is not an endoflife.date
+    # product -- the root generator dropped it in bb0e2ca and asserted
+    # `"typescript" not in _NPM_MAPPINGS`. The inventory table had kept a
+    # rule that could only ever yield runtime error rows, so it is dropped
+    # too and the original root assertion is restored.
+    assert "typescript" not in _NPM_MAPPINGS, sorted(_NPM_MAPPINGS)
+    assert _map_npm_dep("typescript", "5.9.2") is None
 
-    # RETARGETED: the root generator left typescript unmapped, so an exact
-    # typescript pin landed in _skipped_npm_packages with no product row. The
-    # inventory maps it, so the same scan now yields exactly one row.
+    # RETARGETED (Task 5 ruling): with no lifecycle product, an exact
+    # typescript pin falls through to the npm registry release-recency row
+    # the inventory gives every unmapped exact package.
     record = new_record("node", "typescript", version="5.9.2", scope="dev")
     add_location(record, "package.json", "npm",
                  locator="devDependencies.typescript")
     config = generate_config(_scan([record], ["package.json"]), "demo")
     assert not config.get("_skipped_npm_packages"), config
     rows = _rows(config)
-    assert [r["product"] for r in rows] == ["typescript"], rows
-    print("OK typescript dependency produces one inventory row")
+    assert [(r.get("source"), r.get("package")) for r in rows] == [
+        ("npm_registry", "typescript")], rows
+    print("OK typescript has no lifecycle product; it gets a registry row")
 
     # Next.js cycles on endoflife.date are major-only ('16', '15', ...): a
     # major.minor cycle string made every lookup fail with

@@ -183,8 +183,10 @@ def test_map_npm_dep():
         "product": "nextjs", "version": "14", "label": "Next.js 14"}
     assert gc._map_npm_dep("nuxt", "^3.11.0") == {
         "product": "nuxt", "version": "3", "label": "Nuxt 3"}
-    assert gc._map_npm_dep("typescript", "^5.4.5") == {
-        "product": "typescript", "version": "5.4", "label": "TypeScript 5.4"}
+    # RETARGETED (Task 5 ruling): endoflife.date has no typescript product,
+    # so the mapping table has no typescript rule (unmapped exact pins get an
+    # npm_registry row instead).
+    assert gc._map_npm_dep("typescript", "^5.4.5") is None
     assert gc._map_npm_dep("node", ">=18 <21") == {
         "product": "nodejs", "version": "18", "label": "Node.js 18"}
     assert gc._map_npm_dep("express", "^4.19.2") == {
@@ -1045,8 +1047,11 @@ def test_generate_config_node():
              "locator": "dependencies.react"},
             {"path": "package.json", "manifest": "npm",
              "locator": "dependencies.react-dom"}]}]
-    ts = [p for p in prods if p.get("product") == "typescript"]
-    assert ts and ts[0]["version"] == "5.4"
+    # RETARGETED (Task 5 ruling): typescript is not an endoflife.date
+    # product, so the devDependency lands in the npm_registry rows below.
+    assert [p for p in prods if p.get("product") == "typescript"] == []
+    assert [p["version"] for p in prods
+            if p.get("package") == "typescript"] == ["5.4.5"]
     # remaining exact direct packages become npm_registry release-recency
     # rows (lock-resolved or pinned), with merged declaration provenance
     axios = [p for p in prods if p.get("package") == "axios"]
