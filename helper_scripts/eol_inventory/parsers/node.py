@@ -6,7 +6,16 @@ version directly. Every other specification -- semver ranges (``^``/``~``),
 references -- resolves ONLY through sibling npm lock evidence
 (npm-shrinkwrap.json preferred over package-lock.json, npm semantics);
 without lock evidence the specification is kept in ``version_spec`` and a
-structured warning is raised. Versions are never guessed from ranges.
+structured warning is raised. Package versions are never guessed from
+ranges.
+
+``engines.node`` is the one exception: a Node.js engine constraint names
+the runtime's release line rather than a resolvable package, and its
+lifecycle cycle is the leading major of the range. The leading concrete
+version of the range is therefore recorded (``">=18 <21"`` -> ``18``,
+``"^20.0.0"`` -> ``20.0.0``) while the original range stays in
+``version_spec``; a range with no numeric leading segment (``"*"``,
+``"latest"``) still yields no version and a structured warning.
 
 The lock file is a SIBLING of the parsed package.json (same directory);
 discovery never walks it as a candidate, but a lock the scan actually
@@ -30,6 +39,7 @@ from ..redact import hosted_git_placeholder, ssh_placeholder
 _EXACT_VERSION_RE = re.compile(
     r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?(?:\+[0-9A-Za-z.\-]+)?$")
 _CONCRETE_NODE_VERSION_RE = re.compile(r"^v?\d+(?:\.\d+){0,2}$")
+_NODE_RANGE_LEAD_RE = re.compile(r"^[\^~>=<\s]*v?(\d+(?:\.\d+)*)")
 
 _SHRINKWRAP_SIBLING = "npm-shrinkwrap.json"
 _LOCK_SIBLING = "package-lock.json"
@@ -151,6 +161,18 @@ def _spec_warning(name, spec, rel_path):
         f"no lock evidence for {name} ({spec}); range preserved, not guessed")
 
 
+def _node_engine_range_version(spec):
+    """Leading concrete version of an engines.node range, or None.
+
+    ``">=18 <21"`` -> ``"18"``, ``"^20.0.0"`` -> ``"20.0.0"``,
+    ``"18.x"`` -> ``"18"``, ``"^18 || ^20"`` -> ``"18"``. Specifications
+    with no numeric leading segment (``"*"``, ``"latest"``, a URL) return
+    None so the runtime stays unresolved rather than guessed.
+    """
+    match = _NODE_RANGE_LEAD_RE.match(spec or "")
+    return match.group(1) if match else None
+
+
 def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
     """Parse package.json; return (records, warnings).
 
@@ -206,13 +228,21 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
             record = new_record(
                 "node", "node", version=version, kind="runtime")
         else:
-            record = new_record(
-                "node", "node", version=None, version_spec=spec,
-                kind="runtime")
-            warnings.append(new_warning(
-                "unresolved_version", rel_path,
-                f"engines.node has no exact version ({spec}); "
-                "specification recorded, not guessed"))
+            lead = _node_engine_range_version(spec)
+            if lead is not None:
+                # The engine constraint's release line is its leading major;
+                # the range itself is preserved in version_spec.
+                record = new_record(
+                    "node", "node", version=lead, version_spec=spec,
+                    kind="runtime")
+            else:
+                record = new_record(
+                    "node", "node", version=None, version_spec=spec,
+                    kind="runtime")
+                warnings.append(new_warning(
+                    "unresolved_version", rel_path,
+                    f"engines.node has no exact version ({spec}); "
+                    "specification recorded, not guessed"))
         if record is not None:
             add_location(record, rel_path, "npm", locator="engines.node")
             records.append(record)

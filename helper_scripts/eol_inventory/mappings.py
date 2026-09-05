@@ -49,6 +49,31 @@ def _mc_entry(group, artifact, version, label):
     }
 
 
+_SHIBBOLETH_REPOSITORY = (
+    "https://build.shibboleth.net/nexus/content/repositories/releases")
+
+
+def _jackson_artifact_title(artifact):
+    """'jackson-databind' -> 'Databind'; 'jackson-bom' -> 'BOM'; 'foo' -> 'Foo'."""
+    body = artifact[len("jackson-"):] if artifact.startswith("jackson-") else artifact
+    part = body.split("-", 1)[0] if body else artifact
+    if part.lower() == "bom":
+        return "BOM"
+    return part.capitalize() if part else artifact
+
+
+def _shibboleth_mc_entry(group, artifact, version):
+    entry = _mc_entry(group, artifact, version, f"{artifact} {version}")
+    entry["repository"] = _SHIBBOLETH_REPOSITORY
+    note = ("Hosted on the Shibboleth repository, not Maven Central; each "
+            "major version's support ends with its Shibboleth IdP release "
+            "train")
+    if group == "org.opensaml":
+        note += " (OpenSAML 4 EOL 2024-09-01)"
+    entry["policy_note"] = note + "."
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Java group:artifact -> tracker entry mappings
 #
@@ -86,9 +111,11 @@ _JAVA_MAPPINGS = [
     (
         lambda g, a: g.startswith("com.fasterxml.jackson"),
         lambda g, a, v: {
-            "source":  "jackson_lifecycle",
-            "version": _major_minor(v),
-            "label":   f"Jackson {_major_minor(v)}",
+            "source":   "jackson_lifecycle",
+            "group":    g,
+            "artifact": a,
+            "version":  _major_minor(v),
+            "label":    f"Jackson {_jackson_artifact_title(a)} {_major_minor(v)}",
         },
     ),
     (
@@ -110,9 +137,16 @@ _JAVA_MAPPINGS = [
         },
     ),
     (
-        lambda g, a: g.startswith("org.jetbrains.kotlin"),
+        lambda g, a: g == "org.jetbrains.kotlin",
         lambda g, a, v: _eol_entry("kotlin", _major_minor(v),
                                    f"Kotlin {_major_minor(v)}"),
+    ),
+    # OpenSAML / Shibboleth artifacts are distributed from the Shibboleth
+    # repository, not Maven Central (since OpenSAML 3).
+    (
+        lambda g, a: (g == "org.opensaml" or g == "net.shibboleth"
+                      or g.startswith("net.shibboleth.")),
+        lambda g, a, v: _shibboleth_mc_entry(g, a, v),
     ),
     # Skip junk we don't want to track
     (
@@ -178,6 +212,33 @@ _POM_PROPERTY_MAPPINGS = {
 # back to the npm registry provider in config_writer.
 # ---------------------------------------------------------------------------
 
+
+def _vue_entry(version):
+    """vue -> endoflife.date entry, or None when the spec must be skipped.
+
+    endoflife.date's vue cycles are major.minor ('3.5', '3.4', '3.3',
+    '2.7', ... '2.0') plus the bare-major cycle '1'; there are no cycles
+    '3', '2' or '1.0' (verified live against /api/vue.json). A bare-major
+    spec ('^3', '3', '2') must therefore not be guessed into a cycle -
+    return None so the package stays unmapped - while a numeric 1.x.y pin
+    ('1.0', '1.2.3') maps to the bare-major cycle '1' (label 'Vue 1'),
+    since no 1.x minor cycles exist. Both the major and minor segments
+    must be numeric before any mapping: a range-style spec ('3.x', '3.X',
+    '2.x', '1.x', '1.x.y') has no matching cycle at all, so skipping it is
+    safer than a doomed row. (Unlike the root generator, a v-prefixed spec
+    such as 'v3.5.3' does map here: this package's _clean_version strips a
+    leading 'v', so the major segment is numeric by the time it arrives.)
+    """
+    parts = (version or "").split(".")
+    if len(parts) < 2:
+        return None
+    if not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    if parts[0] == "1":
+        return _eol_entry("vue", "1", "Vue 1")
+    return _eol_entry("vue", _major_minor(version), f"Vue {_major_minor(version)}")
+
+
 _NPM_MAPPINGS = {
     "react":                       lambda v: _eol_entry("react", _major(v),
                                                         f"React {_major(v)}"),
@@ -186,12 +247,14 @@ _NPM_MAPPINGS = {
     # provenance of every discovered package.
     "react-dom":                   lambda v: _eol_entry("react", _major(v),
                                                         f"React {_major(v)}"),
-    "vue":                         lambda v: _eol_entry("vue", _major(v),
-                                                        f"Vue {_major(v)}"),
+    "vue":                         _vue_entry,
     "@angular/core":               lambda v: _eol_entry("angular", _major(v),
                                                         f"Angular {_major(v)}"),
-    "next":                        lambda v: _eol_entry("nextjs", _major_minor(v),
-                                                        f"Next.js {_major_minor(v)}"),
+    # endoflife.date nextjs cycles are major-only ('16', '15', ...): a
+    # major.minor cycle string makes every lookup fail with
+    # "Cycle '14.2' not found".
+    "next":                        lambda v: _eol_entry("nextjs", _major(v),
+                                                        f"Next.js {_major(v)}"),
     "nuxt":                        lambda v: _eol_entry("nuxt", _major(v),
                                                         f"Nuxt {_major(v)}"),
     "typescript":                  lambda v: _eol_entry("typescript", _major_minor(v),

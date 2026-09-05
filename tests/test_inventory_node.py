@@ -211,13 +211,17 @@ def test_lock_v1_legacy_dependencies_tree():
 def test_unresolved_specs_preserved_with_typed_warnings():
     records, warnings = _parse("unlocked", "package.json")
 
+    # RETARGETED: engines.node names the runtime's release line, not a
+    # resolvable package, so a range now records its leading concrete version
+    # (the range itself stays in version_spec) and raises no warning. Package
+    # specifications below are unchanged: they are still never guessed.
     node = _one(records, "node")
-    assert node["kind"] == "runtime" and node["version"] is None
+    assert node["kind"] == "runtime" and node["version"] == "18"
     assert node["version_spec"] == ">=18 <21"
     assert node["found_in"] == [{
         "path": "unlocked/package.json", "manifest": "npm",
         "locator": "engines.node"}]
-    assert _has_warning(warnings, "unresolved_version", "engines.node")
+    assert not _has_warning(warnings, "unresolved_version", "engines.node")
     assert _has_warning(warnings, "unresolved_version", "not guessed")
     assert not _has_warning(warnings, "parse_error", "")
 
@@ -312,6 +316,29 @@ def test_nvmrc_and_wrong_typed_package_fields():
         assert warnings == []
         assert [(r["name"], r["version"], r["kind"]) for r in records] == [
             ("node", "20.15.1", "runtime")]
+
+        # engines.node ranges resolve to their leading concrete version; the
+        # range is preserved in version_spec and raises no warning.
+        for spec, version in ((">=18 <21", "18"), ("^20.0.0", "20.0.0"),
+                              ("18.x", "18"), ("^18 || ^20", "18")):
+            package.write_text(json.dumps({"engines": {"node": spec}}),
+                               encoding="utf-8")
+            records, warnings = node_parser.parse_package_json_records(
+                package, "package.json", root=root)
+            assert warnings == [], (spec, warnings)
+            assert [(r["version"], r["version_spec"]) for r in records] == [
+                (version, spec)], spec
+
+        # a specification with no numeric leading segment stays unresolved
+        for spec in ("*", "latest", ">=lts"):
+            package.write_text(json.dumps({"engines": {"node": spec}}),
+                               encoding="utf-8")
+            records, warnings = node_parser.parse_package_json_records(
+                package, "package.json", root=root)
+            assert [(r["version"], r["version_spec"]) for r in records] == [
+                (None, spec)], spec
+            assert _has_warning(
+                warnings, "unresolved_version", "engines.node"), spec
 
         package.write_text(json.dumps({
             "engines": {"node": {"bad": True}},
