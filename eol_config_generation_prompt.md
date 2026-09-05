@@ -99,7 +99,7 @@ Top-level object:
 - `alert_thresholds_days`: keep `[30, 60, 90]` unless the inputs imply otherwise.
 - `maven_repositories` (optional): a list of Maven 2 repository base URLs declared in
   the project's manifests (pom `<repositories>`, Gradle `repositories { }` blocks in
-  build and settings files). `generate_config.py` collects and dedupes them
+  build and settings files). `helper_scripts/generate_config.py` collects and dedupes them
   automatically. At load the runtime offers the first 8 (config order) to every
   `maven_central` entry that has neither an explicit `repository` nor its own
   `repositories` list, so artifacts not present on Maven Central at all still
@@ -160,7 +160,7 @@ slug from the product page): `python`, `nodejs`, `go`, `php`, `ruby`, `nginx`,
 `apache-groovy`. If unsure a slug exists, **flag it** rather than invent it.
 
 > Note: `typescript` is NOT currently served at `/api/typescript.json` — track it via
-> `npm_registry` (`package: typescript`) instead. `generate_config.py` no longer
+> `npm_registry` (`package: typescript`) instead. `helper_scripts/generate_config.py` no longer
 > auto-maps it: a `typescript` npm dependency lands in `_skipped_npm_packages`.
 
 **2. `aws_rds_scrape`.** For AWS RDS / Aurora **PostgreSQL minor** versions (endoflife.date
@@ -393,9 +393,9 @@ Apply this decision order per component you find:
     add an ASCII `policy_note` describing its release/support policy. Verify the claim before
     writing. Do not add notes to ordinary libraries.
 
-### Static scanner coverage (generate_config.py)
+### Static scanner coverage (helper_scripts/generate_config.py)
 
-For clean dependency folders, `python generate_config.py <folder> --name <project>` parses
+For clean dependency folders, `python helper_scripts/generate_config.py <folder> --name <project>` parses
 these manifest forms automatically; anything the manifests use outside this list must be
 extracted manually (the scanner silently misses it):
 
@@ -467,7 +467,7 @@ absence.
 ### --resolve-transitive (optional full-graph scan)
 
 By default the scanner reads **declared** dependencies only. With
-`python generate_config.py <folder> --name <project> --resolve-transitive` the full
+`python helper_scripts/generate_config.py <folder> --name <project> --resolve-transitive` the full
 dependency graph is merged into the scan, resolved per ecosystem from the real sources
 (never hand-rolled — only the real tools resolve scopes, BOMs, platforms, and version
 catalogs accurately):
@@ -489,7 +489,7 @@ catalogs accurately):
 notes the transitive provenance, e.g. `Transitive via mvn (g:a:v)`; dedupe applies and a
 direct declaration wins), but **unmapped transitives never create rows** — no
 `maven_central` fallback, no `_skipped_npm_packages` entries. They are records-only in
-`_discovered_dependencies` (outcome `unmapped-transitive (tracked in records only)`).
+`_inventory.declarations` (outcome `unmapped-transitive (tracked in records only)`).
 This keeps `products` reviewable and protects the Lambda time budget (R-04): a full
 graph can be hundreds of artifacts and must not flood the runnable set. When the tool is
 missing from PATH, fails, or times out, that manifest's resolution is skipped with one
@@ -497,14 +497,14 @@ stderr warning and a `skipped: transitive resolution unavailable (<tool> not on 
 failed)` record — generation completes. Without the flag the scan is byte-identical to
 the direct-deps-only behavior and starts no subprocess.
 
-### _discovered_dependencies (the complete picture)
+### _inventory.declarations (the complete picture)
 
 A generated config carries two views: `products` is the **deduped runnable set** (first
-declaration wins), and the top-level `_discovered_dependencies` list records **every**
-parsed declaration (tracked, duplicate, skipped, or unmapped) so nothing the manifests
-contained is silently dropped (section dividers are not declarations and get no record).
-The `_comment` header includes a one-line tally, e.g. `Declarations discovered: 16
-(tracked 6, duplicates 1, skipped 8, unmapped 1)`. Review it after generation: every
+declaration wins), and `_inventory.declarations` records **every** parsed declaration
+(tracked, duplicate, skipped, or unmapped) so nothing the manifests contained is
+silently dropped (section dividers are not declarations and get no record).
+`_inventory.summary.declarations` carries the tally: `total` plus `by_outcome` counts
+keyed by the outcome class. Review it after generation: every
 `skipped:`/`unmapped:`/`duplicate-of:` record is a potential manual entry. When building a
 config by hand (the LLM path below), keep the runnable set clean the same way and list
 non-tracked declarations for review instead of dropping them.

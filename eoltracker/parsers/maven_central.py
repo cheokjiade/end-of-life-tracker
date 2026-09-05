@@ -51,10 +51,10 @@ the whole chain yields nothing the row is a not-found error naming the
 declared repositories (or, when the artifact itself resolved on Central,
 an unknown row naming them); when instead the artifact resolved on a
 fallback but the version did not, the unknown row names that winning
-host, not the repository list. generate_config.py emits a config-level
-"maven_repositories" list that handler.py stamps onto entries lacking an
-explicit 'repository' (capped at 8 at load time), so hand-written configs
-can use the same entry-level 'repositories' key directly. An explicit
+host, not the repository list. helper_scripts/generate_config.py emits a
+config-level "maven_repositories" list that handler.py stamps onto entries
+lacking an explicit 'repository' (capped at 8 at load time), so hand-written
+configs can use the same entry-level 'repositories' key directly. An explicit
 'repository' keeps the single-repository behavior with no chain.
 """
 
