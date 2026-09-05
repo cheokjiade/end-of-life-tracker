@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO / "helper_scripts"))
 from eol_inventory.mappings import _map_npm_dep  # noqa: E402
 
 FIXTURES = REPO / "tests" / "fixtures" / "generate_config"
-PENDING_CATEGORIES = {"declarations"}
+PENDING_CATEGORIES = set()
 
 # `samples/` holds loose pom files, not project directories; neither generator
 # is meant to scan it as a project root.
@@ -80,20 +80,93 @@ def _root_config(fixture, out):
 
 
 def _helper_config(fixture, out):
-    r = _run(
-        [
-            str(REPO / "helper_scripts" / "generate_config.py"),
-            str(fixture),
-            "--name",
-            "parity",
-            "--output",
-            str(out),
-            "--include-transitive",
-        ],
-        REPO,
-    )
+    """The consolidated scanner's output, run exactly like the root.
+
+    Same --resolve-transitive under an empty PATH: mvn and gradle cannot be
+    found, so both generators degrade to lockfile parsing and record the
+    unavailable build-tool resolution, and no external build tool ever runs
+    from the test suite.
+    """
+    with tempfile.TemporaryDirectory() as empty_path:
+        r = _run(
+            [
+                str(REPO / "helper_scripts" / "generate_config.py"),
+                str(fixture),
+                "--name",
+                "parity",
+                "--output",
+                str(out),
+                "--resolve-transitive",
+            ],
+            REPO,
+            extra_env={"PATH": empty_path},
+        )
     assert r.returncode == 0, r.stderr
     return json.loads(out.read_text(encoding="utf-8"))
+
+
+# --- Declaration identity translation ---------------------------------------
+# Both generators record every parsed declaration, but the consolidated
+# scanner records one declaration per normalized record while the root
+# script recorded one per raw parser hit. Four documented differences are
+# translated here rather than papered over; everything else must match.
+#
+# 1. Kind vocabulary. The normalized record model does not distinguish a
+#    <dependencyManagement> entry (root kind "managed-dep") or a version
+#    catalog alias (root kind "gradle-catalog") from a plain dependency,
+#    so those kinds compare as one class.
+# 2. File paths. The root kept only the manifest's basename; the
+#    consolidated scanner keeps the repo-relative path (strictly more
+#    information), so identities compare on the basename.
+# 3. npm lockfile packages. A package the lockfile only confirms is one
+#    record whose provenance carries both package.json and
+#    package-lock.json, not two declarations, so npm identities compare
+#    without the file. Packages only the lock names still have their own
+#    declaration and must be present.
+# 4. Kinds the consolidated scanner never records at all: pom
+#    dependencies with a test/provided/system <scope> and pom
+#    dependencies without a <version> are skipped in
+#    eol_inventory/parsers/java.py, so they are never records. They are
+#    listed in SKIPPED_ROOT_KINDS with the reason.
+_KIND_CLASS = {
+    "dep": "java-dependency",
+    "managed-dep": "java-dependency",
+    "gradle": "java-dependency",
+    "gradle-catalog": "java-dependency",
+    "gradle-plugin": "java-plugin",
+    "parent": "java-parent",
+    "property": "property",
+    "transitive-maven": "transitive-maven",
+    "transitive-gradle": "transitive-gradle",
+    "npm": "npm",
+    "npm-lock": "npm",
+}
+
+SKIPPED_ROOT_KINDS = {
+    "test-scope-dep": "pom test-scope dependencies are skipped at parse time",
+    "provided-scope-dep":
+        "pom provided-scope dependencies are skipped at parse time",
+    "system-scope-dep":
+        "pom system-scope dependencies are skipped at parse time",
+    "unversioned-dep":
+        "pom dependencies without a <version> are skipped at parse time",
+}
+
+
+def _declaration_identity(declaration):
+    """Comparable identity of one declaration (see the notes above)."""
+    kind = _KIND_CLASS.get(declaration.get("kind"), declaration.get("kind"))
+    decl = declaration.get("decl")
+    if kind == "npm":
+        return (decl, kind)
+    path = str(declaration.get("file") or "").replace("\\", "/")
+    return (decl, path.rsplit("/", 1)[-1], kind)
+
+
+def _declarations(declarations):
+    return {_declaration_identity(d) for d in declarations or []
+            if isinstance(d, dict)
+            and d.get("kind") not in SKIPPED_ROOT_KINDS}
 
 
 def _identity(entry):
@@ -190,13 +263,9 @@ def compare(fixture_dir):
             continue
         missing_skipped.append(str((name, version)))
     missing_skipped = sorted(missing_skipped)
-    decl_root = {
-        (d["decl"], d["file"], d["kind"]) for d in root.get("_discovered_dependencies") or []
-    }
-    decl_helper = {
-        (d["decl"], d["file"], d["kind"])
-        for d in (helper.get("_inventory") or {}).get("declarations") or []
-    }
+    decl_root = _declarations(root.get("_discovered_dependencies"))
+    decl_helper = _declarations(
+        (helper.get("_inventory") or {}).get("declarations"))
     return {
         "missing_products": missing_products,
         "missing_repositories": missing_repos,

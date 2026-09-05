@@ -323,8 +323,11 @@ def _merge_existing_config(existing, generated):
     for key, value in existing.items():
         # maven_repositories is regenerated, not curated: a fresh scan is
         # the truth about which repositories the project declares today.
+        # _discovered_dependencies is the retired root generator's
+        # declaration list: read tolerantly from an old config, never
+        # written back (its content now lives in _inventory.declarations).
         if key not in ("products", "_inventory", "_skipped_npm_packages",
-                       "maven_repositories"):
+                       "maven_repositories", "_discovered_dependencies"):
             merged[key] = value
     merged["products"] = products
     # Deep-copy the _inventory dict so the caller's generated dict is

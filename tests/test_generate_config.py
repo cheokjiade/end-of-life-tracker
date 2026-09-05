@@ -864,8 +864,11 @@ def test_generate_config_maven_multi():
     assert inv["warnings"] == []
     # RETARGETED: 11 products, not 10 - jackson-bom and jackson-databind are
     # separate per-artifact jackson_lifecycle rows now.
-    assert inv["summary"] == {"files": 2, "records": 15, "products": 11,
-                              "unmapped": 3, "warnings": 0, "indirect": 0}
+    assert inv["summary"] == {
+        "files": 2, "records": 15, "products": 11, "unmapped": 3,
+        "warnings": 0, "indirect": 0,
+        "declarations": {"total": 15, "by_outcome": {
+            "duplicate-of": 2, "tracked": 10, "unmapped": 3}}}
     # unmapped items keep their declaration sites and explicit reasons
     assert [(u["name"], u["reason"]) for u in inv["unmapped"]] == [
         ("com.example:inflight",
@@ -1021,7 +1024,8 @@ def test_generate_config_keeps_unresolved_mapped_pom_properties_visible():
     }]
     assert config["_inventory"]["summary"] == {
         "files": 1, "records": 1, "products": 0, "unmapped": 1,
-        "warnings": 1, "indirect": 0}
+        "warnings": 1, "indirect": 0,
+        "declarations": {"total": 1, "by_outcome": {"unmapped": 1}}}
 
 
 def test_generate_config_node():
@@ -1087,7 +1091,10 @@ def test_generate_config_node():
     assert all(p.get("package") != "loose-envify" for p in prods), prods
     assert config["_inventory"]["summary"] == {
         "files": 2, "records": 8, "products": 6, "unmapped": 0,
-        "warnings": 0, "indirect": 1}
+        "warnings": 0, "indirect": 1,
+        "declarations": {"total": 8, "by_outcome": {
+            "duplicate-of": 1, "tracked": 6,
+            "unmapped-transitive (tracked in records only)": 1}}}
 
     transitive = gc.generate_config(_scan("node"), "node-project",
                                     include_transitive=True)
@@ -1145,8 +1152,11 @@ def test_generate_config_mixed():
     # RETARGETED: the engines.node range was the only unmapped item and the
     # only warning; both are gone now that the range resolves to nodejs 20.
     assert inv["unmapped"] == []
-    assert inv["summary"] == {"files": 4, "records": 10, "products": 10,
-                              "unmapped": 0, "warnings": 0, "indirect": 0}
+    assert inv["summary"] == {
+        "files": 4, "records": 10, "products": 10, "unmapped": 0,
+        "warnings": 0, "indirect": 0,
+        "declarations": {"total": 10, "by_outcome": {
+            "duplicate-of": 1, "tracked": 9}}}
 
 
 def test_generate_config_no_inference_when_security_explicit():
@@ -2478,6 +2488,342 @@ def test_terraform_uses_positive_runtime_allowlist():
     assert "local.package_manifest_inputs" in terraform
 
 
+# ---------------------------------------------------------------------------
+# Declarations (_inventory.declarations)
+#
+# Moved from tests/test_generate_full_picture.py, which pinned the root
+# generator's `_discovered_dependencies`. Assertions are retargeted to
+# `config["_inventory"]["declarations"]`; the notes mark the places where
+# the consolidated scanner deliberately differs from the root script.
+# ---------------------------------------------------------------------------
+
+DECL_ROOT_POM = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <properties>
+    <tomcat.version>10.1.28</tomcat.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.17.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-codec-http</artifactId>
+      <version>4.1.111.Final</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.0</version>
+    </dependency>
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>[2.16.0,)</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>in-flight</artifactId>
+      <version>1.0-SNAPSHOT</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>placeholder</artifactId>
+      <version>${lib.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>internal.tools</groupId>
+      <artifactId>in-house</artifactId>
+      <version>1.2.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>4.0.1</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+DECL_MODULE_POM = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <dependencies>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-codec-http</artifactId>
+      <version>4.1.111.Final</version>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+DECL_CATALOG_TOML = """
+[libraries]
+commons-io = { module = "commons-io:commons-io", version = "2.16.1" }
+"""
+
+DECL_BUILD_GRADLE = """
+dependencies {
+    implementation libs.commons.io
+}
+"""
+
+DECL_PACKAGE_JSON = """{
+  "dependencies": {
+    "react": "18.2.0",
+    "vue": "3",
+    "lodash": "4.17.21"
+  }
+}
+"""
+
+# Declaration kinds the consolidated scanner emits for java and node
+# records: the root generator's vocabulary, kept so the parity gate can
+# compare declaration identities across both generators.
+DECL_KINDS = {
+    "parent", "dep", "gradle", "gradle-plugin", "property", "npm",
+    "npm-lock", "transitive-maven", "transitive-gradle",
+}
+
+
+def _decl_one(declarations, decl):
+    """The single declaration for *decl* (each appears exactly once)."""
+    hits = [d for d in declarations if d["decl"] == decl]
+    assert len(hits) == 1, (decl, hits)
+    return hits[0]
+
+
+def _decl_fixture_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "pom.xml").write_text(DECL_ROOT_POM, encoding="utf-8")
+        module = Path(tmp) / "module"
+        module.mkdir()
+        (module / "pom.xml").write_text(DECL_MODULE_POM, encoding="utf-8")
+        (Path(tmp) / "libs.versions.toml").write_text(
+            DECL_CATALOG_TOML, encoding="utf-8")
+        (Path(tmp) / "build.gradle").write_text(
+            DECL_BUILD_GRADLE, encoding="utf-8")
+        (Path(tmp) / "package.json").write_text(
+            DECL_PACKAGE_JSON, encoding="utf-8")
+        scan = gc.scan_folder(tmp)
+        return scan, gc.generate_config(scan, "fullpix")
+
+
+def test_declarations_cover_every_record():
+    scan, config = _decl_fixture_config()
+    declarations = config["_inventory"]["declarations"]
+    # Every record that enters generate_config yields exactly one
+    # declaration (the root script counted parsed declarations instead).
+    assert len(declarations) == len(scan["records"]), (
+        len(declarations), len(scan["records"]))
+    summary = config["_inventory"]["summary"]["declarations"]
+    assert summary["total"] == len(declarations), summary
+    assert sum(summary["by_outcome"].values()) == len(declarations), summary
+    assert set(summary["by_outcome"]) <= {
+        "tracked", "duplicate-of", "skipped", "unmapped",
+        "unmapped-transitive (tracked in records only)"}, summary
+
+    # Declarations are well-formed: known kinds, ASCII, no section dividers.
+    for d in declarations:
+        assert set(d) == {"decl", "file", "kind", "outcome"}, d
+        assert d["kind"] in DECL_KINDS, d
+        assert d["decl"] and not d["decl"].startswith("==="), d
+        assert d["decl"].isascii() and d["file"].isascii(), d
+        assert d["kind"].isascii() and d["outcome"].isascii(), d
+
+    # JSON round-trip and structural validation of the whole config.
+    from eoltracker.validation import validate_config
+    findings = validate_config(config)
+    assert not [f for f in findings if f["severity"] == "error"], findings
+    assert json.loads(json.dumps(config)) == config
+
+
+def test_declaration_outcome_vocabulary():
+    _scan_result, config = _decl_fixture_config()
+    declarations = config["_inventory"]["declarations"]
+
+    # tracked / duplicate-of: the same GAV in two poms is one product row
+    # and two declarations (the second names the kept row's label).
+    netty = [d for d in declarations
+             if d["decl"] == "io.netty:netty-codec-http:4.1.111.Final"]
+    assert len(netty) == 2, netty
+    assert {d["outcome"] for d in netty} == {
+        "tracked: netty-codec-http 4.1.111.Final",
+        "duplicate-of: netty-codec-http 4.1.111.Final",
+    }, netty
+    assert {d["kind"] for d in netty} == {"dep"}, netty
+    assert {d["file"] for d in netty} == {"pom.xml", "module/pom.xml"}, netty
+
+    # Note: the root generator distinguished <dependencyManagement> entries
+    # as kind "managed-dep"; the normalized record model does not carry
+    # that distinction, so both declare as "dep".
+    d = _decl_one(declarations, "com.fasterxml.jackson:jackson-bom:2.17.0")
+    assert d["kind"] == "dep" and d["file"] == "pom.xml", d
+    assert d["outcome"] == "tracked: Jackson BOM 2.17", d
+    d = _decl_one(declarations,
+                  "com.fasterxml.jackson.core:jackson-databind:2.17.0")
+    assert d["kind"] == "dep", d
+    assert d["outcome"] == "tracked: Jackson Databind 2.17", d
+
+    # unmapped: the root's "skipped: <reason>" coordinates are the
+    # inventory's unmapped items, so they declare with the inventory's
+    # reasons and appear in _inventory.unmapped.
+    d = _decl_one(declarations, "commons-io:commons-io:[2.16.0,)")
+    assert d["outcome"] == "unmapped: unresolved version expression", d
+    d = _decl_one(declarations, "com.example:in-flight:1.0-SNAPSHOT")
+    assert d["outcome"] == (
+        "unmapped: SNAPSHOT build resolves on no public registry"), d
+    d = _decl_one(declarations, "com.example:placeholder:${lib.version}")
+    assert d["outcome"] == "unmapped: unresolved version expression", d
+    d = _decl_one(declarations, "internal.tools:in-house:1.2.3")
+    assert d["outcome"] == (
+        "unmapped: internal coordinate prefix resolves on no public"
+        " registry"), d
+    reasons = {item["reason"] for item in config["_inventory"]["unmapped"]}
+    assert "unresolved version expression" in reasons, reasons
+
+    # Note (divergence): pom dependencies with a test/provided/system
+    # <scope> and dependencies without a <version> are skipped at parse
+    # time (parsers/java.py), so they are never records and never
+    # declarations; the root script recorded them as
+    # "skipped: test scope" / "skipped: no version (parent/BOM-managed)".
+    for absent in ("junit:junit:4.13.2",
+                   "javax.servlet:javax.servlet-api:4.0.1",
+                   "org.springframework:spring-core:"):
+        assert not [d for d in declarations if d["decl"] == absent], absent
+
+    # Gradle version-catalog library: declared through the build file.
+    d = _decl_one(declarations, "commons-io:commons-io:2.16.1")
+    assert d["kind"] == "gradle" and d["file"] == "build.gradle", d
+    assert d["outcome"] == "tracked: commons-io 2.16.1", d
+
+    # npm: an exact lifecycle match, a registry-tracked package, and a
+    # non-exact spec that stays unmapped.
+    d = _decl_one(declarations, "react@18.2.0")
+    assert d["kind"] == "npm" and d["outcome"] == "tracked: React 18", d
+    d = _decl_one(declarations, "lodash@4.17.21")
+    assert d["kind"] == "npm" and d["outcome"].startswith("tracked: "), d
+    d = _decl_one(declarations, "vue@3")
+    assert d["kind"] == "npm", d
+    assert d["outcome"].startswith("unmapped: "), d
+    assert {s["name"] for s in config["_skipped_npm_packages"]} == {"vue"}, \
+        config["_skipped_npm_packages"]
+
+    # pom property declaration.
+    d = _decl_one(declarations, "tomcat.version=10.1.28")
+    assert d["kind"] == "property" and d["file"] == "pom.xml", d
+    assert d["outcome"] == "tracked: Apache Tomcat 10.1", d
+
+    # products stays the deduped runnable set: one row per tracked
+    # declaration, plus the generated manual rows for unmapped items.
+    tracked = [d for d in declarations if d["outcome"].startswith("tracked: ")]
+    rows = [p for p in _products(config)
+            if p.get("_inventory_generated") != "unmapped"]
+    assert len(rows) == len(tracked), (rows, tracked)
+
+
+def test_declarations_record_unavailable_transitive_resolution():
+    # A transitive_unavailable warning (mvn/gradle absent or failing under
+    # --resolve-transitive) declares as a skipped resolution attempt, in
+    # the root generator's wording.
+    scan = {
+        "root_name": "unavailable",
+        "files": ["pom.xml", "app/build.gradle"],
+        "records": [],
+        "warnings": [
+            {"category": "transitive_unavailable", "path": "pom.xml",
+             "message": "mvn not found on PATH"},
+            {"category": "transitive_unavailable", "path": "app/build.gradle",
+             "message": "gradle not found on PATH"},
+        ],
+    }
+    config = gc.generate_config(scan, "unavailable", include_transitive=True)
+    declarations = config["_inventory"]["declarations"]
+    assert [(d["decl"], d["file"], d["kind"], d["outcome"])
+            for d in declarations] == [
+        ("mvn transitive resolution", "pom.xml", "transitive-maven",
+         "skipped: transitive resolution unavailable "
+         "(mvn not on PATH or failed)"),
+        ("gradle transitive resolution", "app/build.gradle",
+         "transitive-gradle",
+         "skipped: transitive resolution unavailable "
+         "(gradle not on PATH or failed)"),
+    ], declarations
+    assert config["_inventory"]["summary"]["declarations"] == {
+        "total": 2, "by_outcome": {"skipped": 2}}, config["_inventory"]
+
+
+def test_declarations_of_indirect_records():
+    # Records the scan resolved from a lock/graph (direct=False) are
+    # declared even when they stay out of products.
+    lock_dep = new_record("node", "loose-envify", version="1.4.0",
+                          direct=False)
+    add_location(lock_dep, "package-lock.json", "npm",
+                 locator="lock:loose-envify")
+    scan = {"root_name": "graph", "files": ["package-lock.json"],
+            "records": [lock_dep], "warnings": []}
+    direct = gc.generate_config(scan, "graph")
+    assert [(d["decl"], d["file"], d["kind"], d["outcome"])
+            for d in direct["_inventory"]["declarations"]] == [
+        ("loose-envify@1.4.0", "package-lock.json", "npm-lock",
+         "unmapped-transitive (tracked in records only)")], direct
+    complete = gc.generate_config(scan, "graph", include_transitive=True)
+    assert [d["outcome"] for d in
+            complete["_inventory"]["declarations"]] == [
+        "tracked: loose-envify 1.4.0"], complete["_inventory"]["declarations"]
+
+
+def test_declarations_empty_scan():
+    # Retargeted from the root assertion that an empty scan omits
+    # _discovered_dependencies entirely: the inventory key is always
+    # present and empty.
+    with tempfile.TemporaryDirectory() as tmp:
+        config = gc.generate_config(gc.scan_folder(tmp), "empty")
+    assert "_discovered_dependencies" not in config, config.keys()
+    assert config["_inventory"]["declarations"] == [], config["_inventory"]
+    assert config["_inventory"]["summary"]["declarations"] == {
+        "total": 0, "by_outcome": {}}, config["_inventory"]["summary"]
+
+
+def test_update_drops_legacy_discovered_dependencies():
+    # A config generated by the retired root script carries
+    # _discovered_dependencies; --update reads it tolerantly and drops it.
+    existing = {
+        "products": [],
+        "_discovered_dependencies": [
+            {"decl": "io.netty:netty-codec-http:4.1.111.Final",
+             "file": "pom.xml", "kind": "dep",
+             "outcome": "tracked: netty-codec-http 4.1.111.Final"}],
+        "notify_when": "problems_only",
+    }
+    generated = gc.generate_config(
+        {"root_name": "merge", "files": [], "records": [], "warnings": []},
+        "merge")
+    merged = _merge_existing_config(existing, generated)
+    assert "_discovered_dependencies" not in merged, merged.keys()
+    assert merged["_inventory"]["declarations"] == [], merged["_inventory"]
+    assert merged["notify_when"] == "problems_only", merged
+
+
 TESTS = [
     test_version_helpers,
     test_live_smoke_command_quotes_interpreter_and_output,
@@ -2552,6 +2898,12 @@ TESTS = [
     test_cli_update_rejects_non_list_products,
     test_scan_ignores_standalone_central_package_declarations,
     test_terraform_uses_positive_runtime_allowlist,
+    test_declarations_cover_every_record,
+    test_declaration_outcome_vocabulary,
+    test_declarations_record_unavailable_transitive_resolution,
+    test_declarations_of_indirect_records,
+    test_declarations_empty_scan,
+    test_update_drops_legacy_discovered_dependencies,
 ]
 
 

@@ -182,7 +182,8 @@ drifts). In brief:
 - `helper_scripts/generate_config.py` is the deterministic scanner — no LLM
   required — for Java, Node, Python, Go, and .NET manifests plus Dockerfile and
   GitLab CI image declarations. It emits per-entry `_found_in` provenance, an
-  ignored `_inventory` object (warnings, unmapped items, counts), explicit
+  ignored `_inventory` object (warnings, unmapped items, counts, and
+  `declarations`: every parsed declaration with its outcome), explicit
   `manual`/untracked rows for unmapped items, scans **direct dependencies
   only** by default (`--include-transitive` opts into indirect/lockfile
   records; `--resolve-transitive` additionally executes `mvn`/`gradle` to
