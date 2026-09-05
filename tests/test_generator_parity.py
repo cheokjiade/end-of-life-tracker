@@ -34,8 +34,10 @@ _TOML_MODULE_RE = re.compile(r'module\s*=\s*"([^"]+)"')
 _TOML_NAME_RE = re.compile(r'\bname\s*=\s*"([^"]+)"')
 
 
-def _run(cmd, cwd):
+def _run(cmd, cwd, extra_env=None):
     env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     env.setdefault(
         "PYTHONPYCACHEPREFIX",
         os.environ.get("PYTHONPYCACHEPREFIX", str(Path(tempfile.gettempdir()) / "eol_pycache")),
@@ -51,10 +53,28 @@ def _run(cmd, cwd):
 
 
 def _root_config(fixture, out):
-    r = _run(
-        [str(REPO / "generate_config.py"), str(fixture), "--name", "parity", "--output", str(out)],
-        REPO,
-    )
+    """The root generator's output, lockfile graphs included.
+
+    Run with --resolve-transitive so the root parses package-lock.json (its
+    only mode that does), and with PATH pointed at an empty directory so mvn
+    and gradle cannot be found: the root then degrades with
+    transitive_unavailable notes for the build tools while still parsing
+    lockfiles, and no external build tool ever runs from the test suite.
+    """
+    with tempfile.TemporaryDirectory() as empty_path:
+        r = _run(
+            [
+                str(REPO / "generate_config.py"),
+                str(fixture),
+                "--name",
+                "parity",
+                "--output",
+                str(out),
+                "--resolve-transitive",
+            ],
+            REPO,
+            extra_env={"PATH": empty_path},
+        )
     assert r.returncode == 0, r.stderr
     return json.loads(out.read_text(encoding="utf-8"))
 
