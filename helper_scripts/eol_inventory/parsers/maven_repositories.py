@@ -8,13 +8,16 @@ and dependency ``repositories { ... }`` blocks in ``build.gradle(.kts)`` and
 ``settings.gradle(.kts)``.
 
 Every parser returns ``(urls, warnings)``: order-stable, deduplicated URLs and
-scan warnings in the shared ``models.new_warning`` shape.
+scan warnings in the shared ``models.new_warning`` shape. Both parsers hand
+their raw URLs to :func:`sanitize_repo_urls` first, so no collector can emit an
+embedded credential into the generated config.
 """
 
 import re
 from pathlib import Path
 
 from ..models import load_safe_xml, new_warning
+from ..redact import strip_url_userinfo
 from .java import nearest_catalog, parse_gradle_records
 
 # Repository URL declarations inside a `repositories { ... }` block, in the
@@ -27,6 +30,52 @@ _GRADLE_REPO_URL_RE = re.compile(
 # The keyword opening the block whose `{` was just reached (dotted names
 # allowed, e.g. project.repositories); used while scanning nesting.
 _GRADLE_BLOCK_NAME_RE = re.compile(r"([A-Za-z_][\w.]*)\s*\{\Z")
+# Scheme anchor, for naming the host of an already-stripped URL.
+_URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
+
+
+
+def _authority(url):
+    """The authority (host and optional port) of an already-stripped URL;
+    non-secret structural text safe to name in a warning message."""
+    match = _URL_SCHEME_RE.match(url)
+    body = url[match.end():] if match else url
+    cut = len(body)
+    for ch in "/?#":
+        pos = body.find(ch)
+        if 0 <= pos < cut:
+            cut = pos
+    return body[:cut] or "(no host)"
+
+
+def sanitize_repo_urls(urls, rel_path):
+    """Return ``(clean_urls, warnings)`` for raw collected repository URLs.
+
+    The single choke point every repository collector (pom, build.gradle,
+    settings.gradle) passes through, so no path can emit a credential.
+    A declared repository may carry userinfo
+    (``https://user:token@nexus.example/m2``); the generated config is
+    published (S3) and read by the runtime, which never sends URL
+    credentials, so the userinfo is REMOVED while scheme, host, port and
+    path survive — the fallback still targets the right repository. Each
+    affected URL raises one ``credential_in_url`` warning naming the host
+    only, never the secret. Deduplication happens after stripping, so a
+    repository declared both with and without credentials collapses to one
+    entry.
+    """
+    clean = []
+    warnings = []
+    for url in urls:
+        stripped, had_userinfo = strip_url_userinfo(url)
+        if had_userinfo:
+            warnings.append(new_warning(
+                "credential_in_url", rel_path,
+                f"removed embedded credentials from the declared repository "
+                f"URL for {_authority(stripped)}; keep them in "
+                f"~/.m2/settings.xml or Gradle credentials instead"))
+        if stripped and stripped not in clean:
+            clean.append(stripped)
+    return clean, warnings
 
 
 def _strip_gradle_comments(text):
@@ -153,7 +202,9 @@ def gradle_repo_urls(text):
     targets) and pluginManagement (plugin repos) blocks are not dependency
     sources, see :func:`repositories_blocks`. mavenCentral(),
     mavenLocal() and google() declare no URL and yield nothing. Pure;
-    order-stable and deduplicated.
+    order-stable and deduplicated. URLs are returned as declared:
+    credential stripping happens in :func:`parse_gradle_repositories`,
+    which is the only caller and the collector discovery uses.
     """
     urls = []
     for body, excluded in repositories_blocks(text):
@@ -179,7 +230,8 @@ def parse_gradle_repositories(path, rel_path):
         return [], [new_warning(
             "unreadable_file", rel_path,
             f"could not read Gradle file: {exc}")]
-    return gradle_repo_urls(_strip_gradle_comments(text)), []
+    return sanitize_repo_urls(
+        gradle_repo_urls(_strip_gradle_comments(text)), rel_path)
 
 
 def parse_pom_repositories(path, rel_path):
@@ -187,7 +239,8 @@ def parse_pom_repositories(path, rel_path):
 
     Only direct ``<repositories>`` children of the project root count:
     profile-conditional repositories are skipped, because whether such a
-    profile is active is unknowable from the manifest alone.
+    profile is active is unknowable from the manifest alone. Embedded
+    credentials are stripped by :func:`sanitize_repo_urls`.
     """
     root, warning = load_safe_xml(path, rel_path, "POM")
     if root is None:
@@ -206,7 +259,7 @@ def parse_pom_repositories(path, rel_path):
             url = (url_node.text or "").strip() if url_node is not None else ""
             if url and url not in repos:
                 repos.append(url)
-    return repos, []
+    return sanitize_repo_urls(repos, rel_path)
 
 
 def parse_settings_gradle(path, rel_path, root=None, scan_state=None):

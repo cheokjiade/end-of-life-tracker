@@ -105,6 +105,38 @@ def redact_urls(text):
         lambda m: f"{REDACTED}@{m.group('host')}", text)
 
 
+def strip_url_userinfo(url):
+    """Return ``(clean_url, had_userinfo)`` for one URL token.
+
+    Unlike :func:`redact_urls`, which marks the authority with a
+    ``<redacted>@`` placeholder for display, this REMOVES the userinfo and
+    leaves a still-usable URL: ``https://user:pass@repo.example/m2``
+    becomes ``https://repo.example/m2``. Scheme, host, port, path, query,
+    and fragment survive byte-identically, so a stripped repository URL
+    still targets the same repository (the runtime never sends URL
+    credentials). Only the authority — the text between the scheme and the
+    first ``/``, ``?`` or ``#`` — is examined, so an ``@`` in a path or
+    query is not userinfo and the URL is returned unchanged. Scheme-less
+    ``user:pass@host/path`` authorities are handled the same way. Pure;
+    never raises; idempotent.
+    """
+    if not isinstance(url, str) or "@" not in url:
+        return url, False
+    match = _URL_SCHEME_RE.match(url)
+    prefix = url[:match.end()] if match else ""
+    body = url[match.end():] if match else url
+    cut = len(body)
+    for ch in "/?#":
+        pos = body.find(ch)
+        if 0 <= pos < cut:
+            cut = pos
+    authority, tail = body[:cut], body[cut:]
+    at = authority.rfind("@")
+    if at < 0:
+        return url, False
+    return prefix + authority[at + 1:] + tail, True
+
+
 def _redact_url_tokens(text):
     """Scheme-anchored URL token scan only (no scheme-less pass)."""
     out = []

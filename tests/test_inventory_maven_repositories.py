@@ -628,6 +628,128 @@ def test_fixture_repositories_collected():
         "https://gradle.example.invalid/m2"], config["maven_repositories"]
 
 
+# --- Credential stripping in collected repository URLs ----------------------
+
+CRED_POM = "SENTINELPOMSECRET"
+CRED_GRADLE = "SENTINELGRADLESECRET"
+CRED_SETTINGS = "SENTINELSETTINGSSECRET"
+
+CRED_POM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <repositories>
+    <repository>
+      <id>with-credentials</id>
+      <url>https://user:%s@repo.example.invalid/m2</url>
+    </repository>
+    <repository>
+      <id>same-host-clean</id>
+      <url>https://repo.example.invalid/m2</url>
+    </repository>
+    <repository>
+      <id>percent-encoded</id>
+      <url>https://us%%40er:pw%%40%s@enc.example.invalid/m2</url>
+    </repository>
+    <repository>
+      <id>ipv6</id>
+      <url>https://tok:%s@[2001:db8::1]:8443/m2</url>
+    </repository>
+    <repository>
+      <id>clean</id>
+      <url>https://clean.example.invalid/maven2</url>
+    </repository>
+  </repositories>
+</project>
+""" % (CRED_POM, CRED_POM, CRED_POM)
+
+
+def _credential_warnings(scan):
+    return [w for w in scan["warnings"]
+            if w["category"] == "credential_in_url"]
+
+
+def _assert_no_sentinel(scan, sentinel, project):
+    """Sentinel absent from the collected URLs, every warning, and the
+    generated config's JSON text."""
+    repos = json.dumps(scan["maven_repositories"])
+    assert sentinel not in repos, repos
+    warnings_text = json.dumps(scan["warnings"])
+    assert sentinel not in warnings_text, warnings_text
+    config_text = json.dumps(generate_config(scan, project), indent=2)
+    assert sentinel not in config_text, "sentinel leaked into config JSON"
+
+
+def test_pom_repository_credentials_stripped():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "pom.xml", CRED_POM_XML)
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://repo.example.invalid/m2",
+            "https://enc.example.invalid/m2",
+            "https://[2001:db8::1]:8443/m2",
+            "https://clean.example.invalid/maven2",
+        ], scan["maven_repositories"]
+        _assert_no_sentinel(scan, CRED_POM, "cred-pom")
+        creds = _credential_warnings(scan)
+        assert len(creds) == 3, creds
+        assert all(w["path"] == "pom.xml" for w in creds), creds
+        hosts = " ".join(w["message"] for w in creds)
+        assert "repo.example.invalid" in hosts, hosts
+        assert "enc.example.invalid" in hosts, hosts
+        assert "[2001:db8::1]:8443" in hosts, hosts
+
+
+def test_gradle_repository_credentials_stripped():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "build.gradle.kts", """
+repositories {
+    maven { url = uri("https://tok:%s@gradle.example.invalid/m2") }
+    maven { url = uri("https://gradle.example.invalid/m2") }
+    maven { url = uri("https://clean.example.invalid/m2") }
+}
+""" % CRED_GRADLE)
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://gradle.example.invalid/m2",
+            "https://clean.example.invalid/m2",
+        ], scan["maven_repositories"]
+        _assert_no_sentinel(scan, CRED_GRADLE, "cred-gradle")
+        creds = _credential_warnings(scan)
+        assert len(creds) == 1, creds
+        assert creds[0]["path"] == "build.gradle.kts", creds
+        assert "gradle.example.invalid" in creds[0]["message"], creds
+
+
+def test_settings_gradle_repository_credentials_stripped():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write(tmp, "settings.gradle.kts", """
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("https://tok:%s@settings.example.invalid/m2") }
+    }
+}
+""" % CRED_SETTINGS)
+        scan = scan_folder(Path(tmp))
+        assert scan["maven_repositories"] == [
+            "https://settings.example.invalid/m2"], \
+            scan["maven_repositories"]
+        _assert_no_sentinel(scan, CRED_SETTINGS, "cred-settings")
+        creds = _credential_warnings(scan)
+        assert len(creds) == 1, creds
+        assert creds[0]["path"] == "settings.gradle.kts", creds
+        assert "settings.example.invalid" in creds[0]["message"], creds
+
+
+def test_repository_url_without_userinfo_unchanged():
+    """A credential-free URL passes through byte-identically and raises no
+    credential warning."""
+    with tempfile.TemporaryDirectory() as tmp:
+        pom = _write(tmp, "pom.xml", POM_REPOS)
+        urls, warnings = parse_pom_repositories(pom, "pom.xml")
+        assert urls == [SHIB, SPRING, "https://legacy.example/maven2"], urls
+        assert not [w for w in warnings
+                    if w["category"] == "credential_in_url"], warnings
+
+
 TESTS = [
     test_pom_root_level_repositories,
     test_pom_dependencies_still_parsed,
@@ -654,6 +776,10 @@ TESTS = [
     test_cli_writes_maven_repositories,
     test_update_regenerates_maven_repositories,
     test_fixture_repositories_collected,
+    test_pom_repository_credentials_stripped,
+    test_gradle_repository_credentials_stripped,
+    test_settings_gradle_repository_credentials_stripped,
+    test_repository_url_without_userinfo_unchanged,
 ]
 
 
