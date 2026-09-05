@@ -249,10 +249,16 @@ def generate_config(scan, project_name, include_transitive=False):
             add(entry, record, comment=comment_for(record, raw))
 
     # --- npm dependencies ----------------------------------------------------
+    # Lockfile-graph records carry direct=False (the lock is a resolved
+    # graph, like Pipfile.lock and go's indirect requires): excluded from
+    # products unless --include-transitive, counted in the summary.
     node_records = [r for r in records if r["ecosystem"] == "node"]
     if node_records:
         added_section = False
         for record in node_records:
+            if (record["kind"] == "dependency" and not record["direct"]
+                    and not include_transitive):
+                continue
             entry = None
             if record["version"]:
                 entry = _map_npm_dep(record["name"], record["version"])

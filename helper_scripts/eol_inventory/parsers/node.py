@@ -68,7 +68,7 @@ def _read_lock(directory, rel_path, root):
         if guarded is None:
             continue
         try:
-            with open(guarded, encoding="utf-8") as f:
+            with open(guarded, encoding="utf-8-sig") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             return None, None, new_warning(
@@ -134,6 +134,73 @@ def _lock_lookup(data, name):
     return None
 
 
+def lock_graph_records(data, rel_lock_path, direct_names):
+    """Indirect records for every package a lockfile resolves.
+
+    *data* is a parsed lock document (see :func:`_read_lock`),
+    *rel_lock_path* its scan-root-relative path, *direct_names* the names
+    already recorded from package.json (they keep their direct records and
+    are not repeated here).
+
+    Supports lockfileVersion 2/3 (the "packages" mapping keyed by
+    "node_modules/..." paths -- the package name is the last path segment,
+    "@scope/pkg" keys keep their scope) and lockfileVersion 1 (the legacy
+    "dependencies" tree, recursed including nested installs); a v2 lock
+    carries both and "packages" wins. Skipped, as the root generator
+    skipped them: the "" root entry, entries without a usable version, and
+    link:/file: resolved entries -- a linked or local path is not a
+    registry version to track (so is any ':'-bearing version: npm:/git
+    aliases). Order-stable and deduped on (name, version). Every record is
+    ``direct=False``; config mapping decides whether indirect packages
+    reach the products list.
+    """
+    if not isinstance(data, dict):
+        return []
+    records = []
+    seen = set()
+
+    def add(name, version):
+        if not name or not isinstance(version, str) or not version:
+            return
+        if ":" in version or version.startswith(("link:", "file:")):
+            return
+        if name in direct_names or (name, version) in seen:
+            return
+        seen.add((name, version))
+        record = new_record("node", name, version=version, direct=False,
+                            kind="dependency")
+        add_location(record, rel_lock_path, "npm", locator=f"lock:{name}")
+        records.append(record)
+
+    packages = data.get("packages")
+    if isinstance(packages, dict):
+        for key, entry in packages.items():
+            if not key or not isinstance(entry, dict):
+                continue  # "" is the root (project) entry
+            resolved = str(entry.get("resolved") or "")
+            if resolved.startswith(("link:", "file:")):
+                continue
+            segments = [s for s in key.split("/") if s]
+            if not segments:
+                continue
+            if len(segments) >= 2 and segments[-2].startswith("@"):
+                name = f"{segments[-2]}/{segments[-1]}"
+            else:
+                name = segments[-1]
+            add(name, entry.get("version"))
+    elif isinstance(data.get("dependencies"), dict):
+        def walk(node):
+            for name, info in node.items():
+                if not isinstance(info, dict):
+                    continue
+                add(name, info.get("version"))
+                nested = info.get("dependencies")
+                if isinstance(nested, dict):
+                    walk(nested)
+        walk(data["dependencies"])
+    return records
+
+
 def _spec_warning(name, spec, rel_path):
     """Warning for a specification that lock evidence cannot resolve."""
     if spec.startswith("<hosted-git:"):
@@ -182,7 +249,7 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
     even when the lock resolves zero specifications.
     """
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         return [], [new_warning(
@@ -288,6 +355,12 @@ def parse_package_json_records(path, rel_path, root=None, consumed_locks=None):
             if locked:
                 add_location(record, lock_rel, "npm", locator=f"lock:{name}")
             records.append(record)
+
+    if lock is not None:
+        # The lock is a resolved graph: everything it names that the
+        # manifest did not declare is an indirect (direct=False) record.
+        records.extend(lock_graph_records(
+            lock, lock_rel, {r["name"] for r in records}))
     return records, warnings
 
 
