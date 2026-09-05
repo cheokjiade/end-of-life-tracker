@@ -94,6 +94,19 @@ Language runtimes are detected too (`.python-version`, `engines.node`,
 `.nvmrc`, Go's `go`/`toolchain` directives, .NET `TargetFramework` and
 `global.json` SDK settings) and tracked on endoflife.date.
 
+### Declared Maven repositories
+
+Root-level pom `<repositories>` and Gradle dependency `repositories { }`
+blocks (build and settings files; `publishing` and `pluginManagement` blocks
+are not dependency sources) are collected into the config's top-level
+`maven_repositories` list. Secret material is removed before a URL is
+recorded: embedded credentials (`https://user:token@nexus.example/m2`), the
+query string, and the fragment are all stripped, leaving scheme, host, port
+and path intact, and each affected URL emits one `credential_in_url` warning
+naming the host and what was removed but never the removed text. Keep
+repository credentials in `~/.m2/settings.xml` or Gradle credentials
+instead.
+
 ### Dockerfiles
 
 Multi-stage builds, `--platform` flags, stage aliases, tags, digests, and

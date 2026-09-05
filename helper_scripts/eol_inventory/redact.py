@@ -117,14 +117,24 @@ def strip_url_userinfo(url):
     credentials). Only the authority — the text between the scheme and the
     first ``/``, ``?`` or ``#`` — is examined, so an ``@`` in a path or
     query is not userinfo and the URL is returned unchanged. Scheme-less
-    ``user:pass@host/path`` authorities are handled the same way. Pure;
-    never raises; idempotent.
+    authorities are handled the same way in both spellings: a bare
+    ``user:pass@host/path`` and the protocol-relative
+    ``//user:pass@host/path``, whose leading ``//`` is kept (no scheme is
+    invented). Pure; never raises; idempotent. Query strings and fragments
+    are NOT removed here; :func:`clean_repository_url` is the
+    repository-URL sanitizer that also drops those.
     """
     if not isinstance(url, str) or "@" not in url:
         return url, False
     match = _URL_SCHEME_RE.match(url)
-    prefix = url[:match.end()] if match else ""
-    body = url[match.end():] if match else url
+    if match:
+        prefix, body = url[:match.end()], url[match.end():]
+    elif url.startswith("//"):
+        # A protocol-relative authority: without this the cut below lands
+        # at index 0 and the userinfo is never seen.
+        prefix, body = "//", url[2:]
+    else:
+        prefix, body = "", url
     cut = len(body)
     for ch in "/?#":
         pos = body.find(ch)
@@ -135,6 +145,35 @@ def strip_url_userinfo(url):
     if at < 0:
         return url, False
     return prefix + authority[at + 1:] + tail, True
+
+
+def clean_repository_url(url):
+    """Return ``(clean_url, removed)`` for one declared repository URL.
+
+    Built on :func:`strip_url_userinfo`, and additionally removes the query
+    string and the fragment: the runtime joins artifact paths onto a
+    declared repository base URL, so query or fragment material on the base
+    could not survive resolution anyway, and a ``?token=...`` there is
+    exactly the secret class userinfo stripping exists for. *removed* is a
+    set drawn from ``{"userinfo", "query", "fragment"}`` naming what was
+    taken out, never the removed text itself. Scheme, host, port and path
+    survive, so the declared fallback still targets the same repository.
+    Pure; never raises; idempotent: the result carries no userinfo, query,
+    or fragment, so a second call removes nothing.
+    """
+    if not isinstance(url, str):
+        return url, set()
+    cleaned, had_userinfo = strip_url_userinfo(url)
+    removed = set()
+    if had_userinfo:
+        removed.add("userinfo")
+    body, sep, _fragment = cleaned.partition("#")
+    if sep:
+        removed.add("fragment")
+    base, sep, _query = body.partition("?")
+    if sep:
+        removed.add("query")
+    return base, removed
 
 
 def _redact_url_tokens(text):
