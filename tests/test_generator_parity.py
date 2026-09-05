@@ -17,8 +17,12 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "helper_scripts"))
+
+from eol_inventory.mappings import _map_npm_dep  # noqa: E402
+
 FIXTURES = REPO / "tests" / "fixtures" / "generate_config"
-PENDING_CATEGORIES = {"npm_graph", "declarations"}
+PENDING_CATEGORIES = {"declarations"}
 
 # `samples/` holds loose pom files, not project directories; neither generator
 # is meant to scan it as a project root.
@@ -103,6 +107,25 @@ def _products(config):
     }
 
 
+def _npm_tracked(config):
+    """Names of npm packages the config tracks as a product entry.
+
+    npm_registry entries carry `package`; lifecycle entries carry `product`
+    (the endoflife.date slug, e.g. `react` -> product "react", `@angular/core`
+    -> "angular"), so the mapping table is consulted for the slug of every
+    root-skipped name rather than guessed from the entry.
+    """
+    names = set()
+    for entry in config.get("products") or []:
+        if not isinstance(entry, dict) or "_section" in entry:
+            continue
+        if entry.get("package"):
+            names.add(entry["package"])
+        if entry.get("product"):
+            names.add(entry["product"])
+    return names
+
+
 def _skipped(config):
     """`_skipped_npm_packages` records keyed on the fields a reviewer acts on.
 
@@ -127,9 +150,26 @@ def compare(fixture_dir):
     missing_repos = sorted(
         set(root.get("maven_repositories") or []) - set(helper.get("maven_repositories") or [])
     )
-    missing_skipped = sorted(
-        str(i) for i in _skipped(root) - _skipped(helper)
-    )
+    # Superset rule for npm: the helper must not silently LOSE a package the
+    # root parked in `_skipped_npm_packages`, but tracking it is better than
+    # skipping it. A root-skipped name is satisfied when the helper skips it
+    # too, or when the helper carries it as a product entry -- an
+    # npm_registry row (`package == name`) or the lifecycle product
+    # `_map_npm_dep` maps that name to. A name the helper neither skips nor
+    # tracks is still a gap.
+    helper_skipped = _skipped(helper)
+    helper_tracked = _npm_tracked(helper)
+    missing_skipped = []
+    for name, version in _skipped(root):
+        if (name, version) in helper_skipped:
+            continue
+        if name in helper_tracked:
+            continue
+        mapped = _map_npm_dep(name, version) if version else None
+        if mapped and (mapped.get("product") or mapped.get("package")) in helper_tracked:
+            continue
+        missing_skipped.append(str((name, version)))
+    missing_skipped = sorted(missing_skipped)
     decl_root = {
         (d["decl"], d["file"], d["kind"]) for d in root.get("_discovered_dependencies") or []
     }

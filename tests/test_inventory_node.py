@@ -626,13 +626,25 @@ def test_transitive_lock_packages_reach_products_only_when_asked():
     print("OK lock graph: --include-transitive tracks the lockfile packages")
 
 
-def test_generate_config_node_fixture_has_no_indirect_records():
+def test_generate_config_node_fixture_transitive_package():
+    # RETARGETED: the shared parity fixture's lockfile gained a genuinely
+    # transitive entry (node_modules/react/node_modules/loose-envify, which
+    # no package.json section declares), so the assertion that the fixture
+    # produced no indirect records becomes an assertion on that one record.
     fixture = ROOT / "tests" / "fixtures" / "generate_config" / "node"
     scan = scan_folder(str(fixture))
-    assert [r for r in scan["records"] if r["direct"] is False] == []
-    config = generate_config(scan, "parity")
-    assert config["_inventory"]["summary"]["indirect"] == 0
-    print("OK generate_config/node: its lock resolves only direct packages")
+    indirect = [r for r in scan["records"] if r["direct"] is False]
+    assert [(r["name"], r["version"]) for r in indirect] == [
+        ("loose-envify", "1.4.0")], indirect
+    assert _locators(indirect[0]) == ["lock:loose-envify"]
+    plain = generate_config(scan, "parity")
+    assert all(p.get("package") != "loose-envify"
+               for p in plain["products"]), plain["products"]
+    assert plain["_inventory"]["summary"]["indirect"] == 1
+    with_transitive = generate_config(scan, "parity", include_transitive=True)
+    assert any(p.get("package") == "loose-envify"
+               for p in with_transitive["products"])
+    print("OK generate_config/node: the lock's transitive package is indirect")
 
 
 TESTS = [
@@ -659,7 +671,7 @@ TESTS = [
     test_lock_graph_tolerates_unusable_documents,
     test_utf8_bom_manifest_and_lockfile_are_tolerated,
     test_transitive_lock_packages_reach_products_only_when_asked,
-    test_generate_config_node_fixture_has_no_indirect_records,
+    test_generate_config_node_fixture_transitive_package,
 ]
 
 

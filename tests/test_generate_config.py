@@ -1080,9 +1080,25 @@ def test_generate_config_node():
     # sole warning; both are gone now that the range resolves.
     assert not config.get("_skipped_npm_packages")
     assert config["_inventory"]["unmapped"] == []
+    # RETARGETED: the fixture lockfile now carries one genuinely transitive
+    # package (node_modules/react/node_modules/loose-envify), so the scan has
+    # one more record and one indirect record; it stays out of products
+    # unless --include-transitive is given.
+    assert all(p.get("package") != "loose-envify" for p in prods), prods
     assert config["_inventory"]["summary"] == {
-        "files": 2, "records": 7, "products": 6, "unmapped": 0,
-        "warnings": 0, "indirect": 0}
+        "files": 2, "records": 8, "products": 6, "unmapped": 0,
+        "warnings": 0, "indirect": 1}
+
+    transitive = gc.generate_config(_scan("node"), "node-project",
+                                    include_transitive=True)
+    assert [p for p in _products(transitive)
+            if p.get("package") == "loose-envify"] == [{
+                "source": "npm_registry", "package": "loose-envify",
+                "version": "1.4.0", "label": "loose-envify 1.4.0",
+                "_comment": "From package-lock.json (loose-envify@1.4.0)",
+                "_found_in": [{"path": "package-lock.json", "manifest": "npm",
+                               "locator": "lock:loose-envify"}]}]
+    assert transitive["_inventory"]["summary"]["indirect"] == 1
 
 
 def test_generate_config_mixed():
