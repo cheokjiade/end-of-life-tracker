@@ -21,7 +21,7 @@ Supported formats:
 Usage:
     python helper_scripts/generate_config.py <folder> [--name PROJECT]
            [--output FILE] [--exclude PATTERN] [--update | --replace]
-           [--include-transitive] [--strict]
+           [--include-transitive] [--resolve-transitive] [--strict]
 
 Examples:
     python helper_scripts/generate_config.py "project-b" --name b

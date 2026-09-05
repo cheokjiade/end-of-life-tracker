@@ -164,7 +164,9 @@ full bill of materials. Pass `--include-transitive` to also include Go
 `// indirect` requirements, `Pipfile.lock` graph entries, and other records
 explicitly marked indirect. Node and .NET lock files still resolve exact
 versions for direct declarations; `packages.lock.json` transitive graph
-entries are not emitted.
+entries are not emitted. Lockfile packages are always enumerated into
+`_inventory.declarations` (and counted in `summary.indirect`) even without
+the flag; the flag only controls whether they become product rows.
 
 Pass `--resolve-transitive` to additionally resolve the **Java** graph by
 running `mvn dependency:list` per `pom*.xml` and a Gradle init-script task
